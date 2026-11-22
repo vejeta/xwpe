@@ -16,8 +16,12 @@ import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
-from wpe_driver import WpeSession, ALT, WAIT_SCALE, WPE_BIN, assistant_build, wait_screen, \
-    pane_text_with_history
+from wpe_driver import (WpeSession, ALT, WAIT_SCALE, WPE_BIN, assistant_build,
+                        pane_text_with_history, wait_screen)
+
+# The pane's line that names the check, whole: the sentence goes on to quote
+# the file's path, which wraps over rows and scrolls this start above the view.
+BUILD_COMMAND_LINE = "[fix-build] build command: gcc -fsyntax-only -Wall"
 
 pytestmark = pytest.mark.skipif(not assistant_build(),
                                 reason="wpe built without --enable-ai")
@@ -480,11 +484,11 @@ def test_build_and_fix_checks_a_lone_c_file_with_the_compiler(tmp_path):
         # The run's first lines come after the containment line the first
         # run says, so the build line may sit above the pane's view: page
         # back to it, as a user would.
-        disp = "\n".join(pane_text_with_history(s, ["build command"]))
+        disp = "\n".join(pane_text_with_history(s, [BUILD_COMMAND_LINE]))
     want = "gcc -fsyntax-only -Wall '%s'" % (tmp_path / "lone.c")
     assert "fix-build cmd=" + want in trace.read_text(), \
         "the build command for a lone C file is not a syntax check:\n" + trace.read_text()
-    assert "[fix-build] build command: gcc -fsyntax-only -Wall" in disp, \
+    assert BUILD_COMMAND_LINE in disp, \
         "the pane does not show the build command:\n" + disp
 
 

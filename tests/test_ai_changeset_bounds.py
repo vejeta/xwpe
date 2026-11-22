@@ -346,18 +346,22 @@ def test_a_workspace_beyond_the_watch_bound_is_said_in_the_pane(tmp_path):
     trace = _trace_path(tmp_path)
     reply = "TOOL write_file new.c\nint new(void){return 1;}\n@@END@@TURN@@DONE created it"
     env = _env(tmp_path, reply)
+    # The two phrases the row asserts, whole: they are the pane reader's
+    # needles, so the reader pages back to the start of each.
+    watches = "the snapshot watches %d files under %s" % (WATCH_BOUND, tmp_path)
+    beyond = "a file the run creates beyond them %s" % WATCH_BOUND_WORDS
     with WpeSession(str(tmp_path), ORIG, env_extra=env) as s:
         _start_agent(s, "create a file")
         assert _wait_trace(trace, "changeset n=", 90), \
             "the review never opened:\n" + _trace_text(trace)
         s.key("a", delay=0.8)                # the review's loop eats PgUp: answer first
-        pane = pane_text_with_history(s, ["the snapshot watches", WATCH_BOUND_WORDS])
+        pane = pane_text_with_history(s, [watches, beyond])
         alive = s.alive()
 
     text = " ".join(" ".join(pane).split())   # the pane wraps the line over rows
-    assert "the snapshot watches %d files under %s" % (WATCH_BOUND, tmp_path) in text, \
+    assert watches in text, \
         "the pane does not say the snapshot's bound was reached, or how many it watches:\n" + text
-    assert "a file the run creates beyond them %s" % WATCH_BOUND_WORDS in text, \
+    assert beyond in text, \
         "the pane does not say what the bound costs:\n" + text
     assert alive, "a workspace beyond the bound ended the editor"
 

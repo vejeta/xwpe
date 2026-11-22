@@ -19,7 +19,7 @@ import re
 
 import pytest
 
-from wpe_driver import WpeSession
+from wpe_driver import WpeSession, cols_for
 
 SANITIZER = "AddressSanitizer"
 TOO_LONG_WORD = 5000       # past the 4096 bytes of the editor's word buffer
@@ -28,7 +28,11 @@ WORD_BOX = "word of the personal syntax_def is too long"
 READ_BOX = "Error reading syntax_def"
 ENTER = "\r"
 COLS = 100
-WIDE_COLS = 200            # room for a test folder's whole path in the box
+WIDE_COLS = 200            # the least width of the row that names a path whole
+# The box shows its sentence then the path, and keeps WPE_SYNTAX_BOX_MARGIN
+# columns for its frame (WeSyntax.c): the screen holds both and the path.
+BOX_SENTENCE_COLS = len("A word of the personal syntax_def is too long: ")
+BOX_MARGIN_COLS = 12
 ASAN_ENV = {"ASAN_OPTIONS": "detect_leaks=0:abort_on_error=1"}
 # A language the editor reads whole: .zz files, one keyword.  The tail is the
 # six characters and three numbers every entry ends with.
@@ -116,10 +120,13 @@ def test_the_box_names_the_file_within_its_width(tmp_path):
 
 def test_the_box_names_a_path_that_fits_whole(tmp_path):
     text = "a" * TOO_LONG_WORD + " 0 0 NULL NULL NULL NULL\n"
-    with _start_with(tmp_path, text, "h", cols=WIDE_COLS) as w:
+    named = str(tmp_path / "h" / ".xwpe" / "syntax_def")
+    cols = cols_for(named, tail=BOX_SENTENCE_COLS + BOX_MARGIN_COLS,
+                    at_least=WIDE_COLS)
+    with _start_with(tmp_path, text, "h", cols=cols) as w:
         row = _box_row(w)
         assert row is not None, "no box:\n%s" % _screen_text(w)
-        assert str(tmp_path / "h" / ".xwpe" / "syntax_def") in row, \
+        assert named in row, \
             "the box does not name the file: %r" % row
         assert "..." not in row
 

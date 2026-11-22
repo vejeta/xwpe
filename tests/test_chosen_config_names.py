@@ -30,7 +30,7 @@ from pathlib import Path
 
 import pytest
 
-from wpe_driver import WpeSession, ALT
+from wpe_driver import COMPILER_LINE_TAIL, WpeSession, ALT, cols_for
 
 SEED = "int main(void){return 0;}\n"
 RC_TEXT = "[General]\nTab : 5\n"
@@ -283,7 +283,9 @@ def test_a_build_keeps_a_file_named_messages(tmp_path):
     work = tmp_path / "w"
     work.mkdir()
     (work / "Messages").write_text(STALE_MESSAGES)
-    with WpeSession(str(work), "int main(void){ return x; }\n", cols=120,
+    width = cols_for(os.path.join(str(work), "t.c"), tail=COMPILER_LINE_TAIL,
+                     at_least=120)
+    with WpeSession(str(work), "int main(void){ return x; }\n", cols=width,
                     env_extra=_env(tmp_path / "h")) as s:
         s.key(F9, delay=4.0)
         shown = _screen(s)

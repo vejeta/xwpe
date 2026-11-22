@@ -372,7 +372,9 @@ def test_the_header_says_uncontained_and_the_line_is_said_once(tmp_path):
         header_cell = s.screen.buffer[header][rows[header].index("[AI:")]
         assert (notice_cell.fg, notice_cell.bg) != (header_cell.fg, header_cell.bg), \
             "the notice is not in the error colour"
-        text = "\n".join(pane_text_with_history(s, ["containment on this system"]))
+        text = "\n".join(pane_text_with_history(
+            s, ["containment on this system", "fs=none", "net=uncontrolled",
+                "NOT held", "files you can read"]))
         s._drain(6.0)                    # the first run ends after the mock's delay
         _run_agent(s, "second task")
         assert wait_screen(s, "[agent] task: second task", 8 * WAIT_SCALE), \
@@ -448,7 +450,8 @@ def test_an_engine_in_a_dropped_workspace_folder_is_named_in_the_pane(tmp_path, 
         s.key(ALT.AI); s.key("a")
         s.key("hello"); s.key("\r", delay=1.0)
         s._drain(3.0)
-        text = "\n".join(pane_text_with_history(s, ["inside the workspace"]))
+        text = "\n".join(pane_text_with_history(
+            s, ["inside the workspace", "AIContainPathAllow"]))
     assert str(tmp_path / "bin") in text and "inside the workspace" in text, text
     assert "AIContainPathAllow" in text, text
     assert not seen.exists()

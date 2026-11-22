@@ -80,6 +80,68 @@ def test_as_deep_as_allowed_stays_under_the_limit_of_a_small_system(tmp_path, sm
     assert allowed > 255, "still far over the 255 bytes the old buffers held"
 
 
+# @scenario SC-test-paths-06
+def test_at_least_makes_a_path_of_the_length_under_a_short_base(tmp_path):
+    folder = deep_folder.at_least(tmp_path, 400, leaf="t.c")
+    assert os.path.isdir(folder)
+    assert len(os.path.join(folder, "t.c")) == 400
+    assert folder.startswith(str(tmp_path))
+
+
+# @scenario SC-test-paths-06
+def test_at_least_is_never_one_byte_short_at_any_length(tmp_path):
+    """Every total across more than two names' worth of lengths: the old
+    loop that stopped when exactly one byte was left made a path one short,
+    and a row that asserts the length failed on one length in a hundred."""
+    first = len(str(tmp_path)) + 8
+    for total in range(first, first + 2 * deep_folder.COMPONENT + 10):
+        base = tmp_path / str(total)
+        folder = deep_folder.at_least(base, total, leaf="p.c")
+        assert len(os.path.join(folder, "p.c")) >= total, total
+        assert os.path.isdir(folder)
+
+
+# @scenario SC-test-paths-06
+def test_at_least_with_a_base_already_that_long_makes_one_short_child(tmp_path):
+    """The hand-written loops made the folder that already existed and died
+    in os.makedirs on a long basetemp."""
+    long_base = deep_folder.folder_of_length(tmp_path, len(str(tmp_path)) + 300)
+    folder = deep_folder.at_least(long_base, 200, leaf="t.c")
+    assert os.path.isdir(folder)
+    assert os.path.dirname(folder) == long_base
+    assert len(os.path.join(folder, "t.c")) >= 200
+
+
+def test_at_least_called_twice_under_one_base_does_not_fail(tmp_path):
+    first = deep_folder.at_least(tmp_path, 300)
+    second = deep_folder.at_least(tmp_path, 300)
+    assert first == second and len(first) >= 300
+
+
+def test_at_least_skips_by_name_past_the_limit_of_the_system(tmp_path, small_system):
+    with pytest.raises(pytest.skip.Exception) as skipped:
+        deep_folder.at_least(tmp_path, SMALL_SYSTEM + 1)
+    assert "needs a system path limit over" in str(skipped.value)
+
+
+# @scenario SC-test-paths-06
+def test_folder_of_length_under_a_longer_base_is_refused_by_name(tmp_path):
+    long_base = deep_folder.folder_of_length(tmp_path, len(str(tmp_path)) + 300)
+    with pytest.raises(deep_folder.BaseTooLong) as refused:
+        deep_folder.folder_of_length(long_base, 200)
+    assert "already longer" in str(refused.value)
+
+
+# @scenario SC-test-paths-06
+def test_a_row_about_a_path_near_a_length_skips_under_a_longer_folder(tmp_path):
+    """premise_not_past: a row with an upper bound cannot make its premise
+    under a folder that is already past the length, and says so."""
+    with pytest.raises(pytest.skip.Exception) as skipped:
+        deep_folder.premise_not_past(tmp_path, len(str(tmp_path)))
+    assert "already past" in str(skipped.value)
+    deep_folder.premise_not_past(tmp_path, len(str(tmp_path)) + 1)
+
+
 def test_under_the_limit_leaves_only_the_room_asked(tmp_path, small_system):
     assert deep_folder.under_the_limit(tmp_path, 56) == SMALL_SYSTEM - 56
     folder = deep_folder.folder_of_length(tmp_path, SMALL_SYSTEM - 56)

@@ -10,15 +10,18 @@ Each test that needs a compiler skips itself with a message naming the
 binary when it is not installed.
 """
 import os
+import pathlib
 import re
 import subprocess
 import time
 
 import pytest
 
+import deep_folder
 from host_tools import require
 from wpe_driver import (WAIT_SCALE, WpeSession, wait_screen,
-                        late_reader_c_program, paste_text, end_paste_until,
+                        COMPILER_LINE_TAIL, active_window_title, cols_for,
+                        incoherence, late_reader_c_program, paste_text, end_paste_until,
                         PASTE_LINES,
                         PASTE_BYTES_PER_LINE)
 
@@ -44,17 +47,20 @@ SLOW_FIND_TIMEOUT = 60
 # The active window shows "line:column" on its bottom border; an inactive
 # window shows a plain border.
 STATUS_RE = re.compile(r"^m+q[A-Z][* ]q\s+(\d+):(\d+)\s+q")
-ACTIVE_MARK = "\u25a1 \u2715"      # the zoom and close buttons of the active window
 
 
-# Wide enough that a compiler line naming a file under pytest's temporary
-# directory is painted whole, so the needles a test waits for are on screen.
-WIDE = 200
+def wide_for(workdir, filename="t.c"):
+    """The screen width that paints a compiler line naming ``filename`` in
+    ``workdir`` whole, so the needles a test waits for are on screen however
+    long the test's temporary folder is (wpe_driver.cols_for)."""
+    return cols_for(os.path.join(str(workdir), filename),
+                    tail=COMPILER_LINE_TAIL)
 
 
 def session(workdir, src, filename):
     """A wide editor session on ``filename`` holding ``src``."""
-    return WpeSession(str(workdir), src, filename=filename, cols=WIDE)
+    return WpeSession(str(workdir), src, filename=filename,
+                      cols=wide_for(workdir, filename))
 
 
 def need(tool):
@@ -74,14 +80,10 @@ def active_position(session):
 
 
 def active_title(session):
-    """The title of the active window: the framed name on the row that
-    carries the zoom and close buttons."""
-    for row in session.display():
-        if ACTIVE_MARK in row:
-            m = re.search(r"q ([^q]+?) q", row)
-            if m:
-                return m.group(1)
-    raise AssertionError("no active window on screen:\n" + "\n".join(session.display()))
+    """The title of the active window, read by column (wpe_driver owns the
+    reader: a name with a letter q in it, or a title the editor cut, has no
+    pattern)."""
+    return active_window_title(session.display()).text
 
 
 def screen_text(session):
@@ -443,7 +445,7 @@ def test_every_line_of_a_large_build_output_reaches_messages_in_order(tmp_path):
     makefile = "all:\n\t@seq -f 'FLOODLINE %%g' 1 %d\n\t@echo FLOOD_END\n" % FLOOD_LINES
     (tmp_path / "Makefile").write_text(makefile)
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
-                    filename="t.c", cols=WIDE, rows=30) as w:
+                    filename="t.c", cols=wide_for(tmp_path), rows=30) as w:
         w.key(ALT_A, delay=BUILD_WAIT)
         if active_title(w) != "Messages":
             w.key(F6, delay=0.8)
@@ -473,6 +475,7 @@ def test_pascal_error_line_reaches_messages_and_enter_jumps(tmp_path):
     is made a row, and the build's jump to the first error lands on the
     line it names."""
     need("fpc")
+    deep_folder.tool_takes("fpc", deep_folder.FPC_PATH_LIMIT, tmp_path / "t.pas")
     src = "program t;\nbegin\n  y := 1;\nend.\n"                  # line 3
     with session(tmp_path, src, "t.pas") as w:
         w.key(F9, delay=BUILD_WAIT)
@@ -508,7 +511,7 @@ def test_a_long_build_keeps_the_editor_and_esc_cancels_it(tmp_path):
     and no program is produced."""
     src = "int main(void){return 0;}\n"
     slow_build_dir(tmp_path)
-    with WpeSession(str(tmp_path), src, filename="t.c", cols=WIDE) as w:
+    with WpeSession(str(tmp_path), src, filename="t.c", cols=wide_for(tmp_path)) as w:
         start = time.time()
         w.key(ALT_A, delay=0.8)
         assert wait_screen(w, WAITING_LINE, tmo=scaled(FIND_TIMEOUT)), \
@@ -540,7 +543,7 @@ def test_a_long_build_left_alone_ends_with_the_count_row(tmp_path):
     program on disk, and the row that counts errors and warnings."""
     slow_build_dir(tmp_path)
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
-                    filename="t.c", cols=WIDE) as w:
+                    filename="t.c", cols=wide_for(tmp_path)) as w:
         w.key(ALT_A, delay=0.8)
         assert wait_screen(w, WAITING_LINE, tmo=scaled(FIND_TIMEOUT)), screen_text(w)
         assert wait_screen(w, "BUILD_DONE",
@@ -577,7 +580,7 @@ def test_the_waiting_line_counts_seconds_while_the_build_is_silent(tmp_path):
     (tmp_path / "Makefile").write_text(SLOW_MAKEFILE % ("%g" % scaled(SILENT_BUILD_SECONDS)))
     seen = []
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
-                    filename="t.c", cols=WIDE) as w:
+                    filename="t.c", cols=wide_for(tmp_path)) as w:
         w.key(ALT_A, delay=0.8)
         assert wait_screen(w, "BUILD_START", tmo=scaled(FIND_TIMEOUT)), screen_text(w)
         end = time.time() + scaled(WAITING_WATCH_S)
@@ -621,7 +624,8 @@ TALL = 60
 
 def tall_session(workdir, src, filename):
     """A wide and tall editor session on ``filename`` holding ``src``."""
-    return WpeSession(str(workdir), src, filename=filename, cols=WIDE, rows=TALL)
+    return WpeSession(str(workdir), src, filename=filename,
+                      cols=wide_for(workdir, filename), rows=TALL)
 
 
 def last_messages_row(w):
@@ -846,10 +850,8 @@ def test_a_path_of_200_characters_makes_a_row_and_jumps(tmp_path):
     """The source lives under a path longer than 200 characters: its error
     row is made, the count says so, and the jump lands on line 3."""
     need("gcc")
-    deep = tmp_path
-    while len(str(deep / "t.c")) <= LONG_PATH_LENGTH:
-        deep = deep / "a_directory_name_of_some_length"
-    deep.mkdir(parents=True)
+    deep = pathlib.Path(deep_folder.at_least(tmp_path, LONG_PATH_LENGTH + 1,
+                                             leaf="t.c"))
     with session(deep, UNDEF_AT_3_C, "t.c") as w:
         w.key(F9, delay=BUILD_WAIT)
         assert wait_screen(w, "1 error, 0 warnings", tmo=scaled(FIND_TIMEOUT)), \
@@ -897,7 +899,8 @@ def test_alt_t_opens_the_second_file_of_a_build_run_in_another_directory(tmp_pat
     sub.mkdir()
     (sub / "Makefile").write_text(TWO_FILES_MAKEFILE)
     (sub / "u.c").write_text(U_UNDEF_AT_2_C)
-    with WpeSession(str(tmp_path), UNDEF_AT_3_C, filename="sub/t.c", cols=WIDE) as w:
+    with WpeSession(str(tmp_path), UNDEF_AT_3_C, filename="sub/t.c",
+                    cols=wide_for(tmp_path, "sub/t.c")) as w:
         w.key(ALT_A, delay=BUILD_WAIT)
         # Messages scrolls to the first error row, so that row is what is on
         # screen when the build has ended (the count row may sit below the view).
@@ -924,13 +927,12 @@ def test_alt_t_reaches_a_file_named_by_a_path_wider_than_the_window(tmp_path):
     row stays one row in Messages, so Alt-T after the first jump opens
     u.c on its line instead of finding no file in a path cut in two."""
     need("gcc")
-    deep = tmp_path / "x-y"
-    while len(str(deep / "t.c")) <= LONG_PATH_LENGTH:
-        deep = deep / "a_directory_name_of_some_length"
-    deep.mkdir(parents=True)
+    deep = pathlib.Path(deep_folder.at_least(tmp_path / "x-y",
+                                             LONG_PATH_LENGTH + 1, leaf="t.c"))
     (deep / "Makefile").write_text(ABSOLUTE_TWO_FILES_MAKEFILE)
     (deep / "u.c").write_text(U_UNDEF_AT_2_C)
-    with WpeSession(str(deep), UNDEF_AT_3_C, filename="t.c", rows=40, cols=WIDE) as w:
+    with WpeSession(str(deep), UNDEF_AT_3_C, filename="t.c", rows=40,
+                    cols=wide_for(deep)) as w:
         w.key(ALT_A, delay=BUILD_WAIT)
         assert wait_screen(w, "2 errors, 0 warnings", tmo=scaled(FIND_TIMEOUT)), \
             screen_text(w)
@@ -945,7 +947,27 @@ def test_alt_t_reaches_a_file_named_by_a_path_wider_than_the_window(tmp_path):
         "Alt-T went to %s:%d instead of u.c:3 (%s)" % (title, line, status.strip())
 
 
-PROJECT_A = "int helper(void);\nint main(void)\n{\n    return helper();\n}\n"
+TITLE_FOLDER_BYTES = 120    # a folder whose path cannot fit the title of an 80 column window
+
+
+# @scenario SC-compile-24
+@incoherence("show a path that does not fit (FINDINGS-open.md): the editor "
+             "cuts a window's title at its head and drops the file name, "
+             "and cuts by bytes")
+def test_a_title_cut_for_a_long_path_keeps_the_file_name(tmp_path):
+    """A file in a folder whose path is longer than the title of a 80 column
+    window: the title the user reads must still say which file it is.  The
+    editor keeps the head of the path and puts "..." where the file name
+    was (we_wind.c e_std_rahmen)."""
+    deep = deep_folder.at_least(tmp_path, TITLE_FOLDER_BYTES, leaf="t.c")
+    name = os.path.relpath(os.path.join(deep, "t.c"), str(tmp_path))
+    with WpeSession(str(tmp_path), UNDEF_AT_3_C, filename=name) as w:
+        shown = active_window_title(w.display())
+    assert not shown.elided and shown.text.endswith("t.c"), \
+        "the title lost the file name: %r" % shown.text
+
+
+PROJECT_A ="int helper(void);\nint main(void)\n{\n    return helper();\n}\n"
 PROJECT_B = "int helper(void)\n{\n    return 0;\n}\n"
 PROJECT_PRJ = ("CMP=\tgcc\nCMPFLAGS=\t-g\nLDFLAGS=\t\nEXENAME=\tp\n"
                "CMPSWTCH=\tgnu\n\nFILES=\ta.c b.c\n")
@@ -967,7 +989,7 @@ def test_a_project_opened_from_its_parent_builds_in_its_own_directory(tmp_path):
     need("gcc")
     proj = project_dir(tmp_path)
     with WpeSession(str(tmp_path), PROJECT_PRJ, filename="proj/p.prj",
-                    rows=40, cols=WIDE) as w:
+                    rows=40, cols=wide_for(tmp_path, "proj/p.prj")) as w:
         w.key(F9, delay=BUILD_WAIT)
         assert wait_screen(w, "0 errors, 0 warnings", tmo=scaled(FIND_TIMEOUT)), \
             screen_text(w)
@@ -985,7 +1007,7 @@ def test_each_project_command_is_shown_once(tmp_path):
     need("gcc")
     proj = project_dir(tmp_path)
     with WpeSession(str(proj), PROJECT_PRJ, filename="p.prj",
-                    rows=40, cols=WIDE) as w:
+                    rows=40, cols=wide_for(proj)) as w:
         w.key(F9, delay=BUILD_WAIT)
         assert wait_screen(w, "0 errors, 0 warnings", tmo=scaled(FIND_TIMEOUT)), \
             screen_text(w)
@@ -1006,7 +1028,8 @@ def test_a_project_build_stops_at_the_first_file_with_errors(tmp_path):
     need("gcc")
     proj = project_dir(tmp_path)
     (proj / "a.c").write_text(PROJECT_A_BROKEN)
-    with WpeSession(str(proj), PROJECT_PRJ, filename="p.prj", rows=40, cols=WIDE) as w:
+    with WpeSession(str(proj), PROJECT_PRJ, filename="p.prj", rows=40,
+                    cols=wide_for(proj)) as w:
         w.key(F9, delay=BUILD_WAIT)
         assert wait_screen(w, "1 error, 0 warnings", tmo=scaled(FIND_TIMEOUT)), screen_text(w)
         title = active_title(w)
@@ -1028,7 +1051,8 @@ def test_makes_own_error_line_is_not_counted_and_the_count_is_on_the_status_row(
     the status row as well, where a short Messages window cannot hide it."""
     need("gcc")
     (tmp_path / "Makefile").write_text(MAKE_ONE_ERROR)
-    with WpeSession(str(tmp_path), UNDEF_AT_3_C, filename="t.c", cols=WIDE, rows=24) as w:
+    with WpeSession(str(tmp_path), UNDEF_AT_3_C, filename="t.c", cols=wide_for(tmp_path),
+                    rows=24) as w:
         w.key(ALT_A, delay=BUILD_WAIT)
         # Messages is four rows high here and scrolled to the error row: make's
         # own line and the count row sit below the view, which is why the count

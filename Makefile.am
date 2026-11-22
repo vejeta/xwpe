@@ -1276,6 +1276,19 @@ TESTS += tests/check-test-threads.sh
 # that is not in tests/test-real-tools.allow.
 TESTS += tests/check-test-real-tools.sh
 
+# tests/check-test-paths.sh (listed above) also holds the pytest rules: a
+# window title is read by column, a path of N bytes is made by deep_folder, an
+# asserted phrase is one of the pane reader's needles (rules P1 to P3, run
+# from tests/check_test_paths.py, with their canaries).
+
+# The ncurses pyte suite at a 300 byte temporary folder, the proof that the
+# rows above hold.  Not part of `make check`: it is one run of the whole suite
+# (an hour), so a scheduled CI job runs it.  It names the rows that are red at
+# a long folder for a product reason (tests/path-lengths-pyte.sh).
+check-path-lengths-pyte:
+	$(SHELL) $(srcdir)/tests/path-lengths-pyte.sh --srcdir $(srcdir) --builddir .
+.PHONY: check-path-lengths-pyte
+
 # The feature macros have one owner, configure (AC_USE_SYSTEM_EXTENSIONS
 # writes them into config.h): tests/check-platform.sh fails on a source that
 # sets one of its own, and on a test that compiles without config.h's.  The
@@ -1492,6 +1505,9 @@ EXTRA_DIST = \
   tests/test-real-tools.allow \
   tests/engine_guard.py \
   tests/live_gate.py \
+  tests/check_test_paths.py \
+  tests/test-pane-needles.allow \
+  tests/path-lengths-pyte.sh \
   tests/test_menus.c \
   tests/test_menu_golden.py \
   tests/test_menu_refusals.py \

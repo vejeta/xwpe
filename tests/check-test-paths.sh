@@ -151,7 +151,24 @@ END {
 }
 '
 
-# ---- PYTEST RULES (P1 to P3): the pass that adds them puts them here. ----
+# ---- PYTEST RULES (P1 to P3), the scan is tests/check_test_paths.py. ----
+#
+#  P1  a phrase a row asserts on the pane text is one of that call's needles
+#      (tests/test-pane-needles.allow names the calls whose needles are
+#      computed, each with its reason);
+#  P2  no window title is read off the frame letters outside wpe_driver;
+#  P3  no hand-written loop grows a path to a length outside deep_folder.
+#
+# pyte_rules [--selftest]: runs the scan and its canaries; 0 clean or no python3
+# (said), 1 offenders or a blind scanner.
+pyte_rules() {
+  py=${PYTHON:-python3}
+  if ! command -v "$py" > /dev/null 2>&1; then
+    echo "check-test-paths: pytest rules (P1 to P3) skipped, no $py"
+    return 0
+  fi
+  "$py" "$(dirname "$0")/check_test_paths.py" --srcdir "$SRCDIR" "$@"
+}
 
 # scan_dir DIR: every C file of the rules, offences on stdout; the number of
 # files read goes to $WORK/count.
@@ -264,8 +281,9 @@ selftest() {
 }
 
 if [ $SELFTEST = 1 ]; then
-  selftest
-  exit $?
+  selftest || selftest_status=1
+  pyte_rules --selftest || selftest_status=1
+  exit ${selftest_status:-0}
 fi
 
 out=$(scan_dir "$TESTSDIR")
@@ -280,6 +298,7 @@ if [ -n "$out" ]; then
   printf '%s\n' "$out" | while IFS= read -r l; do echo "  $l"; done
   status=1
 fi
+pyte_rules || status=1
 selftest_out=$(sh "$0" --selftest 2>&1) \
   || { echo "check-test-paths: FAIL: canary: the scan is blind (run $0 --selftest); it said:"; printf '%s\n' "$selftest_out" | sed 's/^/  | /'; status=1; }
 [ $status = 0 ] && echo "check-test-paths: ok ($scanned files)"

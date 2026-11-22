@@ -405,7 +405,7 @@ def test_new_project_in_a_folder_closed_to_writing_says_why(tmp_path):
 def test_info_path_longer_than_the_old_field_is_offered(tmp_path):
     """INFOPATH of 200 bytes: Options > Help opens the Info-Path entry with
     the whole path.  The entry took 128 bytes and refused to open."""
-    info = folder_of_length(tmp_path / "info", INFO_FOLDER_BYTES)
+    info = deep_folder.at_least(tmp_path / "info", INFO_FOLDER_BYTES)
     with WpeSession(str(tmp_path), "int x;\n", filename="t.c", wait=2.0, cols=140, rows=40,
                     env_extra={"INFOPATH": info}) as w:
         w.key(ALT_O, delay=1.0)

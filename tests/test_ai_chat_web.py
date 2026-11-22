@@ -33,6 +33,9 @@ from wpe_driver import WpeSession, ALT, WPE_BIN, pane_text_with_history
 
 SEED = "int main(void){return 0;}\n"
 ESC = "\033"
+# The refusal line, whole: it is the pane reader's needle and the phrase the
+# rows assert.
+WEB_OFF_LINE = "[agent] web_fetch refused: web access is off (Options > AI turns it on)"
 
 WAIT_SCALE = float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1") or 1)
 TURN_POLL_S = 20 * WAIT_SCALE
@@ -394,9 +397,9 @@ def test_agent_web_tools_refuse_while_the_switch_is_off(tmp_path):
             s.key("do it", delay=0.1); s.key("\r", delay=1.0)
             assert _traced_within(tmp_path, "agent done", TURN_POLL_S), _trace(tmp_path)
             s._drain(0.8)
-            rows = pane_text_with_history(s, ["refused"])
+            rows = pane_text_with_history(s, [WEB_OFF_LINE])
         text = "\n".join(rows)
-        assert "[agent] web_fetch refused: web access is off (Options > AI turns it on)" in text, text
+        assert WEB_OFF_LINE in text, text
         assert "agent web off web_fetch " + page in _trace(tmp_path), _trace(tmp_path)
         assert requests == [], "the agent fetched with the web off: %r" % requests
     finally:
@@ -421,9 +424,9 @@ def test_agent_web_tools_refuse_while_the_switch_is_unanswered(tmp_path):
             s.key("do it", delay=0.1); s.key("\r", delay=1.0)
             assert _traced_within(tmp_path, "agent done", TURN_POLL_S), _trace(tmp_path)
             s._drain(0.8)
-            rows = pane_text_with_history(s, ["refused"])
+            rows = pane_text_with_history(s, [WEB_OFF_LINE])
         text = "\n".join(rows)
-        assert "[agent] web_fetch refused: web access is off (Options > AI turns it on)" in text, text
+        assert WEB_OFF_LINE in text, text
         assert requests == [], "the agent fetched with the switch unanswered: %r" % requests
         assert "AIWeb" not in _xwperc(tmp_path), \
             "the refusal answered the switch: %r" % _xwperc(tmp_path)

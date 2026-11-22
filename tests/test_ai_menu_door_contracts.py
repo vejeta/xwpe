@@ -6,7 +6,9 @@ log, the files under the state directory and the working directory.  The
 mock backend answers every turn, so nothing here reaches a network.
 """
 import os
+import pathlib
 import pytest
+import deep_folder
 from wpe_driver import WpeSession, ALT, wait_screen, assistant_build
 
 pytestmark = pytest.mark.skipif(not assistant_build(),
@@ -213,11 +215,8 @@ def _deep_workdir(tmp_path):
     # Always one level below tmp_path, which holds the trace file: a parallel
     # runner's tmp_path can already be longer than DEEP_WORKDIR_LEN, and the
     # trace must never land in the directory the test lists for stray files.
-    deep = tmp_path / "workspace"
-    while len(str(deep)) < DEEP_WORKDIR_LEN:
-        deep = deep / "deeper_directory_level"
-    deep.mkdir(parents=True, exist_ok=True)
-    return deep
+    return pathlib.Path(deep_folder.at_least(tmp_path / "workspace",
+                                             DEEP_WORKDIR_LEN))
 
 
 def _visible_entries(path):

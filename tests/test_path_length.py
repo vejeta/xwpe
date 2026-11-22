@@ -28,6 +28,7 @@ import os
 
 import pytest
 
+import deep_folder
 from wpe_driver import WpeSession, ALT
 
 CTRL_O = "\x0f"
@@ -73,12 +74,8 @@ def _not_found(w):
 
 def _deep_folder(base, total):
     """A folder under @base whose path is at least @total bytes, from names of
-    60 bytes."""
-    path = str(base)
-    while len(path) < total:
-        path = os.path.join(path, "d" * 60)
-    os.makedirs(path, exist_ok=True)
-    return path
+    60 bytes (deep_folder owns every path made to a length)."""
+    return deep_folder.at_least(base, total)
 
 
 # The file manager lists, picks and opens a file with a long name.

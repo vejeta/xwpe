@@ -23,6 +23,7 @@ Incoherence flagging:
        manual review (turns green/XPASS when the behaviour is fixed).
 """
 import base64
+import collections
 import os
 import pty
 import re
@@ -442,6 +443,8 @@ PANE_WRAP_MAX_COLS = 80
 # How far back pane_text_with_history pages by default, and where a click
 # lands to focus the pane (second interior column of the first transcript row).
 PANE_HISTORY_PAGES = 4
+PANE_KEPT_ROWS = 1              # rows a PgUp keeps of the page below (AI_PAGE_KEEP_ROWS)
+PANE_TOP_CONFIRMATIONS = 2      # PgUp returning the same page this often is the top
 PANE_CLICK_COLUMN = 2
 PANE_CLICK_ROW = 2
 KEY_PGUP = "\033[5~"
@@ -567,6 +570,27 @@ def pane_logical_lines(rows):
     return lines
 
 
+def box_text(disp, name):
+    """The text of the box titled ``name``: the rows inside its frame, each
+    with its blanks squeezed, joined by single spaces.  A phrase the box
+    wrapped over two rows ("Save" at the end of one, "As" at the start of the
+    next) is then found whole, wherever the wrap fell, which is what a long
+    path above the sentence moves.  Fails with the screen when no box has that
+    title."""
+    y = title_row(disp, name)
+    assert y >= 0, "no box titled %s:\n%s" % (name, "\n".join(disp))
+    title = disp[y]
+    at = title.index(" %s " % name)
+    x0 = title.rfind(FRAME_TOP_LEFT, 0, at)
+    x1 = title.index(FRAME_TOP_RIGHT, at)
+    lines = []
+    for row in disp[y + 1:]:
+        if row[x0:x0 + 1] == FRAME_BOTTOM_LEFT:
+            break
+        lines.append(" ".join(row[x0 + 1:x1].split()))
+    return " ".join(line for line in lines if line)
+
+
 def click_into_pane(session, name=PANE_NAME):
     """Give the pane the focus with a mouse click (SGR 1006 press and
     release, 1-based cells) on its first transcript row, so PgUp/PgDn reach
@@ -587,22 +611,90 @@ def missing_from_pane(rows, needles):
     return [n for n in needles if n not in text]
 
 
+def pane_overlap(page, seen):
+    """How many rows the bottom of ``page`` (an older view of the transcript)
+    shares with the top of ``seen``: the longest k, 1 to len(page) - 1, with
+    page[-k:] == seen[:k] and not all blank.  The pane keeps AI_PAGE_KEEP_ROWS
+    rows of the page below when PgUp moves a page (we_ai_ui.c), and a PgUp
+    stopped by the top of the transcript moves less, so the rows two reads
+    share are read off the rows and not assumed.  0 when they share none.
+
+    The pane's own contract is tried first: when the last row of ``page`` is
+    the first row of ``seen`` the overlap is that one row, not more.  A long
+    path of one repeated letter makes several identical rows, and the longest
+    match would take rows of the path for rows read twice.
+
+    What the rows cannot settle: a page that was stopped by the top of the
+    transcript and moved less than a page can share more rows than one with
+    the page below, and when its last row also equals the first row below, the
+    one row is taken and the rest are read twice (a path of identical rows
+    across the top edge).  Only the pane's scroll position would tell the two
+    apart, and the pane does not show it."""
+    if page and seen and page[-1] == seen[0] and seen[0].strip():
+        return PANE_KEPT_ROWS
+    for k in range(min(len(page) - 1, len(seen)), 0, -1):
+        if page[-k:] == seen[:k] and any(row.strip() for row in seen[:k]):
+            return k
+    return 0
+
+
+def rows_above(page, seen):
+    """``seen`` with the rows of the older ``page`` put above it, the rows
+    they share counted once.  A long wrapped line that crosses a page edge
+    is then read back as it was written, not with a row of it twice."""
+    return page[:len(page) - pane_overlap(page, seen)] + seen
+
+
+def needs_older_rows(rows, needle_words):
+    """Must the pane be read further back for ``needle_words``?  Yes when a
+    needle is missing, and also when a needle lies only in the logical line
+    that begins on the first row read: that row may be the middle of a
+    longer line whose start is above the view, and the phrase the row asserts
+    would be cut there."""
+    lines = pane_logical_lines(rows)
+    text = "\n".join(lines)
+    below_the_first = "\n".join(lines[1:])
+    first = lines[0] if lines else ""
+    for needle in needle_words:
+        if needle not in text:
+            return True
+        if needle in first and needle not in below_the_first:
+            return True
+    return False
+
+
 def pane_rows_with_history(session, needle_words, pages=PANE_HISTORY_PAGES,
                            name=PANE_NAME):
     """Every pane row now on screen plus, when needles are missing from
-    them, the rows PgUp brings back into the view, up to ``pages`` pages:
-    the way the transcript is read once it is longer than the pane.  The
-    pane is clicked into first; see click_into_pane for the focus after."""
+    them (or lie only on the first row's line, see needs_older_rows), the
+    rows PgUp brings back into the view, up to ``pages`` pages: the way the
+    transcript is read once it is longer than the pane.  Each older page is
+    merged by the rows it shares with what was read (rows_above), and paging
+    stops at the top of the transcript, where PgUp returns the page it
+    returned before.  The needles are the phrases the row asserts.  The pane
+    is clicked into first; see click_into_pane for the focus after."""
     rows = pane_rows(session.display(), name)
-    if not missing_from_pane(rows, needle_words):
+    if not needs_older_rows(rows, needle_words):
         return rows
     click_into_pane(session, name)
     seen = list(rows)
+    last_page = list(rows)
     for _ in range(pages):
         session.key(KEY_PGUP, delay=0.4)
         page = pane_rows(session.display(), name)
-        seen = page + seen
-        if not missing_from_pane(seen, needle_words):
+        rereads = 1
+        while page == last_page and rereads < PANE_TOP_CONFIRMATIONS:
+            # The top of the transcript, or a repaint still to come on a
+            # loaded machine: the screen is read again, without another PgUp
+            # (which would move a second page and lose the one between), and
+            # the top is believed when it still shows the page it showed.
+            page = pane_rows(session.display(), name)
+            rereads += 1
+        if page == last_page:
+            break
+        seen = rows_above(page, seen)
+        last_page = page
+        if not needs_older_rows(seen, needle_words):
             break
     return seen
 
@@ -613,9 +705,117 @@ def pane_text_with_history(session, needle_words, pages=PANE_HISTORY_PAGES,
     while any of ``needle_words`` is still missing (see
     pane_rows_with_history), joined by pane_logical_lines: a phrase the pane
     wrote is found whether the pane wrapped it over two rows or it scrolled
-    above the view."""
+    above the view.
+
+    ``needle_words`` must be every phrase the row asserts on the result, each
+    whole: a needle shorter than the asserted phrase can be found while the
+    rest of the phrase is still above the view.  tests/check-test-paths.sh
+    (rule P1) fails a row whose asserted phrase is not one of its needles."""
     rows = pane_rows_with_history(session, needle_words, pages, name)
     return pane_logical_lines(rows)
+
+
+# The title row of a window, as pyte sees it: the corner "l", a run of the
+# frame's horizontal line "q", the title between spaces (centred, or cut at
+# its head with "..." when it does not fit: we_wind.c e_std_rahmen), the run
+# again, the window number, and the zoom and close buttons, then "qk".
+WINDOW_BUTTONS = "□ ✕"      # the zoom and close buttons of a window
+WINDOW_BUTTONS_FROM_NUMBER = 3        # cells from the window number to them
+TITLE_CUT_MARK = "..."
+FRAME_FILL = "q"
+ASCII_LAST = 0x7F
+FRAME_CORNER_CHARS = "kjlmnqtuvwx"    # what may stand just left of a corner
+
+
+class WindowTitle(collections.namedtuple("WindowTitle", "text elided")):
+    """The title of the active window: ``text`` as the editor wrote it and
+    ``elided`` when the editor cut it (it ends with TITLE_CUT_MARK), so a row
+    that expects a whole name says that the editor, not the row, lost it."""
+    __slots__ = ()
+
+
+def window_buttons_on(row):
+    """Does this screen row carry the zoom and close buttons of a window?
+    True on the title row of the active window and of no other."""
+    return WINDOW_BUTTONS in row
+
+
+def _title_corner_at(row, buttons_at, after_frame_only):
+    """The column of the first "l" before ``buttons_at`` that opens a run of
+    the frame's line followed by the title, and (when ``after_frame_only``)
+    that is at the row's start or follows a frame character; -1 when none."""
+    for x in range(buttons_at):
+        if row[x] != "l":
+            continue
+        if after_frame_only and x > 0 and row[x - 1] not in FRAME_CORNER_CHARS:
+            continue
+        rest = row[x + 1:buttons_at]
+        run = len(rest) - len(rest.lstrip(FRAME_FILL))
+        if 0 < run < len(rest):
+            return x
+    return -1
+
+
+def _title_corner(row, buttons_at):
+    """The column of the left corner of the window whose buttons start at
+    ``buttons_at``: a window beside another has the other's edge (a scroll
+    arrow, not a frame letter) before its corner, so the strict reading is
+    tried first and the loose one second.  A letter "l" of a file name follows
+    a space, not a frame letter, so the strict reading skips it."""
+    corner = _title_corner_at(row, buttons_at, True)
+    if corner < 0:
+        corner = _title_corner_at(row, buttons_at, False)
+    return corner
+
+
+def _without_kind_mark(after_corner):
+    """The row after the corner without the glyph that marks a window that is
+    not a plain file (the padlock of a locked file, the wrench of a tool
+    window such as Messages): it stands in the second cell, a wide character
+    between the frame's line, and is not part of the title."""
+    if after_corner.startswith(FRAME_FILL):
+        rest = after_corner[len(FRAME_FILL):]
+        if rest and ord(rest[0]) > ASCII_LAST:
+            return rest[1:]
+    return after_corner
+
+
+def active_window_title(disp):
+    """The WindowTitle of the active window on screen ``disp`` (the rows of
+    session.display()), read by column: the corner of the row that carries
+    the buttons, the frame's run after it, the title, the run and the window
+    number before the buttons.  Never by a pattern on the frame letters: a
+    file name with a "q" in it, or a long title the editor cut, has no
+    pattern.  Fails with the screen when no window is active."""
+    for row in disp:
+        at = row.find(WINDOW_BUTTONS)
+        if at < 0:
+            continue
+        corner = _title_corner(row, at)
+        if corner < 0:
+            continue
+        number_at = at - WINDOW_BUTTONS_FROM_NUMBER
+        middle = _without_kind_mark(row[corner + 1:number_at]).lstrip(FRAME_FILL)
+        text = middle.rstrip(FRAME_FILL).strip()
+        return WindowTitle(text, text.endswith(TITLE_CUT_MARK))
+    raise AssertionError("no active window on screen:\n" + "\n".join(disp))
+
+
+# A compiler's row names the file by its whole path: the screen has to hold
+# that path and what the compiler says after it.  cols_for gives the width.
+COMPILER_LINE_TAIL = 80    # ":3:13: error: 'undef_q' undeclared (first use ..."
+SCREEN_ROW_MARGIN = 6      # frame, scrollbar and the cells the editor keeps
+
+
+def cols_for(*texts, tail=0, at_least=COLS):
+    """The screen width for a row that waits for ``texts`` on one screen
+    row: ``at_least`` (COLS by default) when they fit, else the longest of
+    them plus the ``tail`` the row adds after it (COMPILER_LINE_TAIL for a
+    compiler's row) and the frame's margin.  The width follows the path the
+    row waits for, not a constant that held while the test's folder was
+    short."""
+    longest = max([len(text) for text in texts] or [0])
+    return max(at_least, longest + tail + SCREEN_ROW_MARGIN)
 
 
 class WpeSession(procinfo.ChildAsker):

@@ -21,9 +21,11 @@ import stat
 import subprocess
 import time
 import pytest
+import deep_folder
 from wpe_driver import WpeSession, ALT, WPE_BIN
 
 CMD_TAG = "fix-build cmd="
+TOO_LONG_PATH_BYTES = 1100   # more than the command the agent runs can hold
 
 NAMES = [
     "a'; touch PWNED; '.c",
@@ -122,10 +124,7 @@ def test_fix_build_command_quotes_the_file_name(tmp_path, name):
 # @scenario SC-ai-runtime-18
 def test_too_long_path_runs_nothing(tmp_path):
     """A path that does not fit in the command is refused, never cut."""
-    deep = str(tmp_path)
-    while len(deep) < 1100:
-        deep = os.path.join(deep, "d" * 60)
-    os.makedirs(deep)
+    deep = deep_folder.at_least(tmp_path, TOO_LONG_PATH_BYTES)
     trace_path = os.path.join(deep, "b.trace")
     env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock", "XWPE_AI_POLICY": "auto",
            "XWPE_AI_MOCK_REPLY": "DONE nothing to do", "XWPE_AI_TRACE": trace_path,

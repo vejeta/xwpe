@@ -23,6 +23,7 @@ import time
 
 import pytest
 
+import deep_folder
 import gui_owner
 import procinfo
 from host_tools import require, require_absent
@@ -986,14 +987,14 @@ def _capped_path_bytes(tmp_path, total, extra=0):
 
 
 def _deep_name(tmp_path, leaf, total, extra=0):
-    """leaf under nested 40-byte directories until the full path is at least
-    `total` bytes; creates the directories and returns the relative name."""
+    """leaf under nested directories (deep_folder.at_least) until the full path
+    is `total` bytes; creates the directories and returns the relative name.
+    The rows are about a path NEAR `total`, so a test folder that is already
+    that long makes the premise unreachable and the row skips by name."""
     total = _capped_path_bytes(tmp_path, total, extra)
-    dirs = []
-    while len(os.path.join(str(tmp_path), *dirs, leaf)) < total:
-        dirs.append("d" * 40)
-    rel = os.path.join(*dirs, leaf)
-    os.makedirs(os.path.join(str(tmp_path), os.path.dirname(rel)))
+    deep_folder.premise_not_past(tmp_path, total)
+    deep = deep_folder.at_least(tmp_path, total, leaf=leaf)
+    rel = os.path.relpath(os.path.join(deep, leaf), str(tmp_path))
     assert total <= len(os.path.join(str(tmp_path), rel)) < total + DEEP_NAME_SLACK
     return rel
 
@@ -1137,11 +1138,7 @@ def test_pdb_watch_reads_an_answer_ended_by_a_prompt_after_a_long_line(
 def _deep_dir(tmp_path, total):
     """A directory under nested 40-byte directories whose path is at least
     `total` bytes; created, and returned as a string."""
-    path = str(tmp_path)
-    while len(path) < total:
-        path = os.path.join(path, "d" * 40)
-    os.makedirs(path)
-    return path
+    return deep_folder.at_least(tmp_path, total)
 
 
 # The error stream line gdb writes when it declines a script that sits next

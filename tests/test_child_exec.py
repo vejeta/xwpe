@@ -23,13 +23,13 @@ import pytest
 
 import procinfo
 from host_tools import needs
-from wpe_driver import WpeSession, wait_screen
+from wpe_driver import COMPILER_LINE_TAIL, WpeSession, cols_for, wait_screen
 
 F9 = "\033[20~"            # Make: compile and link
 F6 = "\033[17~"            # next window
 BUILD_WAIT = 4.0
 FIND_TIMEOUT = 20
-WIDE = 200                 # a compiler line is painted whole
+WIDE = 200                 # the least width; cols_for widens it for a long folder
 TRACE = "ui.trace"
 NO_SUCH_COMPILER = "nosuch_cc_for_test"
 REPORT_LINE = "child report the build exec 2"      # exec failed with ENOENT
@@ -53,10 +53,12 @@ def session(workdir, src=SEED_C, rows=None):
     taller than the default."""
     env = {"XWPE_UI_TRACE": os.path.join(str(workdir), TRACE),
            "XDG_STATE_HOME": os.path.join(str(workdir), "state")}
+    width = cols_for(os.path.join(str(workdir), "t.c"), tail=COMPILER_LINE_TAIL,
+                     at_least=WIDE)
     if rows is None:
-        return WpeSession(str(workdir), src, filename="t.c", cols=WIDE,
+        return WpeSession(str(workdir), src, filename="t.c", cols=width,
                           env_extra=env)
-    return WpeSession(str(workdir), src, filename="t.c", cols=WIDE,
+    return WpeSession(str(workdir), src, filename="t.c", cols=width,
                       rows=rows, env_extra=env)
 
 

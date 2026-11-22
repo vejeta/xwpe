@@ -25,14 +25,17 @@ import pytest
 pytest.importorskip("pyte")
 
 from mode_premise import special_bits_settable, workdir_in_my_group   # noqa: E402
-from wpe_driver import ALT, WpeSession                                # noqa: E402
+from wpe_driver import ALT, WpeSession, box_text                      # noqa: E402
 
 F2 = "\033OQ"            # kf2 -> Save
 SEED = "alpha\n"
 THEIRS = "theirs\n"
 QUESTION = "was replaced on disk since this window read it"
 # The box wraps its sentence at a column that depends on the length of the
-# path above it, so a row names single words; the C rows hold the sentence.
+# path above it ("Save" and "As" can end one row and start the next), so a row
+# reads the box's text joined across its rows (wpe_driver.box_text) and names
+# short phrases; the C rows hold the sentence.
+BOX_TITLE = "Message"
 REFUSED_WORDS = ("leads", "different", "Nothing", "Save As")
 SETTLE_S = 0.5
 
@@ -101,8 +104,9 @@ def test_a_replacement_with_a_special_bit_is_refused_and_save_as_works(tmp_path)
         s.key(F2)
         time.sleep(SETTLE_S)
         shown = _screen(s)
-        for word in REFUSED_WORDS:
-            assert word in shown, (word, shown)
+        boxed = box_text(s.display(), BOX_TITLE)
+        for phrase in REFUSED_WORDS:
+            assert phrase in boxed, (phrase, shown)
         assert "Overwrite" not in shown, shown
         assert _read(s.path) == THEIRS
         assert stat.S_IMODE(os.stat(s.path).st_mode) & 0o7000 == stat.S_ISGID
@@ -128,8 +132,9 @@ def test_a_link_to_the_null_device_under_the_name_is_refused(tmp_path):
         s.key(F2)
         time.sleep(SETTLE_S)
         shown = _screen(s)
-        for word in REFUSED_WORDS:
-            assert word in shown, (word, shown)
+        boxed = box_text(s.display(), BOX_TITLE)
+        for phrase in REFUSED_WORDS:
+            assert phrase in boxed, (phrase, shown)
         assert "Overwrite" not in shown, shown
         s.key("\033", "\033")
         assert "Xalpha" in _screen(s), "the text left the window"

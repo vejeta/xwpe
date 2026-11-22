@@ -1031,7 +1031,9 @@ def test_a_refused_commit_says_the_files_stay_staged(tmp_path):
         s.key("c", delay=0.8)
         s.key("\r", delay=1.0)
         refused = _wait_trace(trace, "changeset not committed", 30)
-        pane = pane_text_with_history(s, ["could not commit", "stay staged"])
+        pane = pane_text_with_history(
+            s, ["could not commit the changeset: pre-commit hook says no",
+                STAY_STAGED_LINE])
         messages = _messages_rows(s.display(drain=0))
         alive = s.alive()
 

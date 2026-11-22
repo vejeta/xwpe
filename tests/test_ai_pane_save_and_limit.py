@@ -23,13 +23,12 @@ import subprocess
 import time
 
 import pytest
-from wpe_driver import ALT, WPE_BIN, WpeSession, pane_rows
+from wpe_driver import ALT, WPE_BIN, WpeSession, pane_rows, window_buttons_on
 
 SEED = "int main(void){return 0;}\n"
 ALT_F2 = "\033\033OQ"                  # Esc prefix + F2: the terminal's Alt-F2
 CURSOR_UP = "\033[A"
 PANE_TITLE = " AI "
-FRAME_BUTTONS = "□ ✕"        # the zoom and close glyphs on the frame
 
 
 def _ai_build():
@@ -87,9 +86,9 @@ def test_alt_f2_moves_the_focused_pane_and_enter_ends_the_move(tmp_path):
     assert top0 >= 0, "the pane did not open:\n" + "\n".join(start)
     assert top1 == top0 - 1, \
         "Alt-F2 + Up did not move the pane up one row (%d -> %d)" % (top0, top1)
-    assert FRAME_BUTTONS not in moving[top1], \
+    assert not window_buttons_on(moving[top1]), \
         "the frame kept its buttons, so no move was running: %r" % moving[top1]
-    assert FRAME_BUTTONS in ended[_pane_top(ended)], \
+    assert window_buttons_on(ended[_pane_top(ended)]), \
         "Enter did not end the move: %r" % ended[_pane_top(ended)]
     assert "chat prompt=" not in _trace(tmp_path), \
         "the Enter that ended the move sent a question:\n" + _trace(tmp_path)

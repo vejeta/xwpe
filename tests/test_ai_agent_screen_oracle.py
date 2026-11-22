@@ -14,7 +14,10 @@ import subprocess
 import time
 
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN
+from wpe_driver import WpeSession, ALT, WPE_BIN, pane_text_with_history
+
+WROTE_LINE = "[agent] wrote t.c - Ctrl-U to undo (buffer only)"
+WROTE_HISTORY_PAGES = 12      # the 8-row pane and the turns after the write
 
 SEED = "int main(void){return 0;}\n"
 ESC = "\033"
@@ -234,7 +237,6 @@ def test_invariant_holds_under_ask_with_boxes_reload_denial_and_flash(tmp_path):
         end = time.time() + 15
         while time.time() < end and "APPROVE?" not in _screen(s, 0):
             _watch_invariant(s, 0.1, "after write t.c", found, editor_state, RELOAD)
-        after_write = _screen(s, 0)              # the wrote-line is still in view here
         _watch_invariant(s, 0.5, "command box", found, editor_state, RELOAD)
         s.key("n", delay=0.1)
         end = time.time() + 15
@@ -247,11 +249,16 @@ def test_invariant_holds_under_ask_with_boxes_reload_denial_and_flash(tmp_path):
             _watch_invariant(s, 0.1, "to the end", found, editor_state, RELOAD)
         _watch_invariant(s, 1.0, "at the end", found, editor_state, RELOAD)
         rows = s.display()
+        # The approval box for the command quotes a path that fills several
+        # rows of the 8-row pane, so the wrote-line is read back through the
+        # pane's own history, whatever length the test's folder has.
+        history = "\n".join(pane_text_with_history(
+            s, [WROTE_LINE], pages=WROTE_HISTORY_PAGES))
         s.key(ESC, delay=0.5)
         _watch_invariant(s, 0.5, "after Esc from the pane", found, editor_state, RELOAD)
     text = "\n".join(rows)
     assert "AGENTEDIT" in text, "the written t.c was not reloaded into its window:\n" + text
-    assert "[agent] wrote t.c - Ctrl-U to undo (buffer only)" in after_write, after_write
+    assert WROTE_LINE in history, history
     # The pane is only 8 rows here and the run has several more turns after
     # the denial, so by the end the denied-command line has scrolled out of
     # the visible rows; the denial on screen at the moment it happens is

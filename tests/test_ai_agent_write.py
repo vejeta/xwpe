@@ -181,7 +181,7 @@ def test_agent_write_into_a_pipe_does_not_hang_the_editor(tmp_path):
         assert _wait_trace(s, trace, "agent write failed"), \
             "the write never gave up (the editor waits on the pipe?):\n" + _trace_text(trace)
         assert s.alive(), "the editor died on a write into a pipe"
-        pane = "\n".join(pane_text_with_history(s, ["regular file"]))
+        pane = "\n".join(pane_text_with_history(s, ["not a regular file"]))
         s.key("a", delay=0.5)
     assert stat.S_ISFIFO(os.stat(fifo).st_mode), "the pipe was replaced"
     assert "not a regular file" in pane.replace("\n", " "), \
@@ -654,7 +654,8 @@ def test_under_ask_a_replacement_that_is_a_program_gets_no_box_and_is_refused(tm
         _ask(s, "change the return value in t.c")
         assert _wait_trace(s, trace, "agent write failed t.c"), \
             "no refusal:\n" + _trace_text(trace) + "\n".join(s.display())
-        pane = " ".join(pane_text_with_history(s, ["Cannot write"]))
+        pane = " ".join(pane_text_with_history(
+            s, ["Cannot write", "Nothing was written"]))
     assert _count(trace, "agent write confirm") == 0 and "agent write replaced" not in _trace_text(trace), \
         "a box asked about a file the owner refuses:\n" + _trace_text(trace)
     assert "Cannot write" in pane and "Nothing was written" in pane, pane
@@ -680,7 +681,8 @@ def test_under_ask_a_file_that_changes_after_the_check_is_refused_not_asked(tmp_
         _ask(s, "change the return value in t.c")
         assert _wait_trace(s, trace, "agent write failed t.c"), \
             "no refusal:\n" + _trace_text(trace) + "\n".join(s.display())
-        pane = " ".join(pane_text_with_history(s, ["changed while"]))
+        pane = " ".join(pane_text_with_history(
+            s, ["the file changed while it was checked"]))
     assert _count(trace, "agent write confirm") == 0 and REPLACED_BOX not in pane, \
         "a box was shown:\n" + _trace_text(trace)
     assert "the file changed while it was checked" in pane, pane
@@ -774,7 +776,8 @@ def test_a_revert_that_finds_another_file_under_the_window_says_so(tmp_path):
         assert _wait_trace(s, trace, "changeset"), _trace_text(trace)
         _replace_on_disk(tmp_path, "t.c", REPLACEMENT)
         s.key("r", delay=1.5)
-        pane = " ".join(pane_text_with_history(s, ["Cannot put back"]))
+        pane = " ".join(pane_text_with_history(
+            s, ["Cannot put back", "Nothing was changed."]))
         s._drain(0.5)
     assert t.read_text() == REPLACEMENT, "the revert wrote into the file that took the name"
     assert "Cannot put back" in pane and "Nothing was changed." in pane, \
@@ -806,7 +809,8 @@ def test_a_folder_swapped_for_a_link_after_the_look_is_refused(tmp_path):
         _ask(s, "write d/f")
         assert _wait_trace(s, trace, "agent write failed d/f"), \
             "the write was not refused:\n" + _trace_text(trace) + "\n".join(s.display())
-        pane = " ".join(pane_text_with_history(s, ["on its way"]))
+        pane = " ".join(pane_text_with_history(
+            s, ["a link was put on its way while it was checked"]))
     assert "a link was put on its way while it was checked" in pane, pane
     assert (outside / "f").read_text() == SECRET, "the write reached the outside file"
     assert "agent write confirm" not in _trace_text(trace), "a question was asked"

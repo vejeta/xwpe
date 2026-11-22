@@ -20,7 +20,7 @@ import time
 import pytest
 
 from wpe_driver import (WpeSession, ALT, WPE_BIN, WAIT_SCALE, wait_screen,
-                        pane_text_with_history)
+                        active_window_title, pane_text_with_history)
 from test_ai_agent_gaps import (_fault_server, _seed_openai_xwperc, _openai_env,
                                 SERVER_MESSAGE)
 
@@ -46,7 +46,6 @@ RIGHT = "\033[C"
 ALT_T = "\033t"
 ALT_V = "\033v"
 ALT_M = "\033m"
-ACTIVE_BUTTONS = "□ ✕"
 MODIFIED_MARK = "*"
 TRACE_POLL_S = 12
 TURN_POLL_S = 20
@@ -262,8 +261,8 @@ def test_complete_at_cursor_accept_then_one_undo(tmp_path):
 
 
 def _active_title(s):
-    """The title row of the active window: the one carrying its buttons."""
-    return next((r for r in s.display() if ACTIVE_BUTTONS in r), "")
+    """The title of the active window, read by column (wpe_driver owns it)."""
+    return active_window_title(s.display()).text
 
 
 # @scenario SC-ai-journey-05
@@ -291,13 +290,13 @@ def test_multifile_accept_lists_rows_and_alt_t_walks_them(tmp_path):
         assert "u.c:3: [Multi-file edit] changed" in shown, "no Messages row for u.c:\n" + shown
 
         s.key(ALT_T, delay=0.8)
-        assert " t.c " in _active_title(s) and _status(s)[1] == 2, \
+        assert _active_title(s) == "t.c" and _status(s)[1] == 2, \
             "Alt-T did not land on t.c line 2:\n" + _screen(s)
         s.key(ALT_T, delay=0.8)
-        assert " u.c " in _active_title(s) and _status(s)[1] == 3, \
+        assert _active_title(s) == "u.c" and _status(s)[1] == 3, \
             "Alt-T again did not land on u.c line 3:\n" + _screen(s)
         s.key(ALT_V, delay=0.8)
-        assert " t.c " in _active_title(s) and _status(s)[1] == 2, \
+        assert _active_title(s) == "t.c" and _status(s)[1] == 2, \
             "Alt-V did not step back to t.c line 2:\n" + _screen(s)
         assert s.alive(), "wpe died"
 
@@ -722,9 +721,9 @@ def test_alt_t_walks_the_rows_in_order_when_a_later_file_has_a_lower_line(tmp_pa
         walk = []
         for _ in range(4):
             s.key(ALT_T, delay=0.8)
-            walk.append((_active_title(s).strip(" q"), _status(s)[1]))
+            walk.append((_active_title(s), _status(s)[1]))
         s.key(ALT_V, delay=0.8)
-        back = (_active_title(s).strip(" q"), _status(s)[1])
+        back = (_active_title(s), _status(s)[1])
     assert [w[1] for w in walk] == [5, 2, 9, 5], "Alt-T did not step the rows in order: %r" % walk
     assert [n in w[0] for w, n in zip(walk, ("t.c", "u.c", "v.c", "t.c"))] == [True] * 4, \
         "Alt-T landed in the wrong files: %r" % walk

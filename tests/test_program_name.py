@@ -23,7 +23,11 @@ import time
 
 import pytest
 from host_tools import needs
-from wpe_driver import ALT, WAIT_SCALE, WpeSession
+import deep_folder
+from wpe_driver import (ALT, COMPILER_LINE_TAIL, WAIT_SCALE, WpeSession,
+                        cols_for)
+
+SESSION_COLS = 140      # the width these rows have always had; wider for a long path
 
 F9 = "\033[20~"             # Make: compile and link
 CTRL_F9 = "\033[20;5~"      # Run
@@ -100,8 +104,11 @@ class Build:
                       "PATH": "%s:%s" % (self.bin, os.environ["PATH"])})
         if env:
             extra.update(env)
-        return WpeSession(str(workdir or self.ws), seed, filename=filename, wait=2.0,
-                          cols=140, rows=40, env_extra=extra)
+        folder = str(workdir or self.ws)
+        width = cols_for(os.path.join(folder, filename), tail=COMPILER_LINE_TAIL,
+                         at_least=SESSION_COLS)
+        return WpeSession(folder, seed, filename=filename, wait=2.0,
+                          cols=width, rows=40, env_extra=extra)
 
     def stand_in_archiver(self):
         """A stand-in ar and ranlib: they log, and ar keeps the library as a
@@ -538,6 +545,7 @@ def test_fpc_program_is_loaded_from_the_build_folder_with_an_exedir(tmp_path):
     """Exedir out.d, a.pas, Ctrl-G r: fpc writes `a` where it ran, so gdb is
     told to load <folder>/a.  Green before the owner and after it."""
     build = Build(tmp_path)
+    deep_folder.tool_takes("fpc", deep_folder.FPC_PATH_LIMIT, build.ws / "a.pas")
     (build.ws / "out.d").mkdir()
     build.own_config("[Programming]\nExedir : out.d\n")
     gdb = build.bin / "gdb"

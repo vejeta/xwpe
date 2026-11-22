@@ -30,7 +30,18 @@ import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN
+from wpe_driver import WpeSession, ALT, WPE_BIN, box_text, incoherence
+
+# The picker draws each folder in a row as wide as its box (e_ai_pick keeps
+# the box to the width of its hint line, 51 columns, so a longer path is cut
+# at the picker's edge).  The box-only row is judged on what the picker shows
+# of the folder: its first PICKER_LABEL_COLS characters, which is the whole
+# path when it is that short.  The screen holds the path elsewhere too (the
+# pane's own line), so the picker's own text is read, not the whole screen.
+# What the user needs, the folder's distinguishing tail, is the second row.
+PICKER_TITLE = "Read folders (Enter withdraws)"
+PICKER_LABEL_COLS = 48
+PICKER_TAIL_COLS = 24
 
 SEED = "int main(void){return 0;}\n"
 SECRET = "SECRET-IN-OUT-7141"
@@ -234,7 +245,12 @@ def test_yes_once_does_not_open_the_next_file(tmp_path):
 # --- a folder opened for the session --------------------------------------------
 
 # @scenario SC-ai-agent-80
-def test_yes_for_this_folder_opens_it_and_the_menu_withdraws_it(tmp_path):
+def _withdraw_run(tmp_path):
+    """The run of the two rows below: the agent reads two files of a folder
+    outside the workspace, the user opens the folder with "this folder", then
+    withdraws it through Alt-G > Read folders.  Returns the tree, the first
+    file, what the screens showed (state), the boxes, the final screen, the
+    trace and what the model read."""
     tree = Tree(tmp_path)
     a, b = str(tree.out / "a.txt"), str(tree.out / "b.txt")
     state = {}
@@ -244,6 +260,7 @@ def test_yes_for_this_folder_opens_it_and_the_menu_withdraws_it(tmp_path):
         state["menu"] = _screen(s)
         s.key("r", delay=0.8)                       # Read folders
         state["picker"] = _screen(s)
+        state["picker_box"] = box_text(s.display(), PICKER_TITLE)
         s.key("\r", delay=0.8)                      # Enter withdraws the folder
         s.key(ALT.AI, delay=0.6)
         state["menu_after"] = _screen(s)
@@ -251,13 +268,28 @@ def test_yes_for_this_folder_opens_it_and_the_menu_withdraws_it(tmp_path):
 
     server, boxes, screen, trace, results = _agent_run(
         tree, ["TOOL read_file %s" % a, "TOOL read_file %s" % b], "ask", ["f"], then=withdraw)
+    return tree, a, state, boxes, screen, trace, results
+
+
+# @scenario SC-ai-agent-80
+@incoherence("show a path that does not fit (FINDINGS-open.md): the Read "
+             "folders picker cuts the folder's distinguishing tail")
+def test_the_read_folders_picker_shows_the_tail_of_the_folder(tmp_path):
+    tree, _, state, _, _, _, _ = _withdraw_run(tmp_path)
+    assert str(tree.out)[-PICKER_TAIL_COLS:] in state["picker_box"], \
+        "the picker does not show which folder this is:\n" + state["picker"]
+
+
+# @scenario SC-ai-agent-80
+def test_yes_for_this_folder_opens_it_and_the_menu_withdraws_it(tmp_path):
+    tree, a, state, boxes, screen, trace, results = _withdraw_run(tmp_path)
     assert len(boxes) == 1, "the folder was asked about twice:\n%s" % boxes
     assert SECRET in results[-1] and SECRET in results[-2], results
     assert "agent read outside workspace read_file %s -> folder" % a in trace, trace
     assert "reads: 1 folder" in screen or "Read folders: 1" in state["menu"], \
         "the folder is not shown in the assistant's status:\n" + state["menu"]
     assert "Read folders" in state["menu"], state["menu"]
-    assert str(tree.out) in state["picker"], \
+    assert str(tree.out)[:PICKER_LABEL_COLS] in state["picker_box"], \
         "the picker does not list the folder:\n" + state["picker"]
     assert "Read folders" not in state["menu_after"], \
         "the folder is still open after it was withdrawn:\n" + state["menu_after"]

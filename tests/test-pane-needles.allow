@@ -1,0 +1,19 @@
+# file function reason
+# The sites of pane_text_with_history / pane_rows_with_history that the scan of
+# tests/check-test-paths.sh (rule P1) cannot compare with the phrases a row
+# asserts: a call whose needles are computed (a parameter, a list built at run
+# time, a format of the test's folder) and an asserted phrase that is computed
+# (a path, a variable).  Each line says why it is sound; a line that matches
+# no site is stale and fails.
+tests/test_ai_agent_tool_contracts.py _run_openai the needles are the caller's pane_needles, each row passes the phrases it asserts
+tests/test_ai_chat_web.py _chat the needles are the caller's list, each row passes the phrases it asserts
+tests/test_ai_pane_reflow.py test_reply_written_at_full_width_is_whole_after_messages_opens the needles are LONG_WORDS, the words the row counts in the rows it reads
+tests/test_ai_pane_reflow.py test_resize_rewraps_the_reply_and_the_row_count_follows_the_width the needles are RESIZE_WORDS, the words the row counts in the rows it reads
+tests/test_ai_plan_checklist.py _run_plan the needles are the caller's list, each row passes the phrases it asserts
+tests/test_ai_workspace_links.py _agent_write the one needle is OUTSIDE_WORD, the word the rows assert by that name
+tests/test_ai_changeset_bounds.py test_a_workspace_beyond_the_watch_bound_is_said_in_the_pane the needles are the two phrases the row asserts, built once from the test's folder and used for both
+tests/test_ai_changeset.py test_ai_changeset_revert_reports_a_file_it_could_not_restore the asserted path follows the needle "could not restore" on the rows below it, which are in the rows read whenever the needle is
+tests/test_ai_changeset.py test_ai_changeset_revert_reports_a_git_restore_the_workspace_refused the asserted path follows the needle "could not restore" on the rows below it, which are in the rows read whenever the needle is
+tests/test_ai_changeset.py test_ai_changeset_revert_reports_a_created_file_it_could_not_remove the asserted path follows the needle "could not remove" on the rows below it, which are in the rows read whenever the needle is
+tests/test_ai_session.py test_ai_session_save_failure_is_said_in_the_pane the asserted path is the state folder named in the sentence the needles start, read from the rows below the needle
+tests/test_ai_contain_credentials.py test_an_engine_in_a_dropped_workspace_folder_is_named_in_the_pane the asserted path is the folder named in the sentence the needle starts, on the rows below it

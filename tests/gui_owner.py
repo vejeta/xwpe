@@ -184,6 +184,10 @@ DISPLAY_LINE_MAX = 64
 PIDFD_UNAVAILABLE = (errno.ENOSYS, errno.EPERM, errno.EACCES, errno.EINVAL)
 POLL_WATCH_INTERVAL_S = 0.01
 TOOL_HOME_PREFIX = "xwpe-tool-"
+# The kinds of process start_service starts in the short tool folder: the
+# third-party servers, whose limits (a working directory, a socket path) are
+# theirs and not the editor's.
+THIRD_PARTY_SERVER_KINDS = ("server", "compositor", "wm")
 # How often an editor that is being ended has its terminal read, so what it
 # writes on its way out never fills the terminal and blocks it.
 TERMINAL_DRAIN_POLL_S = 0.02
@@ -1471,7 +1475,16 @@ class Owner:
 
         It gets the same whitelist as an editor without the editor's own
         variables, and a private HOME, so no user configuration (a
-        weston.ini, a window manager's rc file) changes what rows see."""
+        weston.ini, a window manager's rc file) changes what rows see.
+
+        A display server, a window manager and a compositor are third-party
+        programs with limits of their own (matchbox reads its working
+        directory into a short buffer), so whatever ``home`` the caller
+        gives, they start in the owner's short tool folder
+        (THIRD_PARTY_SERVER_KINDS); their log stays in ``log_dir``.  Every
+        site that starts one, now or later, gets it from here."""
+        if kind in THIRD_PARTY_SERVER_KINDS:
+            home = self.tool_home()
         _check_extra_displays(self, extra_env)
         if runtime_dir is not None and runtime_dir not in self._runtime_dirs:
             raise OwnerRefused("runtime folder %s was not made by this owner"
