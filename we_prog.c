@@ -39,6 +39,7 @@ int e_make_library(char *library, char *ofile, FENSTER *f,
                    e_build_cont done, void *data);
 int e_p_exec(FENSTER *f, PIC *pic, e_build_cont done, void *data);
 struct dirfile **e_make_prj_opt(FENSTER *f);
+static struct dirfile **e_make_prj_opt_read(FENSTER *f, WpeReadOutcome *why);
 
 int wfildes[2], efildes[2];
 char *wfile = NULL, *efile = NULL;
@@ -5382,19 +5383,39 @@ static char *e_chk_next_directive(char *str, FILE *fp)
  return p;
 }
 
+/**
+ * e_chk_refused_header - What a header the read owner refused counts as.
+ * @o: the owner's outcome; @sw: the count of changed headers so far.
+ * Return: @sw for a header that does not exist, @sw + 1 for any other
+ * refusal (a terminal, a pipe or a device under the name, a file the user
+ * cannot read).
+ *
+ * The check decides whether a build is up to date.  A header that is missing
+ * is the compiler's to report; one that exists and could not be read is
+ * counted as changed, so the build runs and the compiler, not this scan,
+ * meets the name and says what is wrong.  Reading it as unchanged would let
+ * the editor build without a source whose header it could not look at.
+ */
+static int e_chk_refused_header(const WpeReadOutcome *o, int sw)
+{
+ if (wpe_read_outcome_missing(o))
+  return(sw);
+ return(sw + 1);
+}
+
 int e_check_header(char *file, M_TIME otime, ECNT *cn, int sw)
 {
- struct stat cbuf[1];
  FILE *fp;
  char *p, str[120], str2[120];
  int if_depth = 0, skip_depth = 0;
+ WpeReadAsk ask = WPE_READ_ASK_SCAN("header");
+ WpeReadOutcome o;
 
  e_chk_save_if_open(file, cn);
 
- if ((fp = fopen(file, "r")) == NULL)
-  return(sw);
- stat(file, cbuf);
- if (otime < cbuf->st_mtime)
+ if ((fp = wpe_read_stream_open(file, &ask, &o)) == NULL)
+  return(e_chk_refused_header(&o, sw));
+ if (otime < o.mtime)
   sw++;
  while (fgets(str, 120, fp))
  {
@@ -6517,47 +6538,46 @@ int e_find_dirty_project_window(ECNT *cn)
 /**
  * e_prj_say_not_opened - Tell the user why the project file could not be opened.
  * @f: the window the box belongs to; @path: the project's path (may be empty);
- * @err: the system's errno for the failed open or access.
+ * @why: the read owner's outcome, or an errno made into one with
+ * wpe_read_outcome_errno.
  *
- * Says "not found" only when the system says the file does not exist; any
- * other refusal (a folder closed to reading, a path too long for the system)
- * says the system's own reason, so the user does not look for a typo that is
- * not there.  The path is named whatever its length (a folder's Project key
- * can make it far longer than a line buffer) and the box wraps it, so the
- * reason after a long path is not cut off.
+ * Says "not found" only when the name does not exist; any other refusal (a
+ * folder closed to reading, a pipe or a device under the name, a file over
+ * the bound, a path too long for the system) says its own reason, so the user
+ * does not look for a typo that is not there.  The path is named whatever its
+ * length (a folder's Project key can make it far longer than a line buffer)
+ * and the box wraps it, so the reason after a long path is not cut off.
  */
-static void e_prj_say_not_opened(FENSTER *f, const char *path, int err)
+void e_prj_say_not_opened(FENSTER *f, const char *path, const WpeReadOutcome *why)
 {
- size_t size = strlen(path) + strlen(strerror(err)) + 64;
- char *text = MALLOC(size);
-
- if (!text)
+ if (path[0] == '\0' && wpe_read_outcome_missing(why))
  {
-  e_error(e_msg[ERR_LOWMEM], 0, f->fb);
+  e_message(0, "Project file not found", f);
   return;
  }
- if (err == ENOENT && path[0] == '\0')
-  snprintf(text, size, "Project file not found");
- else if (err == ENOENT)
-  snprintf(text, size, "Project file not found: %s", path);
- else
-  snprintf(text, size, "Cannot open project %s: %s.", path, strerror(err));
- e_message(0, text, f);
- FREE(text);
+ e_say_read_refused(f, "project file", path, why);
 }
 
 /**
- * e_project_open_error - Why the open project is not available, as an errno.
- * Return: 0 when a project path is set and the file exists; ENOENT when no
- * path is set; otherwise the errno the system gave for the path.
+ * e_project_open_error - Is the open project still a file the editor may read?
+ * @why: receives the refusal.
+ * Return: 0 when a project path is set and its name leads to a regular file
+ * within the project bound; -1 otherwise, @why saying "not found" when no
+ * path is set.
+ *
+ * Judged by a look at the name, so a pipe or a device under the project's
+ * name is told from its kind and nothing waits.
  */
-static int e_project_open_error(void)
+static int e_project_open_error(WpeReadOutcome *why)
 {
+ WpeReadAsk ask = WPE_READ_ASK_PROJECT("project file");
+
  if (e_prog.project[0] == '\0')
-  return(ENOENT);
- if (access(e_prog.project, F_OK) != 0)
-  return(errno);
- return(0);
+ {
+  wpe_read_outcome_errno(why, ENOENT);
+  return(-1);
+ }
+ return(wpe_read_name_ok(e_prog.project, &ask, why));
 }
 
 /**
@@ -6573,28 +6593,38 @@ static int e_project_open_error(void)
  */
 int e_project_is_open(void)
 {
- return(e_project_open_error() == 0);
+ WpeReadOutcome why;
+
+ return(e_project_open_error(&why) == 0);
 }
 
 /* Open the project named in e_prog.project: validate, parse the .prj, and
    show the file list.  The previous project's window is already gone: the
    callers (e_select_project, e_create_project) release it first, while
-   e_prog.project still names that project. */
+   e_prog.project still names that project.  A read the owner refuses, here or
+   in the parse, says why once and leaves no project open. */
 int e_open_project_file(ECNT *cn)
 {
- FENSTER *f;
- int err;
+ FENSTER *f = cn->f[cn->mxedt];
+ WpeReadOutcome why;
+ int refused;
 
- err = e_project_open_error();
- if (err != 0)
+ refused = e_project_open_error(&why) != 0;
+ if (refused)
+  e_prj_say_not_opened(f, e_prog.project, &why);
+ else
  {
-  e_prj_say_not_opened(cn->f[cn->mxedt], e_prog.project, err);
+  e__project = 1;
+  (void)e_make_prj_opt_read(f, &why);
+  refused = why.why != WPE_READ_DONE;
+  if (refused)
+   e__project = 0;
+ }
+ if (refused)
+ {
   e_prog.project[0] = '\0';
   return(WPE_ESC);
  }
- e__project = 1;
- f = cn->f[cn->mxedt];
- e_make_prj_opt(f);
  e_rel_brkwtch(f);
  e_prj_ob_file(f);
  return(0);
@@ -6795,7 +6825,7 @@ static int e_prj_make_absolute(FENSTER *f, const char *path, char *out, size_t n
  }
  else if (getcwd(cwd, sizeof cwd) == NULL)
  {
-  e_prj_say_not_opened(f, path, errno);
+  e_say_path_refused(f, "project file", path, errno);
   return(-1);
  }
  else if (wpe_path_join(out, n, cwd, path) == 0)
@@ -6826,12 +6856,15 @@ int e_select_project(ECNT *cn, char *path)
 {
  FENSTER *f = cn->f[cn->mxedt];
  char whole[WPE_PATH_SIZE];
+ WpeReadAsk ask = WPE_READ_ASK_PROJECT("project file");
+ WpeReadOutcome why;
 
- if (access(path, F_OK) != 0)
+ if (wpe_read_name_ok(path, &ask, &why) != 0)
  {
   /* Nothing changes: the open project, its window and the Project option
-     stay as they were. */
-  e_prj_say_not_opened(f, path, errno);
+     stay as they were, whether the name is missing, a pipe or a device, or
+     a file over the project bound. */
+  e_prj_say_not_opened(f, path, &why);
   return(WPE_ESC);
  }
  if (e_prj_make_absolute(f, path, whole, sizeof whole) != 0)
@@ -8059,22 +8092,29 @@ char *e_expand_var(char *string, FENSTER *f)
 
 /**
  * e_read_var - Read the open project's variables into p_v.
- * @f: a window of the desktop.
- * Return: 0 when read; E_PRJ_READ_NOT_OPENED when the file could not be
- * opened (errno is then the system's reason, nothing was said); or
- * E_PRJ_READ_LOWMEM when memory ran out (the box was already shown).
+ * @f: a window of the desktop; @why: receives the refusal, or NULL.
+ * Return: 0 when read; E_PRJ_READ_NOT_OPENED when the read owner refused the
+ * file (a pipe or a device under the name, a file over the project bound, the
+ * system's refusal: @why says which, nothing was said); or E_PRJ_READ_LOWMEM
+ * when memory ran out (the box was already shown).
  *
- * A caller that tells the user the file was not opened reads errno on the
- * very next statement, so the box carries the system's reason.
+ * A caller that tells the user the file was not opened hands @why to
+ * e_prj_say_not_opened, so the box carries the real reason.
  */
-int e_read_var(FENSTER *f)
+int e_read_var(FENSTER *f, WpeReadOutcome *why)
 {
  struct proj_var **tmp;
  FILE *fp;
  char str[256], *sp1, *sp2, *stmp;
  int i;
+ WpeReadAsk ask = WPE_READ_ASK_PROJECT("project file");
+ WpeReadOutcome refused;
 
- if ((fp = fopen(e_prog.project, "r")) == NULL) return(E_PRJ_READ_NOT_OPENED);
+ if ((fp = wpe_read_stream_open(e_prog.project, &ask, &refused)) == NULL)
+ {
+  if (why) *why = refused;
+  return(E_PRJ_READ_NOT_OPENED);
+ }
  if (p_v)
  {
   for (i = 0; i < p_v_n; i++)
@@ -8336,11 +8376,13 @@ static int e_install_run(FENSTER *f)
  FILE *fp;
  int i, j, ret;
  e_install_list lines = {NULL, 0};
+ WpeReadAsk ask = WPE_READ_ASK_PROJECT("project file");
+ WpeReadOutcome why;
 
  if (!e__project) return(0);
- if ((fp = fopen(e_prog.project, "r")) == NULL)
+ if ((fp = wpe_read_stream_open(e_prog.project, &ask, &why)) == NULL)
  {
-  e_prj_say_not_opened(f, e_prog.project, errno);
+  e_prj_say_not_opened(f, e_prog.project, &why);
   return(WPE_ESC);
  }
  while ((tp = fgets(text, 256, fp)))
@@ -9060,6 +9102,7 @@ static int e_prj_setup(FENSTER *f)
  int i, j, k, argc, ret, exlib = 0, lib_remove = 0;
  char ofile[WPE_PATH_SIZE];
  struct stat lbuf;
+ WpeReadOutcome why;
 
  last_time = (M_TIME) 0;
  e_p_l_comp = 0;
@@ -9077,9 +9120,9 @@ static int e_prj_setup(FENSTER *f)
  /* A list the file refuses was said by the writer; the build does not run
     on the old list after that. */
  if (i > 0 && e_p_update_prj_fl(f) != 0) return(WPE_ESC);
- ret = e_read_var(f);
+ ret = e_read_var(f, &why);
  if (ret == E_PRJ_READ_NOT_OPENED)
-  e_prj_say_not_opened(f, e_prog.project, errno);
+  e_prj_say_not_opened(f, e_prog.project, &why);
  if (ret != 0)
   return(-1);
  if (e_prj_approve(f))
@@ -9739,13 +9782,25 @@ static struct dirfile **e_make_prj_opt_finish(struct dirfile *save_df)
  return(e_p_df);
 }
 
-struct dirfile **e_make_prj_opt(FENSTER *f)
+/**
+ * e_make_prj_opt_read - Read the open project's lists and settings, and say who refused.
+ * @f: a window of the desktop; @why: receives the read owner's outcome,
+ * WPE_READ_DONE when the project was read.
+ * Return: the three project lists, as e_make_prj_opt.
+ *
+ * A project the owner refuses (a pipe, a device, a file over the bound, the
+ * system's refusal) is said once in a box, and @why tells the caller that no
+ * project was read, so it does not open a window on defaults.
+ */
+static struct dirfile **e_make_prj_opt_read(FENSTER *f, WpeReadOutcome *why)
 {
  int i, j, ret;
  char **tmp, *sp, *tp, text[256];
  FILE *fp;
  struct dirfile *save_df = NULL;
+ WpeReadAsk ask = WPE_READ_ASK_PROJECT("project file");
 
+ memset(why, 0, sizeof *why);
  i = e_find_dirty_project_window(f->ed);
  if (i > 0) {  save_df = e_p_df[0];  e_p_df[0] = NULL;  }
  if (e_p_df) freedfN(e_p_df, 3);
@@ -9753,9 +9808,9 @@ struct dirfile **e_make_prj_opt(FENSTER *f)
  if (!e_p_df) return(e_p_df);
  for (i = 0; i < 3; i++) e_p_df[i] = NULL;
  e_s_prog.comp_sw = 0;
- ret = e_read_var(f);
+ ret = e_read_var(f, why);
  if (ret == E_PRJ_READ_NOT_OPENED)
-  e_prj_say_not_opened(f, e_prog.project, errno);
+  e_prj_say_not_opened(f, e_prog.project, why);
  if (ret)
  {
   if (e_s_prog.compiler) FREE(e_s_prog.compiler);
@@ -9851,9 +9906,9 @@ struct dirfile **e_make_prj_opt(FENSTER *f)
  }
  if (!e_s_prog.intstr)
   e_s_prog.intstr = WpeStrdup(cc_intstr);
- if ((fp = fopen(e_prog.project, "r")) == NULL)
+ if ((fp = wpe_read_stream_open(e_prog.project, &ask, why)) == NULL)
  {
-  e_prj_say_not_opened(f, e_prog.project, errno);
+  e_prj_say_not_opened(f, e_prog.project, why);
   return(e_make_prj_opt_finish(save_df));
  }
  while ((tp = fgets(text, 256, fp)))
@@ -9911,6 +9966,21 @@ struct dirfile **e_make_prj_opt(FENSTER *f)
  }
  fclose(fp);
  return(e_make_prj_opt_finish(save_df));
+}
+
+/**
+ * e_make_prj_opt - Read the open project's lists and settings.
+ * @f: a window of the desktop.
+ * Return: the three project lists, or NULL when memory ran out.
+ *
+ * A refused project is said in a box by the reader; the lists are then the
+ * defaults, as for a project with nothing in it.
+ */
+struct dirfile **e_make_prj_opt(FENSTER *f)
+{
+ WpeReadOutcome why;
+
+ return(e_make_prj_opt_read(f, &why));
 }
 
 int freedfN(struct dirfile **df, int n)

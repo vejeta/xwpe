@@ -95,6 +95,7 @@ we_SOURCES = \
   we_path.c \
   we_places.c \
   we_seen.c \
+  we_read.c \
   we_number.c \
   we_progname.c \
   we_listsel.c \
@@ -282,6 +283,7 @@ noinst_HEADERS = \
   we_places.h \
   we_ai_session.h \
   we_seen.h \
+  we_read.h \
   we_number.h \
   we_progname.h \
   we_listsel.h \
@@ -464,7 +466,7 @@ test_path_CFLAGS = $(TEST_CFLAGS)
 # The sentence a refused path gets (we_path.h), checked against a system whose
 # PATH_MAX is 1024 and NAME_MAX 255: the number is the system's, not the
 # editor's room.  Its own program, because test_path.c reads the real PATH_MAX.
-test_path_say_SOURCES = tests/test_path_say.c
+test_path_say_SOURCES = tests/test_path_say.c we_path.c
 test_path_say_CFLAGS = $(TEST_CFLAGS)
 
 # The owner of the name of what a build makes from a source (we_progname.c):
@@ -583,6 +585,17 @@ test_interpose_LDFLAGS = $(TEST_EXPORT_DYNAMIC)
 check_PROGRAMS += test_seen
 test_seen_SOURCES = tests/test_seen.c tests/seen_rows.h tests/testdir.h we_seen.c
 test_seen_CFLAGS = $(TEST_CFLAGS)
+
+# The owner of "a file is read by a name the editor did not choose"
+# (we_read.c): every kind of object under a name, with the link policy, the
+# four faces and the three bounds, against a reference function that says
+# what each cell must give, plus the identity, the memory stream and the
+# folder face.  The open is hooked, so a row can say a device was never
+# opened.
+check_PROGRAMS += test_read_owner
+test_read_owner_SOURCES = tests/test_read_owner.c tests/testdir.h we_read.c we_seen.c we_path.c
+test_read_owner_CFLAGS = $(TEST_CFLAGS)
+test_read_owner_LDFLAGS = $(TEST_EXPORT_DYNAMIC)
 
 # The same owner behind a line protocol, for the edit model's walks
 # (tests/edit_model/cdriver.py).  Built by `make check`, not run by it.
@@ -1024,6 +1037,11 @@ TESTS += test_interpose tests/check-interpose.sh
 # by an inode number alone.
 TESTS += test_seen
 
+# The owner of reading a file by a name the editor did not choose
+# (we_read.c, tested by test_read_owner): no open waits, the object is the
+# kind asked for, the bytes are bounded, and a refusal says which.
+TESTS += test_read_owner
+
 # One owner of what the editor decides about a program it starts: the
 # start plan (we_startplan.c).  Every line of the start sites that builds a
 # command line, a working folder or a shell line, or names a folder's
@@ -1063,6 +1081,14 @@ TESTS += tests/check-line-ends.sh
 # of a save, or spells the old message.  Offenders still to go are in
 # tests/write-owner.allow, each with the pass that moves it.
 TESTS += tests/check-write-owner.sh
+
+# One owner of reading a file or a folder by a name the editor did not
+# choose (we_read.c): the only code that opens such a name.
+# tests/check-read-owner.sh fails when another file opens a name for reading
+# with fopen, open, opendir or a library reader, builds a read request by
+# hand, or spells the words of a refusal in the owner.  Offenders still to go
+# are in tests/read-owner.allow, each with the pass that moves it.
+TESTS += tests/check-read-owner.sh
 
 # One owner of what the bracket matcher reads (we_brkmatch.c): four readers
 # are the only code that indexes a row, its bytes or the number of rows.
@@ -1450,6 +1476,10 @@ EXTRA_DIST = \
   tests/check-build-config.sh \
   we_ai_agent.c \
   tests/check-write-owner.sh \
+  tests/check-read-owner.sh \
+  tests/read-owner.allow \
+  tests/test_read_owner.c \
+  tests/test_read_waits.py \
   tests/check-brk-bounds.sh \
   tests/write-owner.allow \
   tests/test_write_owner.c \

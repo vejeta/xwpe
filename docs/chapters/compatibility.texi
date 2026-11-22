@@ -808,6 +808,26 @@ project file or an option file that the system itself cannot open (longer
 than 4096 bytes) is refused with a box that names it, or skipped and said.
 The reason: a cut path names another file.
 
+@item A name that is not a regular file
+@cindex pipe, named as a file
+@cindex terminal, named as a file
+@cindex options file, refused
+@cindex project file, refused
+The original opened whatever held the name of an option file, a project
+file or an @code{#include} and could wait for ever on a pipe nobody wrote
+to, read your keys from @file{/dev/tty}, or fill the memory from
+@file{/dev/zero}.  xwpe opens a regular file only, without waiting, and says
+what it found: @samp{Cannot open project file p.prj: it is a pipe.},
+@samp{it is a device}, @samp{it is a link} (for the @file{xwperc} of the
+folder you started in), or @samp{it is larger than 1 MiB} (16 MiB for a
+project).  An option file or project file over its limit is refused whole,
+because a file read cut short would be saved short.  After a refused option
+file your own options are in force, and Options > Save writes your own
+file.  A header that an @code{#include} names and that cannot be read counts
+as changed, so F9 builds and the compiler reports it.  The reason: a name
+that a repository or a source file chose must never make the editor wait or
+take your keys.
+
 @item A long link in a help page or an Info file
 @cindex help link, long
 @cindex Info node name, long
@@ -1191,9 +1211,11 @@ still reads the file you name as messages.
 
 @item A link at @file{./xwperc}
 The original rewrote the @file{xwperc} of the folder it was started in through
-a link, into whatever file the link named.  xwpe refuses, says so in a box, and
-leaves the options unsaved there; @samp{Save Options} lets you type another
-file name.  Your own @file{~/.config/xwpe/xwperc} may be a link.  The reason:
+a link, into whatever file the link named, and read it the same way.  xwpe
+neither reads nor writes through it: a box at start says @samp{it is a link},
+your own options are in force, and @samp{Save Options} writes your own file
+(or the file you type in its dialog).  Your own
+@file{~/.config/xwpe/xwperc} may be a link.  The reason:
 a folder you cloned can commit that link.
 
 @item A @code{Project} outside the start folder

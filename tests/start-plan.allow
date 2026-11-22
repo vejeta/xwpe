@@ -76,7 +76,7 @@ we_prog.c|e_add_arg|1|keep|the definition
 we_prog.c|e_make_arg|1|keep|the definition
 we_prog.c|e_ini_prog|9|keep|the built-in defaults
 we_prog.c|e_arguments|8|keep|the Arguments dialog edits the value
-we_prog.c|e_make_prj_opt|11|keep|Project-Options edits the values
+we_prog.c|e_make_prj_opt_read|11|keep|Project-Options edits the values
 we_prog.c|e_prj_options_take|4|keep|Project-Options edits the values
 we_prog.c|e_project_options|1|keep|Project-Options edits the values
 we_prog.c|e_run_c_options|4|keep|the Compiler dialog edits the values

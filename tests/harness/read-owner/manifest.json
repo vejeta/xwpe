@@ -1,0 +1,15 @@
+{
+ "capability": "read-owner",
+ "scenarios": [
+  {"id": "SC-read-owner-01", "requirement": "A start folder's xwperc that is a link to a device is refused and the user's own options are in force", "layer": "ncurses", "test": "tests/test_read_waits.py::test_a_start_folder_xwperc_that_is_a_link_to_a_device_is_refused", "status": "new"},
+  {"id": "SC-read-owner-02", "requirement": "A start folder's xwperc that is a pipe does not stop the start", "layer": "ncurses", "test": "tests/test_read_waits.py::test_a_start_folder_xwperc_that_is_a_pipe_does_not_stop_the_start", "status": "new"},
+  {"id": "SC-read-owner-03", "requirement": "-sf naming a device is refused and the options stay the user's own", "layer": "ncurses", "test": "tests/test_read_waits.py::test_sf_naming_a_device_is_refused_and_the_options_stay_the_users_own", "status": "new"},
+  {"id": "SC-read-owner-04", "requirement": "An options file over 1 MiB is refused whole", "layer": "ncurses", "test": "tests/test_read_waits.py::test_an_options_file_over_the_bound_is_refused_whole", "status": "new"},
+  {"id": "SC-read-owner-05", "requirement": "A source that includes the terminal does not take the user's keys", "layer": "ncurses", "test": "tests/test_read_waits.py::test_a_source_that_includes_the_terminal_does_not_take_the_users_keys", "status": "new", "needs": ["gcc"]},
+  {"id": "SC-read-owner-06", "requirement": "A project that is a pipe is refused and no project opens", "layer": "ncurses", "test": "tests/test_read_waits.py::test_a_project_that_is_a_pipe_is_refused_and_no_project_opens", "status": "new"},
+  {"id": "SC-read-owner-06b", "requirement": "A refused project leaves the open project as it was", "layer": "ncurses", "test": "tests/test_read_waits.py::test_a_refused_project_leaves_the_open_project_as_it_was", "status": "new"},
+  {"id": "SC-read-owner-07", "requirement": "A project file over 16 MiB is refused whole", "layer": "ncurses", "test": "tests/test_read_waits.py::test_a_project_file_over_the_bound_is_refused_whole", "status": "new"},
+  {"id": "SC-read-owner-10", "requirement": "Every kind of object under a name, with the link policy, the four faces and the three bounds, gives what the reference says", "layer": "c-unit", "test": "test_read_owner", "status": "new"},
+  {"id": "SC-read-owner-11", "requirement": "A read refusal is one sentence in the words owner's shape", "layer": "c-unit", "test": "test_path_say", "status": "new"}
+ ]
+}

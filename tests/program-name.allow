@@ -26,13 +26,10 @@ we_fl_unix.c|e_execute_plan|1|keep|the file the user typed to run; the operand i
 # --- rule 5, we_prog.c: the decisions about time and the calls that look at a file ---
 we_prog.c|e_build_current|3|keep|the build's one up-to-date rule: the output's time against its source, against the newest object, and the record of what this editor built
 we_prog.c|e_build_stat|1|keep|the only stat of a build output, taken in the build's folder
-we_prog.c|e_check_header|2|keep|a source and its headers: their times against the output's, as the compile always asked
 we_prog.c|e_make_library|1|keep|ar -cr when the library is absent; a library this editor did not build is removed first
 we_prog.c|e_make_multifile_hint|2|keep|looks for the folder's Makefile: names no output
 we_prog.c|e_create_project|1|keep|is the project file there: a source, not an output
 we_prog.c|e_p_file_exists|1|keep|is a file there: asked of a source by name
-we_prog.c|e_project_open_error|1|keep|is the project file there: a source, not an output
-we_prog.c|e_select_project|1|keep|is the chosen project file there: a source, not an output
 we_prog.c|e_prj_same_file|2|keep|are two paths one project file: sources, not outputs
 we_prog.c|e_java_tool_path|1|keep|is the tool the java sits beside there: no output named
 we_prog.c|e_vm_path_named|1|keep|is the java or scala runner beside a tool there: no output named
@@ -47,7 +44,7 @@ we_prog.c|e_p_make_link|1|keep|build step: a compiler of the "other" style links
 we_prog.c|e_comp_start|2|keep|build step: the compile flags and the object of a compiler of the "other" style
 we_prog.c|e_p_run_begin|1|keep|message format: GNU diagnostics or the entry's own
 we_prog.c|e_run_c_options|2|keep|Options dialog: the style radio of a language
-we_prog.c|e_make_prj_opt|2|keep|Options dialog: the style radio of a project
+we_prog.c|e_make_prj_opt_read|2|keep|Options dialog: the style radio of a project
 we_prog.c|e_prj_options_take|1|keep|Options dialog: the style of a project's compiler
 we_prog.c|e_project_options|1|keep|Options dialog: the style of a project's compiler
 we_prog.c|e_prj_setup|2|keep|the project's style: CMPSWTCH other sets it

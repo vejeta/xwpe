@@ -28,6 +28,7 @@
 #include <limits.h>
 #include "we_paint.h"
 #include "we_path.h"        /* how long a path or a name the editor holds may be */
+#include "we_read.h"        /* the one owner of reading a file by a name the editor did not choose */
 #include "we_places.h"      /* where the user's home, state and configuration folders are */
 #include "we_number.h"      /* what a number the user or a file gives the editor may be */
 #include "we_fieldtake.h"   /* the copy of a dialog field's text out into a buffer */
@@ -881,8 +882,14 @@ void e_pr_ed_beispiel(int xa, int ya, FENSTER *f, int sw, int md);
 int e_opt_save(FENSTER *f);
 int e_save_opt(FENSTER *f);
 int e_opt_read(ECNT *cn);
+/* The user's own option file (malloc'd), "" when its folder is too long. */
+char *e_xdg_config_file_or_none(void);
 /* Show the box that names the first option-file line the editor could not read. */
 void e_opt_report_unreadable(ECNT *cn);
+/* Show the box that says an option file was refused (a pipe, a device, a link
+   in the folder the editor started in, a file over 1 MiB) and that the
+   options come from the user's own file instead.  Nothing when none was. */
+void e_opt_report_refused(ECNT *cn);
 /* 0 when an option file had unreadable lines, so a save the user did not ask for must not rewrite it. */
 int e_opt_autosave_allowed(void);
 /* The one door for saves the user did not ask for (quit, start, first run, assistant switches). */
@@ -1007,6 +1014,12 @@ void e_pr_x_col_kasten(int xa, int ya, int x, int y, FENSTER *f, int sw);
 /*   we_wind.c   */
 int e_error(char *text, int sw, FARBE *f);
 int e_message(int sw, char *str, FENSTER *f);
+/* The one box for a path the system or the read owner refused:
+   "Cannot open <what> <path>: <reason>.", or "<What> not found: <path>." for
+   a name that does not exist, at the path's own length.  The errno form is a
+   line over the outcome form. */
+void e_say_read_refused(FENSTER *f, const char *what, const char *path, const WpeReadOutcome *o);
+void e_say_path_refused(FENSTER *f, const char *what, const char *path, int err);
 /* A command a start-folder xwperc or a project file names, about to run. */
 typedef struct {
  const char *folder;   /* the folder that holds that file                   */

@@ -196,7 +196,7 @@ COPY|we_prog.c|e_install_text|2|sized|the destination is allocated at its source
 COPY|we_prog.c|e_install_run|2|sized|the destination is allocated at its sources' length just before
 COPY|we_prog.c|e_prj_setup|8|sized|the destination is allocated at its sources' length just before
 COPY|we_prog.c|e_prj_finish|1|sized|the destination is allocated at its sources' length just before
-COPY|we_prog.c|e_make_prj_opt|3|sized|the destination is allocated at its sources' length just before
+COPY|we_prog.c|e_make_prj_opt_read|3|sized|the destination is allocated at its sources' length just before
 COPY|we_prog.c|e_p_mess_win|2|sized|the destination is allocated at its sources' length just before
 COPY|we_progn.c|e_c_add_df|1|sized|the destination is allocated at its sources' length just before
 COPY|we_progn.c|e_sh_def|1|sized|the destination is allocated at its sources' length just before

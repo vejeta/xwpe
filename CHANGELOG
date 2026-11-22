@@ -20,6 +20,17 @@ Cannot reproduce:
      past the limit stays alive).
 
 Bugs fixed in 1.6.x:
+* The editor no longer waits, fills the memory or reads your keys when a name
+  it reads is not a regular file.  An xwperc in the folder you started in that
+  is a link to /dev/zero or a pipe, a project file that is a pipe, and a
+  source that includes "/dev/tty" used to hang the start, the open or F9 (the
+  include read the terminal the editor runs on).  Now each is refused with
+  what it is ("Cannot open project file p.prj: it is a pipe.", "it is a
+  device", "it is a link"), the project that was open stays open, a header
+  that cannot be read counts as changed so F9 builds and the compiler reports
+  it, and after a refused option file your own options are in force and
+  Options > Save writes your own file.  An options file over 1 MiB or a project
+  file over 16 MiB is refused whole rather than read cut short and saved short.
 * A folder in AIContainPathAllow can be any length and can hold spaces: the
   list is split at the colons only, as the manual says, and a folder or a
   variable name is never cut short to a shorter one.  Before, a folder of

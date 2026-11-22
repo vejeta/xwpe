@@ -1,0 +1,101 @@
+# The reads outside we_read.c that still open a name themselves.  Checked by
+# tests/check-read-owner.sh.
+#
+#   file|r22x:function|count|pass|reason
+#
+# x is the clause letter (a fopen, b open, c a folder listing, d fdopen, e a
+# library that opens a file, f getline, g a request with no bound, k an
+# object's imported opener, z an open token that is not a call); for clause k
+# the file is the object and the function the symbol.  "count" may only fall,
+# and a line that matches nothing is stale.  "pass" is the pass that moves the
+# site onto the owner and deletes the line (P2 the assistant's reads, P3a the
+# plain callers, P3b the load of a pipe, P3c Find in files); a pass ending in
+# /cfg is a row only some configurations meet, so a build without it is not
+# stale.  "keep" is a permanent row, and the reason says why the name is the
+# editor's own and not one a user, a folder, a model or a server chose.
+
+# the assistant's reads (P2)
+we_ai_path.c|r22a:path_gitdir_of_workspace|1|P2|the folder's .git, read by name
+we_ai_path.c|r22a:path_config_hooks_path|1|P2|the folder's git config, read by name
+we_ai_path.c|r22a:path_git_common_folder|1|P2|the folder's commondir, read by name
+we_ai_path.c|r22c:path_scan_dir|1|P2|a folder the model named, listed by name
+we_ai_path.o|r22k:opendir|1|P2|path_scan_dir
+we_ai_ui.c|r22a:ai_project_memory_open|1|P2|the folder's instructions file
+we_ai_ui.c|r22a:ai_slurp_file|1|P2|a file the model named
+we_ai_ui.c|r22a:ai_read_file_bounded|1|P2|a file the model named
+we_ai_ws.c|r22a:ws_read_file_len|1|P2|a before image of a file the model may change
+we_ai_ws.c|r22a:ws_git_list|1|P2|a list git wrote
+we_ai_ws.c|r22b:ws_mode_of_file|1|P2|a private copy of the owner's open
+we_ai_ws.c|r22c:wpe_ai_scope_files|1|P2|the scope's folders, listed by name
+we_ai_ws.c|r22c:ws_walk_files|1|P2|the scope's folders, walked by name
+we_ai_ws.o|r22k:opendir|1|P2|wpe_ai_scope_files and ws_walk_files
+we_bsp.c|r22c:bsp_connection_file|1|P2|the folder's .bsp, listed by name
+we_bsp.c|r22e:bsp_read_connection_argv|1|P2|json_object_from_file opens the folder's connection file
+we_bsp.o|r22k:json_object_from_file|1|P2|bsp_read_connection_argv
+we_bsp.o|r22k:opendir|1|P2|bsp_connection_file
+
+# the plain callers (P3a)
+we_ai.c|r22a:ai_read_first_line|1|P3a|the user's key file
+we_debug.c|r22a:e_lsp_read_file_text|1|P3a|a file a language server named
+we_fileop.c|r22b:fileop_open_source|1|P3a|moves onto wpe_read_open with the walk's folder descriptor
+we_fl_fkt.c|r22a:e_i_fopen|4|P3a|help and info files by name
+we_fl_fkt.c|r22e:e_i_fopen|6|P3a|gzopen of help and info files by name
+we_fl_fkt.o|r22k:gzopen|1|P3a/cfg|e_i_fopen, in a build with zlib
+we_fl_unix.c|r22a:WpeHandleFileManager|1|P3a|the probe of Block > Read and the other modes
+we_fl_unix.c|r22c:fm_folder_has_entries|1|P3a|the File Manager lists a folder
+we_fl_unix.o|r22k:opendir|1|P3a|fm_folder_has_entries
+we_main.c|r22a:e_read_whole|1|P3a|the migration of an old configuration
+we_opt.c|r22a:e_read_help_str|1|P3a|help.key from the installed folder
+we_prog.c|r22a:e_algol68_sniff|1|P3a|the first lines of the window's file
+we_startcmd.c|r22b:startcmd_open_store|1|P3a|the editor's own store, until it is on the owner
+we_startcmd.c|r22d:startcmd_stream_of|1|P3a|fdopen of the store's descriptor, for reading and for writing
+we_startcmd.c|r22f:built_read_stream|1|P3a|the editor's own store, until it is on the owner
+we_startcmd.c|r22f:startcmd_parse_stream|1|P3a|the editor's own store, until it is on the owner
+we_startplan.c|r22b:startplan_is_build_output|1|P3a|a private copy of the owner's open
+we_startplan.c|r22b:startplan_read_startup|1|P3a|a private copy of the owner's open
+we_startplan.c|r22b:wpe_startplan_elf_section|1|P3a|the user's program, read by section
+we_unix.c|r22c:e_find_dir|1|P3a|the File Manager lists a folder
+we_unix.c|r22c:e_find_files|1|P3a|the File Manager lists a folder
+we_unix.o|r22k:opendir|1|P3a|e_find_dir and e_find_files
+WeSyntax.c|r22a:WpeSyntaxOpenPersonal|1|P3a|the user's syntax_def
+WeSyntax.c|r22a:WpeSyntaxOpenSystem|1|P3a|the installed syntax_def
+WeXterm.c|r22e:WpeXDefaults|1|P3a|XrmGetFileDatabase of ~/.Xdefaults
+
+# the load of a pipe (P3b) and Find in files (P3c)
+we_edit.c|r22a:e_edit|1|P3b|File > Open and the command line
+we_fl_unix.c|r22a:WpeGrepFile|1|P3c|every entry of a folder
+
+# not a name a user, a folder, a model or a server chose
+we_debug.c|r22a:e_d_compile_show_errors|1|keep|a file the editor wrote in its own 0700 temporary folder
+we_debug.c|r22a:e_d_debugger_pid_read|1|keep|a file the editor wrote in its own 0700 temporary folder
+we_debug.c|r22b:e_d_script_connect|4|keep|the debugger's own pipes and terminal, in the editor's 0700 temporary folder
+we_debug.c|r22c:e_find_supported_jdk|1|keep|lists fixed system folders for a JDK and opens no file
+we_debug.o|r22k:glob|1|keep|e_find_supported_jdk
+we_fl_fkt.c|r22c:e_tmp_remove|1|keep|removes the editor's own temporary folder without following links
+we_fl_fkt.o|r22k:nftw|1|keep|e_tmp_remove
+we_opt.c|r22f:e_opt_read_line|1|keep|its stream is the owner's memory stream of at most 1 MiB
+we_prog.c|r22g:e_check_header|1|keep|reads 120 bytes at a time with constant memory and a regular file ends; a bound in memory would remove the only brake the include recursion has
+we_progn.c|r22g:e_aopen_stream|1|keep|reads a line at a time with constant memory and a regular file ends
+we_write.c|r22b:write_backup_source|1|keep|the write owner's own judged open of the file it backs up
+we_write.c|r22b:write_mode_open_descriptor|1|keep|the write owner's own judged open for the mode
+
+# an identifier called open, not the function (a pair that nests, a record's
+# offset): the scan cannot tell a variable from a function pointer
+we_ai_ui.c|r22z:ai_find_closing_fence|3|keep|a variable called open
+we_ai_ui.c|r22z:ai_reply_split|6|keep|a variable called open
+we_ai_ui.c|r22z:wpe_ai_pane_save|1|keep|a variable called open
+we_debsess.c|r22z:e_ds_jdb_frame_parse|8|keep|a variable called open
+we_debsess.c|r22z:e_ds_pdb_frame_parse|8|keep|a variable called open
+we_debsess.c|r22z:e_ds_pdb_stop_at_number|4|keep|a variable called open
+we_debsess.c|r22z:e_ds_pdb_stop_parse|6|keep|a variable called open
+we_debug.c|r22z:e_d_gj_answer_in_string|4|keep|a variable called open
+we_debug.c|r22z:e_d_gj_string_open_after|2|keep|a variable called open
+we_debug.c|r22z:e_d_jdb_prompt_len|6|keep|a variable called open
+we_gdbmi.c|r22z:e_gdbmi_line_is_async|4|keep|a variable called open
+we_gdbmi.c|r22z:e_gdbmi_line_is_result_of|4|keep|a variable called open
+we_gdbmi.c|r22z:e_gdbmi_line_token|3|keep|a variable called open
+we_layout.h|r22z:wpe_box_place|1|keep|a member called open
+we_prog.c|r22z:e_prj_show_open|5|keep|a variable called open
+we_shtok.c|r22z:-|1|keep|a member called open
+we_write.c|r22z:write_aim_make|2|keep|a variable called open
+we_write.c|r22z:write_keeps_file_ending|1|keep|a variable called open

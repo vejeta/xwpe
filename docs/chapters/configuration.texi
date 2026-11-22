@@ -98,9 +98,12 @@ folder's file, so your hook or engine command never lands in a project
 you may share.  They leave the folder's file even when your own file
 cannot be written; the status line then says they were not saved.
 @samp{Save Options} into any other file you name writes every key there.
-When the start folder's @file{xwperc} is a link, @samp{Save Options} does
-not write through it: a box says so and the options are not saved there
-(type another file name in the @samp{Save Options} dialog).  Your own
+When the start folder's @file{xwperc} is a link, a pipe, a device, or larger
+than 1 MiB, xwpe does not read it: a box at start says so, for example
+@samp{Cannot open options file ./xwperc: it is a link.}, the options in force
+are your own, and @samp{Save Options} writes your own file and never the
+refused one.  A file named with @option{-sf} that is a pipe or a device is
+refused the same way.  Your own
 @file{~/.config/xwpe/xwperc} may be a link, for a dotfiles manager, and is
 followed.  A @code{Project} the start folder's @file{xwperc} names is opened
 only when it lies inside that folder (links followed); a project outside it

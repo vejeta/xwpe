@@ -731,6 +731,24 @@ static void e_aopen_say_too_long(void)
  e_error(msg, 0, WpeEditor->fb);
 }
 
+/**
+ * e_aopen_stream - Open one candidate source of the definition search.
+ * @name: the file as written or joined to an include folder.
+ * Return: a stream over the file, or NULL for a name that cannot be read.
+ *
+ * What the user gets: Show Definition passes over a name that is not a file
+ * it may read (missing, a pipe, a device, the terminal) and tries the next
+ * one, never waiting on it and never reading the user's keys from it.  The
+ * search says nothing about a candidate, so a refusal is only "not this one".
+ */
+static FILE *e_aopen_stream(const char *name)
+{
+ WpeReadAsk ask = WPE_READ_ASK_SCAN("source");
+ WpeReadOutcome o;
+
+ return(wpe_read_stream_open(name, &ask, &o));
+}
+
 /*  Browser   */
 /**
  * e_aopen - Open a source for Show Definition: a window, then the name, then
@@ -765,8 +783,8 @@ E_AFILE *e_aopen(char *name, char *path, int mode, char **found)
    ep->p.x = ep->p.y = 0;
   }
  }
- if ((mode & 2) && !ep->b && !access(name, R_OK))
-  ep->fp = fopen(name, "r");
+ if ((mode & 2) && !ep->b)
+  ep->fp = e_aopen_stream(name);
  if ((mode & 4) && !ep->b && !ep->fp)
  {
   for (i = 0; path[i] && !ep->fp; i++)
@@ -780,8 +798,7 @@ E_AFILE *e_aopen(char *name, char *path, int mode, char **found)
     too_long = 1;
     continue;
    }
-   if (!access(str, R_OK))
-    ep->fp = fopen(str, "r");
+   ep->fp = e_aopen_stream(str);
    if (ep->fp && found)
     *found = wpe_path_dup(str);
   }
@@ -1175,7 +1192,7 @@ int e_show_nm_f(char *name, FENSTER *f, int oldn, char **oldname)
  if (!access(e_prog.project, 0))
  {
   WpeMouseChangeShape(WpeWorkingShape);
-  if (e_read_var(f)) ret = -1;
+  if (e_read_var(f, NULL)) ret = -1;
   else
   {
    df = e_p_get_var("FILES");

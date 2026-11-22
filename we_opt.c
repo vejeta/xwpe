@@ -3029,6 +3029,73 @@ static char *e_opt_read_line(FILE *fp, int *has_nul)
 }
 
 /**
+ * e_opt_open_file - Open an option file for reading.
+ * @path: the file; @why: receives the refusal.
+ * Return: a stream over its lines, or NULL with @why set.
+ *
+ * What the user gets: an option file is read only when it is a regular file
+ * of at most 1 MiB, so one that is a pipe or a device never makes the editor
+ * wait or fill the memory, and a file cut short is never written back
+ * short.  The xwperc of the folder the editor was started in is also refused
+ * when it is a link: a repository can commit a link there to anything.  The
+ * file the user keeps as their own, or names with -sf, may be one.
+ * The stream holds the whole file, so no line can be longer than the bound.
+ */
+static FILE *e_opt_open_file(const char *path, WpeReadOutcome *why)
+{
+ WpeReadAsk ask = WPE_READ_ASK_CONFIG("options file");
+
+ if (e_opt_write_flags(path) == WPE_WRITE_NOFOLLOW)
+  ask = WPE_READ_ASK_FOLDER_CONFIG("options file");
+ return wpe_read_stream_open(path, &ask, why);
+}
+
+/* The first option file the owner refused in this run, with the reason, held
+   until the screen is up to say it (e_opt_report_refused).  A missing file is
+   no refusal: the user's own file and the installed copy are looked for in
+   that order as before. */
+static struct {
+ char *path;
+ WpeReadOutcome why;
+} e_opt_refused;
+
+/**
+ * e_opt_refused_reset - Forget the refusal of an earlier read.
+ */
+static void e_opt_refused_reset(void)
+{
+ if (e_opt_refused.path) FREE(e_opt_refused.path);
+ e_opt_refused.path = NULL;
+}
+
+/**
+ * e_opt_note_refused - Keep the first option file the owner refused.
+ * @path: the file; @why: the refusal.
+ *
+ * A name that does not exist is not kept: nothing is wrong with it.
+ */
+static void e_opt_note_refused(const char *path, const WpeReadOutcome *why)
+{
+ if (e_opt_refused.path || wpe_read_outcome_missing(why)) return;
+ e_opt_refused.path = WpeStrdup(path);
+ e_opt_refused.why = *why;
+}
+
+/**
+ * e_opt_report_refused - Say that an option file was refused, and why.
+ * @cn: the editor.
+ *
+ * Said once at start, when the screen is up: "Cannot open options file
+ * /w/xwperc: it is a link."  The options of that run are the user's own.
+ */
+void e_opt_report_refused(ECNT *cn)
+{
+ if (!e_opt_refused.path) return;
+ e_say_read_refused(cn->f[0], "options file", e_opt_refused.path, &e_opt_refused.why);
+ e_opt_refused_reset();
+}
+
+/**
  * e_opt_lines_add - Append a line, taking it.
  * @l: the lines; @text: a malloc'd line.
  * Return: 0, or -1 out of memory (the line is then freed).
@@ -3068,15 +3135,18 @@ static void e_opt_lines_free(e_opt_lines *l)
 /**
  * e_opt_lines_load - Read a whole option file.
  * @path: the file; @l: receives its lines (empty when it does not exist).
- * Return: 0, or -1 when it exists but could not be read whole.
+ * Return: 0, or -1 when it exists but could not be read whole (a pipe or a
+ * device under the name, a link in the start folder, a file over 1 MiB): the
+ * lines are then not rewritten from a part of the file.
  */
 static int e_opt_lines_load(const char *path, e_opt_lines *l)
 {
- FILE *fp = fopen(path, "r");
+ WpeReadOutcome why;
+ FILE *fp = e_opt_open_file(path, &why);
  char *text;
  l->line = NULL;
  l->n = 0;
- if (!fp) return 0;
+ if (!fp) return wpe_read_outcome_missing(&why) ? 0 : -1;
  while ((text = e_opt_read_line(fp, NULL)) != NULL)
   if (e_opt_lines_add(l, text) < 0) { fclose(fp); return -1; }
  fclose(fp);
@@ -3587,25 +3657,90 @@ static int e_opt_read_stream(ECNT *cn, FILE *fp, int mode, const char *path)
 }
 
 /**
+ * e_opt_use_users_own_file - Leave a refused option file for the user's own.
+ * @cn: the editor, whose option file was refused.
+ * Return: 1 when the options now come from the user's own file, 0 when the
+ * refused file already was it.
+ *
+ * What the user gets: after a refusal the options are their own, not the
+ * installed defaults, and Save Options writes their own file and never the
+ * one that was refused (a link in a cloned folder, a pipe, a device).  The
+ * keys a start-folder xwperc may not set are the user's own again, as with
+ * no xwperc in the folder.
+ */
+static int e_opt_use_users_own_file(ECNT *cn)
+{
+ char *own = e_xdg_config_file_or_none();
+
+ if (own == NULL || (cn->optfile && strcmp(own, cn->optfile) == 0))
+ {
+  if (own) FREE(own);
+  return 0;
+ }
+ if (cn->optfile) FREE(cn->optfile);
+ cn->optfile = own;
+ e_opt_use_user_file(NULL);
+ e_opt_forget_folder();
+ e_opt_start_is_users_own = 0;
+ return 1;
+}
+
+/**
+ * e_opt_open_installed - Open the option file installed with the editor.
+ * @path/@sz: receive its name.
+ * Return: the stream, or NULL.
+ *
+ * What the user gets: a first start, with no file of their own, runs on the
+ * defaults the editor shipped with, and a shipped file that is somehow a pipe
+ * or a device is refused like any other instead of making the start wait.
+ */
+static FILE *e_opt_open_installed(char *path, size_t sz)
+{
+ WpeReadOutcome why;
+ char *file = e_mkfilename((char *)e_lib_dir(), OPTION_FILE);
+ WpeReadAsk ask = WPE_READ_ASK_CONFIG("options file");
+ FILE *fp = wpe_read_stream_open(file, &ask, &why);
+
+ snprintf(path, sz, "%s", file);
+ FREE(file);
+ return fp;
+}
+
+/**
  * e_opt_open_options - Open the file the options come from.
  * @cn: the editor; @path/@sz: receive the name of the file opened.
- * Return: the editor's option file, else the copy installed with the
- * editor, else NULL.
+ * Return: the editor's option file; if it does not exist, the copy installed
+ * with the editor; if it was refused (not ENOENT), the user's own file, and
+ * failing that the installed copy; else NULL.
+ *
+ * A refusal is kept for e_opt_report_refused and the options then come from
+ * the user's own file, never from the refused one.
  */
 static FILE *e_opt_open_options(ECNT *cn, char *path, size_t sz)
 {
- FILE *fp = fopen(cn->optfile, "r");
- char *file;
+ WpeReadOutcome why;
+ FILE *fp = e_opt_open_file(cn->optfile, &why);
+
  if (fp != NULL)
  {
   snprintf(path, sz, "%s", cn->optfile);
   return fp;
  }
- file = e_mkfilename((char *)e_lib_dir(), OPTION_FILE);
- fp = fopen(file, "r");
- snprintf(path, sz, "%s", file);
- FREE(file);
- return fp;
+ if (!wpe_read_outcome_missing(&why))
+ {
+  e_opt_note_refused(cn->optfile, &why);
+  if (e_opt_use_users_own_file(cn))
+  {
+   fp = e_opt_open_file(cn->optfile, &why);
+   if (fp != NULL)
+   {
+    snprintf(path, sz, "%s", cn->optfile);
+    return fp;
+   }
+   e_opt_note_refused(cn->optfile, &why);
+  }
+ }
+ return e_opt_open_installed(path, sz);
 }
 
 /**
@@ -3614,12 +3749,18 @@ static FILE *e_opt_open_options(ECNT *cn, char *path, size_t sz)
  *
  * After a start-folder xwperc: the hook, the engine, the dial, the web
  * switch and the endpoints the user set for himself keep applying in that
- * folder.  A missing file leaves them at their defaults.
+ * folder.  A missing file leaves them at their defaults; one the owner
+ * refuses is said at start.
  */
 static void e_opt_read_user_only(ECNT *cn)
 {
- FILE *fp = fopen(e_opt_user_file, "r");
- if (fp == NULL) return;
+ WpeReadOutcome why;
+ FILE *fp = e_opt_open_file(e_opt_user_file, &why);
+ if (fp == NULL)
+ {
+  e_opt_note_refused(e_opt_user_file, &why);
+  return;
+ }
  e_opt_read_stream(cn, fp, E_OPT_READ_USER_ONLY, e_opt_user_file);
  fclose(fp);
 }
@@ -3647,6 +3788,7 @@ int e_opt_read(ECNT *cn)
  if (e_opt_refused_project) FREE(e_opt_refused_project);
  e_opt_refused_project = NULL;
  e_opt_bad_reset();
+ e_opt_refused_reset();
  if (e_opt_file_missing(cn)) return 0;   /* said at start by e_opt_say_file_missing */
  e_opt_start_is_users_own = 0;
  if (e_opt_user_file && e_opt_same_file(e_opt_user_file, cn->optfile))
@@ -3655,13 +3797,15 @@ int e_opt_read(ECNT *cn)
   e_opt_use_user_file(NULL);
  }
  e_opt_forget_folder();
+ /* The file is opened before anything is decided from it: a refusal makes
+    the options the user's own, which changes what follows. */
+ fp = e_opt_open_options(cn, path, sizeof path);
  if (e_opt_user_file)
  {
   mode = E_OPT_READ_SHARED;
   e_opt_note_folder(cn);
   e_opt_own_from_defaults(cn);
  }
- fp = e_opt_open_options(cn, path, sizeof path);
  if (fp != NULL)
  {
   e_opt_read_stream(cn, fp, mode, path);

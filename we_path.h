@@ -7,14 +7,17 @@
    cannot open.  The debugger's command length (we_debreq.h) multiplies this
    number.
 
-   Plain C: <limits.h>, <stddef.h> and <stdio.h> only, no curses and no
-   editor header, so a unit test links it alone. */
+   Plain C: libc headers only (<limits.h>, <stddef.h>, <stdio.h>,
+   <sys/types.h>, <sys/stat.h>), no curses and no editor header, so a unit
+   test links it alone. */
 #ifndef WE_PATH_H
 #define WE_PATH_H
 
 #include <limits.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <sys/types.h>
+#include <sys/stat.h>
 
 #define WPE_PATH_MAX   4096          /* PATH_MAX of Linux; the BSDs' and macOS's 1024 are within it */
 #define WPE_NAME_MAX   511           /* the largest NAME_MAX of the systems built on: NetBSD's; Linux, FreeBSD, OpenBSD and macOS have 255 */
@@ -116,5 +119,44 @@ int wpe_path_search(const char *name, char *out, size_t n);
    out of memory. */
 char *wpe_path_dup(const char *src);
 char *wpe_path_join_dup(const char *dir, const char *name);
+
+/* The words of a refused read.  The sentence has one shape, "Cannot open
+   <what> <path>: <reason>.", and "<What> not found: <path>." only for a name
+   that does not exist.  @what is an ASCII noun in lowercase ("file",
+   "project file", "options file"); the first letter is raised for the
+   not-found shape.  This is the one place that spells such a sentence:
+   we_read.c maps its outcomes onto these and holds no word of its own. */
+
+/** What a refusal found by the editor itself is called (not an errno). */
+typedef enum {
+ WPE_PATH_REASON_LINK = 1,    /* a link holds the name and links are not followed */
+ WPE_PATH_REASON_OTHER,       /* another file took the name */
+ WPE_PATH_REASON_CHANGED,     /* not proven to be the file that was looked at */
+ WPE_PATH_REASON_NO_WRITER,   /* a pipe nobody is writing to */
+ WPE_PATH_REASON_NOT_FOLDER   /* a folder was asked for and something else is there */
+} WpePathWhy;
+
+/* "not found" for ENOENT, the system's own words for any other errno.  The
+   one place in the editor that may say "not found" about a path. */
+const char *wpe_path_refused_reason(int err);
+/* The sentence for a refusal of the system.  Returns the length it needs, as
+   snprintf, so a caller with a path longer than any array can allocate. */
+int wpe_path_say_refused(char *out, size_t n, const char *what, const char *path, int err);
+/* The same sentence with a reason the editor found itself.  Never the
+   not-found shape. */
+int wpe_path_say_refused_because(char *out, size_t n, const char *what,
+                                 const char *path, const char *reason);
+/* What a thing that is not a regular file is called: "it is a pipe", "it is a
+   socket", "it is a device", "it is a folder"; a descriptor that was opened
+   and is a terminal says "it is a terminal".  A kind found by a look cannot
+   say terminal: only isatty on a descriptor can. */
+const char *wpe_path_kind_reason(mode_t kind, int tty);
+/* "it is larger than 1 MiB", from a bound in bytes.  Returns the length it needs. */
+int wpe_path_too_large_reason(char *out, size_t n, size_t bound);
+/* The fixed words of the refusals the editor finds itself. */
+const char *wpe_path_reason_of(WpePathWhy why);
+
+/* Room for any such sentence over a path of the editor's own size. */
+#define WPE_PATH_REFUSED_MAX (WPE_PATH_SIZE + WPE_PATH_MSG_MAX)
 
 #endif

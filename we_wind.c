@@ -726,6 +726,47 @@ static void e_message_fit_rows(char **s, int *anz)
  *anz = room;
 }
 
+/**
+ * e_say_read_refused - Tell the user a file was not read, and why.
+ * @f: a window of the desktop; @what: the noun ("project file"), ASCII;
+ * @path: the name that was refused; @o: the owner's outcome.
+ *
+ * What the user gets: the path and the reason in one sentence ("Cannot open
+ * project file /w/p.prj: it is a pipe."), at the path's own length so the
+ * reason after a long path is not cut off.  "Not found" is said only for a
+ * name that does not exist.  Running out of memory says so the usual way.
+ */
+void e_say_read_refused(FENSTER *f, const char *what, const char *path, const WpeReadOutcome *o)
+{
+ size_t size = (size_t)wpe_read_say(NULL, 0, what, path, o) + 1;
+ char *text = MALLOC(size);
+
+ if (!text)
+ {
+  e_error(e_msg[ERR_LOWMEM], 0, f->fb);
+  return;
+ }
+ (void)wpe_read_say(text, size, what, path, o);
+ e_message(0, text, f);
+ FREE(text);
+}
+
+/**
+ * e_say_path_refused - Tell the user the system refused a path, and why.
+ * @f: a window of the desktop; @what: the noun, ASCII; @path: the name;
+ * @err: the errno of the refusal.
+ *
+ * The same box as e_say_read_refused, for a caller that holds an errno and no
+ * outcome: a getcwd, an access, a stat.
+ */
+void e_say_path_refused(FENSTER *f, const char *what, const char *path, int err)
+{
+ WpeReadOutcome o;
+
+ wpe_read_outcome_errno(&o, err);
+ e_say_read_refused(f, what, path, &o);
+}
+
 /*   message with selection        */
 int e_message(int sw, char *str, FENSTER *f)
 {

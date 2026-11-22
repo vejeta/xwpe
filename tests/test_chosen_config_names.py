@@ -4,9 +4,11 @@ through a link and never removes or loads a file of the user's.
 A folder you cloned can carry a ./xwperc, a project file, a file called
 Messages and a file called <program>.dbgerr.  None of them is the user's:
 
-  - Options > Save never rewrites the xwperc of the folder you started in
-    through a link a repository committed there; your own configuration file,
-    which a dotfiles manager may link, still saves.
+  - The xwperc of the folder you started in is not read when it is a link a
+    repository committed there: a box at start says so, your own options are
+    in force, and Options > Save writes your own file, never the link or what
+    it leads to.  Your own configuration file, which a dotfiles manager may
+    link, is still read and saved.
   - The project list is never written through a link at the name of a project
     that the start folder's xwperc named.
   - A Project that the start folder's xwperc names outside that folder is not
@@ -85,14 +87,21 @@ def test_options_save_does_not_write_through_a_linked_start_xwperc(short_dir):
     victim = short_dir / "victim"
     victim.write_text(RC_TEXT)
     (work / "xwperc").symlink_to(victim)
-    with WpeSession(str(work), SEED, env_extra=_env(home)) as s:
+    own = home / ".config" / "xwpe" / "xwperc"
+    # wide, so the box's sentence stays on one row
+    with WpeSession(str(work), SEED, env_extra=_env(home), cols=200, rows=40) as s:
         assert s.alive(), "the editor died at start"
+        started = _screen(s)
+        s.key("\r", delay=0.8)          # the start box
         _save_options(s)
-        shown = _screen(s)
     assert victim.read_text() == RC_TEXT, \
         "the options were written through the link:\n" + victim.read_text()
     assert (work / "xwperc").is_symlink(), "the link was replaced"
-    assert LINK_WORDS in shown, "the user was not told why nothing was saved:\n" + shown
+    assert os.readlink(work / "xwperc") == str(victim), "the link was repointed"
+    assert "it is a link" in started and str(work / "xwperc") in started, \
+        "the user was not told the start folder's xwperc was refused:\n" + started
+    assert own.exists() and "[Programming]" in own.read_text(), \
+        "Options > Save did not write the user's own file"
 
 
 # @scenario SC-chosen-config-names-16

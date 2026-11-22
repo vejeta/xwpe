@@ -24,7 +24,10 @@ project that is already open brings its window to the front.
 
 A project file the system cannot create or read is not made up: the box
 names the file and the system's reason (@samp{Permission denied}, for
-example) and, for New Project, says that no project was created.  Saving
+example) and, for New Project, says that no project was created.  A name
+that is a pipe, a socket or a device, or a project file over 16 MiB, is
+refused the same way, with what it is (@samp{it is a pipe}) or its limit
+(@samp{it is larger than 16 MiB}); the project that was open stays open.  Saving
 the project list into a file the system refuses says the same and keeps the
 list in its window; closing the window then leaves it open until the file
 can be written.  A path longer than the system allows is refused by the

@@ -118,6 +118,7 @@ we_ai.o write 1 keep the test backend's temporary file, not a child
 we_ai_http.o write 1 keep a server's socket, not a child: written from the loop's wake-ups, a TLS write retried with the same buffer
 we_wayland.o write 1 P9o the clipboard pipe
 we_startcmd.o fdopen 1 keep the remembered answers' store, a regular file checked on its descriptor, not a child
+we_read.o fdopen 1 keep the read owner's one descriptor stream: a regular file judged on its descriptor before a byte is read, not a child
 we_write.o fdopen 1 keep the write owner's one stream: the file a write goes to, opened without cutting it so its bits can be read first, which a list printed line by line is also given; files the user named, not a child
 
 # the text: every line a window adds or removes goes through its owner

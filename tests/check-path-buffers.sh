@@ -651,7 +651,7 @@ scan_tree() {
         }
         if (fn == "") next
         code = out; gsub(/"([^"\\]|\\.)*"/, "\"\"", code)
-        if (code ~ /(^|[^A-Za-z0-9_.>])(access|stat|lstat|fopen|open|opendir|realpath)[ \t]*[(]/) call = 1
+        if (code ~ /(^|[^A-Za-z0-9_.>])(access|stat|lstat|fopen|open|opendir|realpath|wpe_read_(open|stream_open|text|folder|name_ok))[ \t]*[(]/) call = 1
         if (code ~ /(^|[^A-Za-z0-9_])(errno|strerror)([^A-Za-z0-9_]|$)/) named = 1
         if (out ~ /"[^"]*([Nn]ot found|Can[\\\047]*t open|[Cc]annot open)[^"]*"/) lit = 1
         if (out ~ /"[^"]*(Project file not found|Cannot open project)[^"]*"/) proj = 1
@@ -766,7 +766,7 @@ scan_tree() {
     }
     BEGIN {
       # the libc calls that take a path, and which arguments (0 based) are one
-      split("stat:0 lstat:0 open:0 openat:1 fopen:0 freopen:0 access:0 chdir:0 mkdir:0 rmdir:0 unlink:0 remove:0 rename:0,1 link:0,1 symlink:0,1 readlink:0,1 realpath:0,1 getcwd:0 opendir:0 mkstemp:0 mkostemp:0 mkdtemp:0 truncate:0 chmod:0 execv:0 execve:0 execvp:0 statvfs:0 fstatat:1 wpe_path_copy:0 wpe_path_join:0 wpe_path_cat:0 wpe_path_search_in:2", sk, " ")
+      split("stat:0 lstat:0 open:0 openat:1 fopen:0 freopen:0 access:0 chdir:0 mkdir:0 rmdir:0 unlink:0 remove:0 rename:0,1 link:0,1 symlink:0,1 readlink:0,1 realpath:0,1 getcwd:0 opendir:0 mkstemp:0 mkostemp:0 mkdtemp:0 truncate:0 chmod:0 execv:0 execve:0 execvp:0 statvfs:0 fstatat:1 wpe_path_copy:0 wpe_path_join:0 wpe_path_cat:0 wpe_path_search_in:2 wpe_read_open:0 wpe_read_stream_open:0 wpe_read_text:0 wpe_read_folder:0 wpe_read_name_ok:0", sk, " ")
       for (i in sk) {
         split(sk[i], kv, ":"); gsub(/,/, " ", kv[2])
         sink[kv[1]] = " " kv[2] " "
@@ -1062,6 +1062,9 @@ quiet_canary R10 'void planted(char *m, int n) { wpe_path_say_too_long(m, n, "fi
 canary R11b 'void planted(FENSTER *f, const char *p) { if (access(p, F_OK) != 0) e_error("X not found", 0, f->fb); }' || blind=1
 canary R11b 'void planted(FENSTER *f, const char *p) { if (fopen(p, "r") == NULL) e_error("Can\'"'"'t open X", 0, f->fb); }' || blind=1
 quiet_canary R11b 'void planted(char *b, const char *p) { if (access(p, F_OK) != 0) snprintf(b, 99, "Cannot open %s: %s", p, strerror(errno)); }' || blind=1
+canary R11b 'void planted(FENSTER *f, const char *p, const WpeReadAsk *a, WpeReadOutcome *o) { if (wpe_read_stream_open(p, a, o) == NULL) e_error("X not found", 0, f->fb); }' || blind=1
+canary R11b 'void planted(FENSTER *f, const char *p, const WpeReadAsk *a, WpeReadOutcome *o) { if (wpe_read_open(p, a, o) < 0) e_error("Can\'"'"'t open X", 0, f->fb); }' || blind=1
+quiet_canary R11b 'void planted(FENSTER *f, const char *p, const WpeReadAsk *a, WpeReadOutcome *o) { if (wpe_read_text(p, a, 0, o) == NULL) e_say_read_refused(f, "file", p, o); }' || blind=1
 quiet_canary R11b 'void planted(FENSTER *f) { e_error("X not found", 0, f->fb); }' || blind=1
 quiet_canary R11b 'void planted(FENSTER *f, const char *p) { if (access(p, F_OK) != 0) e_error("X not found", 0, f->fb); }' 'GUESS|we_planted.c|planted|keep|the word is about a symbol' || blind=1
 canary R11b 'int planted;' 'GUESS|we_planted.c|planted|keep|stale' || blind=1
@@ -1106,6 +1109,8 @@ void planted(void) { wrap("x", d); }' 'PATHFN|we_planted.c|wrap|1|receives a pat
 canary R12 'void planted(const char *dir) { char p[1200]; struct stat st; snprintf(p, sizeof p, "%s/x", dir); stat(p, &st); }' || blind=1
 canary R12 'void planted(const char *dir) { char p[WPE_PATH_SIZE / 4]; if (wpe_path_copy(p, sizeof p, dir) < 0) return; }' || blind=1
 canary R12 'void planted(void) { char a[WPE_PATH_SIZE * 2]; (void)realpath(".", a); }' || blind=1
+canary R12 'void planted(const WpeReadAsk *k, WpeReadOutcome *o) { char p[1200]; FILE *fp = wpe_read_stream_open(p, k, o); (void)fp; }' || blind=1
+quiet_canary R12 'void planted(const WpeReadAsk *k, WpeReadOutcome *o) { char p[WPE_PATH_SIZE]; FILE *fp = wpe_read_stream_open(p, k, o); (void)fp; }' || blind=1
 canary R12 'void planted(const char *dir) { char *argv[2]; char p[512]; (void)argv; unlink(p + 1); }' || blind=1
 canary R12 'int planted(a) char *a;
 {

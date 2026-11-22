@@ -190,11 +190,13 @@ int e_p_update_prj_fl(FENSTER *f);
 int e_prj_persist(FENSTER *f);
 int e_prj_save_before_close(FENSTER *f);
 int freedfN(struct dirfile **df, int n);
-int e_read_var(FENSTER *f);
-/* The two ways e_read_var fails: the file did not open (errno says why,
-   nothing was said) and memory ran out (said). */
+int e_read_var(FENSTER *f, WpeReadOutcome *why);
+/* The two ways e_read_var fails: the file was refused by the read owner
+   (@why says why, nothing was said) and memory ran out (said). */
 #define E_PRJ_READ_NOT_OPENED (-1)
 #define E_PRJ_READ_LOWMEM     (-2)
+/* The box for a project the owner refused to read, or the system did. */
+void e_prj_say_not_opened(FENSTER *f, const char *path, const WpeReadOutcome *why);
 
 /*   we_progn.c  */
 

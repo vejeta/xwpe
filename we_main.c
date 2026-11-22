@@ -383,7 +383,7 @@ static int e_profile_is_new(void)
  * set (a hook, an engine command, an endpoint).
  * Return: a malloc'd path, "" included.
  */
-static char *e_xdg_config_file_or_none(void)
+char *e_xdg_config_file_or_none(void)
 {
  char *path = e_xdg_config_file();
 
@@ -481,10 +481,11 @@ int main(int argc, char **argv)
  e_opt_note_launch_dir(cn->dirct);   /* where ./xwperc and the instructions are read */
  if (sd != 0)
  {
-  FILE *f = fopen(OPTION_FILE, "r");
-  if (f)
+  /* Only whether the name exists: the read judges what is under it, so a
+     link, a pipe or a device named xwperc is refused there and said once. */
+  WpeSeen probe;
+  if (wpe_seen_look_name(OPTION_FILE, 0, &probe) == 0)
   {
-   fclose(f);
    cn->optfile = e_mkfilename(cn->dirct, OPTION_FILE);
    e_opt_use_user_file(e_xdg_config_file_or_none());   /* the keys a project may not set */
   }
@@ -522,6 +523,7 @@ int main(int argc, char **argv)
  fk_mouse(g);
 #endif
  /* this error comes from reading the options file */
+ e_opt_report_refused(cn);   /* an option file the owner refused, before any bad line of the one used */
  if (err == ERR_READ_OPF) e_opt_report_unreadable(cn);
  else if (err > 0) e_error(e_msg[err], 0, cn->fb);
  e_opt_say_ignored_keys(cn);
