@@ -244,7 +244,7 @@ def test_a_global_shortcut_runs_with_the_dropdown_open(tmp_path):
     with WpeSession(str(tmp_path), C_SRC, filename="a.c", env_extra=_env(tmp_path)) as s:
         _open_dropdown(s)
         s.key(ALT_U, delay=1.2)
-        ran = wait_screen(s, "Return-Code", tmo=12 * WAIT_SCALE)
+        ran = wait_screen(s, "Return-Code", tmo=12)
         disp = s.display()
         s.save()
         text = s.text()

@@ -29,6 +29,7 @@ import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
+import gui_owner
 from wpe_driver import WpeSession, ALT, WPE_BIN, pane_text_with_history
 
 SEED = "int main(void){return 0;}\n"
@@ -37,7 +38,7 @@ ESC = "\033"
 # rows assert.
 WEB_OFF_LINE = "[agent] web_fetch refused: web access is off (Options > AI turns it on)"
 
-WAIT_SCALE = float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1") or 1)
+WAIT_SCALE = gui_owner.wait_scale()
 TURN_POLL_S = 20 * WAIT_SCALE
 
 HEADER_ASK = "[AI: mock | model: mock-model | policy: ask | UNCONTAINED]"

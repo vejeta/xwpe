@@ -470,9 +470,12 @@ def test_hosted_session_end_at_the_prompt_reviews_then_says_so(tmp_path):
 def test_hosted_unexecutable_command_reports_send_failed(tmp_path):
     if not _host_build():
         pytest.skip("built without --enable-ai-agent-host")
+    # An absolute path that names no program, inside the row's own scratch:
+    # the tool farm accepts a path there and nothing outside it.
+    missing_program = str(tmp_path / "no-such-dir" / "agent-binary")
     env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_AGENT_ENGINE": "claude-code",
            "XWPE_AI_POLICY": "ask", "XWPE_AI_TRACE": str(tmp_path / "ai.trace"),
-           "XWPE_AI_HOST_CMD": "/nonexistent/agent-binary"}
+           "XWPE_AI_HOST_CMD": missing_program}
     with WpeSession(str(tmp_path), SEED, env_extra=env) as s:
         s._drain(0.5)
         s.key(ALT.AI); s.key("g"); s._drain(0.5)

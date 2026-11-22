@@ -17,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 from wpe_driver import (WpeSession, ALT, WAIT_SCALE, WPE_BIN, assistant_build,
-                        pane_text_with_history, wait_screen)
+                        pane_text_with_history, wait_deadline, wait_screen)
 
 # The pane's line that names the check, whole: the sentence goes on to quote
 # the file's path, which wraps over rows and scrolls this start above the view.
@@ -197,7 +197,7 @@ def typed_echo_delay(s, ch="Q", limit=15.0):
 
 def wait_trace(path, needle, tmo):
     """Poll a trace file for needle; return the line holding it, or ''."""
-    end = time.time() + tmo
+    end = wait_deadline(tmo)
     while time.time() < end:
         if path.exists():
             for line in path.read_text().splitlines():
@@ -866,7 +866,8 @@ def test_build_and_fix_with_no_build_command_runs_nothing(tmp_path):
 
 # How long the stand-in takes to list its models: long enough to type during
 # it, and always inside the listing's own deadline, whatever the wait scale.
-MODELS_DELAY_S = min(3 * WAIT_SCALE, LISTING_DEADLINE_S - 1.5)
+MODELS_BASE_S = 3      # the same delay on an idle machine: what wait_screen is given
+MODELS_DELAY_S = min(MODELS_BASE_S * WAIT_SCALE, LISTING_DEADLINE_S - 1.5)
 ESC = "\033"
 DOWN = "\033[B"
 
@@ -1003,7 +1004,7 @@ def test_model_listing_before_an_edit_takes_keys_and_the_edit_then_runs(tmp_path
             ask_for(s, "e", "return 7")
             menu_s = first_menu_after(s, ALT.AI, "Ask (chat)")
             s.key(ESC, delay=0.5)                      # closes the menu, not the task
-            shown = wait_screen(s, "Proposed change", MODELS_DELAY_S + 8)
+            shown = wait_screen(s, "Proposed change", MODELS_BASE_S + 8)
             s.key("a", delay=1.0)
             s.save()
             text = s.text()
@@ -1047,7 +1048,7 @@ def test_a_down_typed_while_the_models_list_moves_the_picker_when_they_come(tmp_
             open_ai_options(s)
             s.key("\033m", delay=0.5)
             os.write(s.master_fd, DOWN.encode())
-            listed = wait_screen(s, "Model (3) at", MODELS_DELAY_S + 5)
+            listed = wait_screen(s, "Model (3) at", MODELS_BASE_S + 5)
             s.key("\r", delay=1.0)
             dialog = screen(s)
     finally:
@@ -1208,7 +1209,8 @@ def test_an_edit_reply_is_not_spliced_after_edit_undo_moved_its_lines(tmp_path):
         "the reply was spliced at lines that had moved:\n" + repr(text)
 
 
-SLOW_CHAT_S = 5 * WAIT_SCALE      # how long the stand-in takes to answer a request
+SLOW_CHAT_BASE_S = 5              # the same delay on an idle machine: what wait_screen is given
+SLOW_CHAT_S = SLOW_CHAT_BASE_S * WAIT_SCALE   # how long the stand-in takes to answer a request
 SLOW_CHAT_REPLY = "int main(void){return 9;}"
 
 
@@ -1270,7 +1272,7 @@ def test_opening_the_chat_keeps_the_running_task_cancellable(tmp_path):
             s.key(ALT.AI, delay=0.5); s.key("a", delay=1.5)   # the chat opens
             s.key(ESC, delay=0.8); s.key(ESC, delay=0.8)
             after_esc = screen(s)
-            offered = wait_screen(s, "Proposed change", SLOW_CHAT_S + 3)
+            offered = wait_screen(s, "Proposed change", SLOW_CHAT_BASE_S + 3)
     finally:
         srv.stop()
     assert started, "the Edit did not start"

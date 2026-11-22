@@ -16,6 +16,7 @@ import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
+import gui_owner
 from wpe_driver import WpeSession, ALT, WPE_BIN, pane_text_with_history
 
 SEED = "int main(void){return 0;}\n"
@@ -45,7 +46,7 @@ WIDE_ROWS = 30
 # XWPE_AI_MOCK_DELAY_MS does not, so the dial-switch-mid-turn test below
 # scales its own mock delay and the poll bounds that wait on it by hand to
 # keep the same margin at every scale.
-WAIT_SCALE = float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1"))
+WAIT_SCALE = gui_owner.wait_scale()
 DIAL_SWITCH_DELAY_MS = int(6000 * WAIT_SCALE)
 
 

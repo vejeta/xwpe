@@ -28,6 +28,6 @@
   {"id": "SC-config-14", "requirement": "On a build without the assistant, the rows that need it skip by name", "layer": "ncurses", "test": "tests/test_menu_console_mouse.py", "status": "new", "needs": ["python3"]},
   {"id": "SC-config-14", "requirement": "On a build without the assistant, the rows that need it skip by name", "layer": "ncurses", "test": "tests/test_opt_dialog_move.py", "status": "new", "needs": ["python3"]},
   {"id": "SC-config-14", "requirement": "On a build without the assistant, the rows that need it skip by name", "layer": "ncurses", "test": "tests/test_opt_dialog_drag.py", "status": "new", "needs": ["python3"]},
-  {"id": "SC-config-14", "requirement": "On a build without the assistant, the rows that need it skip by name", "layer": "ncurses", "test": "tests/test_debug_prefix_after_end.py::test_gdb_alt_g_after_continue_is_a_prefix", "status": "new", "needs": ["python3"]}
+  {"id": "SC-config-14", "requirement": "On a build without the assistant, the rows that need it skip by name", "layer": "ncurses", "test": "tests/test_debug_prefix_after_end.py::test_gdb_alt_g_after_continue_is_a_prefix", "status": "new", "needs": ["python3", "gcc", "gdb"]}
  ]
 }

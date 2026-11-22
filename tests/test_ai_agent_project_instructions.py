@@ -41,6 +41,7 @@ import subprocess
 import time
 
 import pytest
+import gui_owner
 from wpe_driver import WpeSession, ALT, WPE_BIN, pane_text_with_history
 
 SEED = "int main(void){return 0;}\n"
@@ -98,7 +99,7 @@ FIRST_LINE_PAST_BOUND = "%04d" % (BOUND_SMALL // 5)
 # take about four seconds at the sanitizer's wait scale, so the reply must be
 # held back for longer than that at every scale, and the poll bounds that
 # wait on the dial switch and the final review must grow with it too.
-WAIT_SCALE = float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1"))
+WAIT_SCALE = gui_owner.wait_scale()
 SLOW_TURN_MS = int(8000 * WAIT_SCALE)
 TURN_POLL_S = int(25 * WAIT_SCALE)
 TRACE_POLL_S = int(6 * WAIT_SCALE)

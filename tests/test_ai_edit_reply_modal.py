@@ -23,7 +23,7 @@ import os
 import subprocess
 import time
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN, WAIT_SCALE
+from wpe_driver import WpeSession, ALT, WPE_BIN, WAIT_SCALE, wait_deadline, wait_screen
 
 ORIG = "int a = 1;\nint b = 2;\nint c = 3;\nint d = 4;\nint e = 5;\n"
 NEW = "int a = 1;\nint b = 2;\nint c = 3;\nint d = 4;\nint e = 55;\n"
@@ -53,19 +53,10 @@ def _trace(path):
 
 
 def _wait_trace(s, path, needle, tmo):
-    end = time.time() + tmo
+    end = wait_deadline(tmo)
     while time.time() < end:
         s._drain(0.5)
         if needle in _trace(path):
-            return True
-    return False
-
-
-def _wait_screen(s, needle, tmo):
-    end = time.time() + tmo
-    while time.time() < end:
-        s._drain(0.5)
-        if any(needle in r for r in s.display(drain=0)):
             return True
     return False
 
@@ -130,7 +121,7 @@ def test_reply_behind_task_prompt_waits_for_it(tmp_path):
 
         # Close the prompt: the review opens as if the reply had just landed.
         s.key("\033", delay=0.8)
-        assert _wait_screen(s, BOX, 5), \
+        assert wait_screen(s, BOX, 5), \
             "the review did not open once the prompt closed:\n" + _screen(s)
         assert not _on_screen(s, PROMPT), "the prompt is still up:\n" + _screen(s)
 
@@ -166,7 +157,7 @@ def test_reply_behind_file_manager_waits_for_it(tmp_path):
 
         # Close the file manager: the review opens on its own.
         s.key("\033", delay=0.8)
-        assert _wait_screen(s, BOX, 5), \
+        assert wait_screen(s, BOX, 5), \
             "the review did not open once the file manager closed:\n" + _screen(s)
 
         # q discards: nothing applied, and the screen is the plain editor again.
@@ -202,7 +193,7 @@ def test_escape_after_deferral_applies_nothing(tmp_path):
         # Esc closes the prompt; the deferred review opens; Esc ends it with
         # nothing applied.
         s.key("\033", delay=0.8)
-        assert _wait_screen(s, BOX, 5), \
+        assert wait_screen(s, BOX, 5), \
             "the review did not open once the prompt closed:\n" + _screen(s)
         s.key("\033", delay=0.9)
         assert _wait_trace(s, trace, "edit discarded", 8), \

@@ -21,7 +21,7 @@ import os
 import time
 import subprocess
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN
+from wpe_driver import WpeSession, ALT, WPE_BIN, wait_screen
 
 AI_CTX_MAX = 16000
 LINES = ["int v%04d = %d; /* padding padding padding */" % (i, i) for i in range(1200)]
@@ -49,15 +49,6 @@ def _env(tmp_path, reply):
 def _trace(tmp_path):
     p = tmp_path / "e.trace"
     return p.read_text() if p.exists() else ""
-
-
-def _wait(s, needle, tmo=12):
-    end = time.time() + tmo
-    while time.time() < end:
-        s._drain(0.5)
-        if needle in "\n".join(s.display()):
-            return True
-    return False
 
 
 def _goto_line(s, n):
@@ -107,7 +98,7 @@ def test_whole_file_edit_over_cap_keeps_the_tail(tmp_path):
     with WpeSession(str(tmp_path), BIG, env_extra=_env(tmp_path, reply)) as s:
         _goto_line(s, CURSOR_LINE)
         _send_edit(s, "bump v599")
-        assert _wait(s, "Proposed change"), "no diff overlay:\n" + "\n".join(s.display())
+        assert wait_screen(s, "Proposed change"), "no diff overlay:\n" + "\n".join(s.display())
         assert "Proposed change 1/1" in "\n".join(s.display()), \
             "the window edit must show exactly one hunk:\n" + "\n".join(s.display())
         s.key("y", delay=0.8); s._drain(0.8)
@@ -136,10 +127,10 @@ def test_complete_over_cap_keeps_the_tail(tmp_path):
     with WpeSession(str(tmp_path), BIG, env_extra=_env(tmp_path, "PREFIX\n")) as s:
         _goto_line(s, CURSOR_LINE)
         s.key(ALT.AI, delay=0.6); s.key("c", delay=0.8)
-        assert _wait(s, "Proposed completion"), \
+        assert wait_screen(s, "Proposed completion"), \
             "the completion was not offered for review:\n" + "\n".join(s.display())
         s.key("y", delay=0.8)
-        assert _wait(s, "completed at cursor"), \
+        assert wait_screen(s, "completed at cursor"), \
             "completion did not land:\n" + "\n".join(s.display())
         s.save()
         n = _count_lines(s.path)
@@ -163,7 +154,7 @@ def test_block_edit_over_cap_shows_no_phantom_hunk(tmp_path):
         s.key("\033[B"); s.key("\033[B")      # cursor -> line 4 (col 0)
         s.key(ALT.BLOCK, "e", delay=0.4)      # End Mark => block = lines 2-3
         _send_edit(s, "edit block")
-        assert _wait(s, "Proposed change"), "no diff overlay:\n" + "\n".join(s.display())
+        assert wait_screen(s, "Proposed change"), "no diff overlay:\n" + "\n".join(s.display())
         box = "\n".join(s.display())
         assert " 1/1 " in box, "the block edit must show a single hunk:\n" + box
         s.key("y", delay=0.8); s._drain(0.8)
@@ -188,7 +179,7 @@ def test_small_file_edit_is_unchanged(tmp_path):
     reply = "int a = 1;\nint b = 22;\nint c = 3;\n"
     with WpeSession(str(tmp_path), seed, env_extra=_env(tmp_path, reply)) as s:
         _send_edit(s, "double b")
-        assert _wait(s, "Proposed change"), "no diff overlay:\n" + "\n".join(s.display())
+        assert wait_screen(s, "Proposed change"), "no diff overlay:\n" + "\n".join(s.display())
         assert "Proposed change 1/1" in "\n".join(s.display())
         s.key("y", delay=0.8); s._drain(0.8)
         pane = [r for r in s.display() if "[AI edit]" in r]

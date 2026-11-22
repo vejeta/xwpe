@@ -450,7 +450,7 @@ def test_every_line_of_a_large_build_output_reaches_messages_in_order(tmp_path):
         if active_title(w) != "Messages":
             w.key(F6, delay=0.8)
         w.key(CTRL_PGDN, delay=0.8)
-        assert wait_screen(w, "FLOOD_END", tmo=scaled(FIND_TIMEOUT)), screen_text(w)
+        assert wait_screen(w, "FLOOD_END", tmo=FIND_TIMEOUT), screen_text(w)
         last_line, _ = active_position(w)
         tail = flood_numbers(w)
         for _ in range(60):
@@ -479,7 +479,7 @@ def test_pascal_error_line_reaches_messages_and_enter_jumps(tmp_path):
     src = "program t;\nbegin\n  y := 1;\nend.\n"                  # line 3
     with session(tmp_path, src, "t.pas") as w:
         w.key(F9, delay=BUILD_WAIT)
-        assert wait_screen(w, "Identifier not found", tmo=scaled(FIND_TIMEOUT)), \
+        assert wait_screen(w, "Identifier not found", tmo=FIND_TIMEOUT), \
             "the fpc error line was dropped:\n" + screen_text(w)
         assert active_title(w) == "t.pas", screen_text(w)
         line, _ = active_position(w)
@@ -514,14 +514,14 @@ def test_a_long_build_keeps_the_editor_and_esc_cancels_it(tmp_path):
     with WpeSession(str(tmp_path), src, filename="t.c", cols=wide_for(tmp_path)) as w:
         start = time.time()
         w.key(ALT_A, delay=0.8)
-        assert wait_screen(w, WAITING_LINE, tmo=scaled(FIND_TIMEOUT)), \
+        assert wait_screen(w, WAITING_LINE, tmo=FIND_TIMEOUT), \
             "no waiting line while the build runs:\n" + screen_text(w)
         assert active_title(w) == "Messages", screen_text(w)
         w.key("zz", delay=0.3)                  # read-only Messages: ignored
         w.key(F6, delay=0.5)
         answered = active_title(w)
         w.key(ESC, delay=0.5)
-        assert wait_screen(w, "build cancelled", tmo=scaled(FIND_TIMEOUT)), \
+        assert wait_screen(w, "build cancelled", tmo=FIND_TIMEOUT), \
             "Esc did not cancel the build:\n" + screen_text(w)
         elapsed = time.time() - start
         w.key(F6, delay=0.5)
@@ -545,10 +545,10 @@ def test_a_long_build_left_alone_ends_with_the_count_row(tmp_path):
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     filename="t.c", cols=wide_for(tmp_path)) as w:
         w.key(ALT_A, delay=0.8)
-        assert wait_screen(w, WAITING_LINE, tmo=scaled(FIND_TIMEOUT)), screen_text(w)
+        assert wait_screen(w, WAITING_LINE, tmo=FIND_TIMEOUT), screen_text(w)
         assert wait_screen(w, "BUILD_DONE",
-                           tmo=scaled(SLOW_BUILD_SECONDS + FIND_TIMEOUT)), screen_text(w)
-        assert wait_screen(w, "0 errors, 0 warnings", tmo=scaled(FIND_TIMEOUT)), \
+                           tmo=SLOW_BUILD_SECONDS + FIND_TIMEOUT), screen_text(w)
+        assert wait_screen(w, "0 errors, 0 warnings", tmo=FIND_TIMEOUT), \
             "no count row after the build:\n" + screen_text(w)
         screen = screen_text(w)
         assert w.alive()
@@ -582,7 +582,7 @@ def test_the_waiting_line_counts_seconds_while_the_build_is_silent(tmp_path):
     with WpeSession(str(tmp_path), "int main(void){return 0;}\n",
                     filename="t.c", cols=wide_for(tmp_path)) as w:
         w.key(ALT_A, delay=0.8)
-        assert wait_screen(w, "BUILD_START", tmo=scaled(FIND_TIMEOUT)), screen_text(w)
+        assert wait_screen(w, "BUILD_START", tmo=FIND_TIMEOUT), screen_text(w)
         end = time.time() + scaled(WAITING_WATCH_S)
         while time.time() < end:
             w._drain(0.3)
@@ -590,7 +590,7 @@ def test_the_waiting_line_counts_seconds_while_the_build_is_silent(tmp_path):
             if secs is not None:
                 seen.append(secs)
         w.key(ESC, delay=0.5)
-        assert wait_screen(w, "build cancelled", tmo=scaled(FIND_TIMEOUT)), screen_text(w)
+        assert wait_screen(w, "build cancelled", tmo=FIND_TIMEOUT), screen_text(w)
     assert seen, "no waiting line while the build was silent"
     assert max(seen) - min(seen) >= WAITING_ADVANCE_S, \
         "the waiting line did not count while the build was silent: %r" % sorted(set(seen))
@@ -642,7 +642,7 @@ def test_one_error_lands_on_its_column_and_messages_counts_it(tmp_path):
     need("gcc")
     with tall_session(tmp_path, ERROR_AT_COLUMN_5_C, "t.c") as w:
         w.key(F9, delay=BUILD_WAIT)
-        assert wait_screen(w, "1 error, 0 warnings", tmo=scaled(FIND_TIMEOUT)), \
+        assert wait_screen(w, "1 error, 0 warnings", tmo=FIND_TIMEOUT), \
             "no count row after one error:\n" + screen_text(w)
         assert active_title(w) == "t.c", screen_text(w)
         position = active_position(w)
@@ -660,7 +660,7 @@ def test_a_warning_only_build_counts_and_marks_its_warnings(tmp_path):
     need("gcc")
     with tall_session(tmp_path, TWO_WARNINGS_C, "t.c") as w:
         w.key(F9, delay=BUILD_WAIT)
-        assert wait_screen(w, "0 errors, 2 warnings", tmo=scaled(FIND_TIMEOUT)), \
+        assert wait_screen(w, "0 errors, 2 warnings", tmo=FIND_TIMEOUT), \
             "no count row after a warning-only build:\n" + screen_text(w)
         rows = messages_rows(w)
         last = last_messages_row(w)
@@ -679,7 +679,7 @@ def test_a_clean_build_counts_nothing(tmp_path):
     need("gcc")
     with session(tmp_path, "int main(void){return 0;}\n", "t.c") as w:
         w.key(F9, delay=BUILD_WAIT)
-        assert wait_screen(w, "0 errors, 0 warnings", tmo=scaled(FIND_TIMEOUT)), \
+        assert wait_screen(w, "0 errors, 0 warnings", tmo=FIND_TIMEOUT), \
             "no count row after a clean build:\n" + screen_text(w)
         assert w.alive()
     assert (tmp_path / "t.e").exists()
@@ -711,7 +711,7 @@ def test_alt_t_walks_two_files_in_the_order_printed(tmp_path):
     (tmp_path / "h.h").write_text(INTERLEAVED_H)
     with session(tmp_path, INTERLEAVED_A, "a.c") as w:
         w.key(F9, delay=BUILD_WAIT)
-        assert wait_screen(w, "undef_a5", tmo=scaled(FIND_TIMEOUT)), screen_text(w)
+        assert wait_screen(w, "undef_a5", tmo=FIND_TIMEOUT), screen_text(w)
         walk = [where(w)]
         w.key(ALT_T, delay=1.0)
         walk.append(where(w))
@@ -750,7 +750,7 @@ def screen_row_with(w, needle):
 def built_with_warnings(w):
     """F9 on TWO_WARNINGS_C: a success, the source window back on top."""
     w.key(F9, delay=BUILD_WAIT)
-    assert wait_screen(w, "0 errors, 2 warnings", tmo=scaled(FIND_TIMEOUT)), screen_text(w)
+    assert wait_screen(w, "0 errors, 2 warnings", tmo=FIND_TIMEOUT), screen_text(w)
     assert active_title(w) == "t.c", screen_text(w)
 
 
@@ -836,7 +836,7 @@ def test_a_file_name_with_a_blank_jumps_into_that_file(tmp_path):
     need("gcc")
     with session(tmp_path, UNDEF_AT_3_C, "my file.c") as w:
         w.key(F9, delay=BUILD_WAIT)
-        assert wait_screen(w, "1 error, 0 warnings", tmo=scaled(FIND_TIMEOUT)), screen_text(w)
+        assert wait_screen(w, "1 error, 0 warnings", tmo=FIND_TIMEOUT), screen_text(w)
         title = active_title(w)
         line, _ = active_position(w)
         assert w.alive()
@@ -854,7 +854,7 @@ def test_a_path_of_200_characters_makes_a_row_and_jumps(tmp_path):
                                              leaf="t.c"))
     with session(deep, UNDEF_AT_3_C, "t.c") as w:
         w.key(F9, delay=BUILD_WAIT)
-        assert wait_screen(w, "1 error, 0 warnings", tmo=scaled(FIND_TIMEOUT)), \
+        assert wait_screen(w, "1 error, 0 warnings", tmo=FIND_TIMEOUT), \
             "no row from a long path:\n" + screen_text(w)
         title = active_title(w)
         line, _ = active_position(w)
@@ -873,7 +873,7 @@ def test_a_row_naming_a_missing_file_says_so_and_creates_nothing(tmp_path):
     (tmp_path / "Makefile").write_text(MISSING_FILE_MAKEFILE)
     with session(tmp_path, "int main(void){return 0;}\n", "t.c") as w:
         w.key(ALT_A, delay=BUILD_WAIT)
-        assert wait_screen(w, "cannot find gone.c", tmo=scaled(FIND_TIMEOUT)), \
+        assert wait_screen(w, "cannot find gone.c", tmo=FIND_TIMEOUT), \
             "the missing file was not named:\n" + screen_text(w)
         status = hint_row(w)
         title = active_title(w)
@@ -904,7 +904,7 @@ def test_alt_t_opens_the_second_file_of_a_build_run_in_another_directory(tmp_pat
         w.key(ALT_A, delay=BUILD_WAIT)
         # Messages scrolls to the first error row, so that row is what is on
         # screen when the build has ended (the count row may sit below the view).
-        assert wait_screen(w, "t.c:3:13: error", tmo=scaled(FIND_TIMEOUT)), screen_text(w)
+        assert wait_screen(w, "t.c:3:13: error", tmo=FIND_TIMEOUT), screen_text(w)
         # A file opened by a path keeps that path as its title.
         assert active_title(w).endswith("t.c"), screen_text(w)
         w.key(ALT_T, delay=1.5)
@@ -934,7 +934,7 @@ def test_alt_t_reaches_a_file_named_by_a_path_wider_than_the_window(tmp_path):
     with WpeSession(str(deep), UNDEF_AT_3_C, filename="t.c", rows=40,
                     cols=wide_for(deep)) as w:
         w.key(ALT_A, delay=BUILD_WAIT)
-        assert wait_screen(w, "2 errors, 0 warnings", tmo=scaled(FIND_TIMEOUT)), \
+        assert wait_screen(w, "2 errors, 0 warnings", tmo=FIND_TIMEOUT), \
             screen_text(w)
         first = (active_title(w), active_position(w)[0])
         w.key(ALT_T, delay=1.5)
@@ -991,7 +991,7 @@ def test_a_project_opened_from_its_parent_builds_in_its_own_directory(tmp_path):
     with WpeSession(str(tmp_path), PROJECT_PRJ, filename="proj/p.prj",
                     rows=40, cols=wide_for(tmp_path, "proj/p.prj")) as w:
         w.key(F9, delay=BUILD_WAIT)
-        assert wait_screen(w, "0 errors, 0 warnings", tmo=scaled(FIND_TIMEOUT)), \
+        assert wait_screen(w, "0 errors, 0 warnings", tmo=FIND_TIMEOUT), \
             screen_text(w)
         screen = screen_text(w)
         assert w.alive()
@@ -1009,7 +1009,7 @@ def test_each_project_command_is_shown_once(tmp_path):
     with WpeSession(str(proj), PROJECT_PRJ, filename="p.prj",
                     rows=40, cols=wide_for(proj)) as w:
         w.key(F9, delay=BUILD_WAIT)
-        assert wait_screen(w, "0 errors, 0 warnings", tmo=scaled(FIND_TIMEOUT)), \
+        assert wait_screen(w, "0 errors, 0 warnings", tmo=FIND_TIMEOUT), \
             screen_text(w)
         rows = messages_rows(w)
         assert w.alive()
@@ -1031,7 +1031,7 @@ def test_a_project_build_stops_at_the_first_file_with_errors(tmp_path):
     with WpeSession(str(proj), PROJECT_PRJ, filename="p.prj", rows=40,
                     cols=wide_for(proj)) as w:
         w.key(F9, delay=BUILD_WAIT)
-        assert wait_screen(w, "1 error, 0 warnings", tmo=scaled(FIND_TIMEOUT)), screen_text(w)
+        assert wait_screen(w, "1 error, 0 warnings", tmo=FIND_TIMEOUT), screen_text(w)
         title = active_title(w)
         line, _ = active_position(w)
         assert w.alive()
@@ -1057,7 +1057,7 @@ def test_makes_own_error_line_is_not_counted_and_the_count_is_on_the_status_row(
         # Messages is four rows high here and scrolled to the error row: make's
         # own line and the count row sit below the view, which is why the count
         # is on the status row.
-        assert wait_screen(w, "1 error, 0 warnings", tmo=scaled(FIND_TIMEOUT)), screen_text(w)
+        assert wait_screen(w, "1 error, 0 warnings", tmo=FIND_TIMEOUT), screen_text(w)
         status = hint_row(w)
         w.key(ALT_T, delay=1.0)
         title = active_title(w)
@@ -1078,7 +1078,7 @@ def test_algol68_error_row_jumps_to_its_line(tmp_path):
     need("a68g")
     with session(tmp_path, A68_ONE_ERROR, "t.a68") as w:
         build(w)
-        assert wait_screen(w, "has not been declared", tmo=scaled(FIND_TIMEOUT)), \
+        assert wait_screen(w, "has not been declared", tmo=FIND_TIMEOUT), \
             "the last a68g line was not painted:\n" + screen_text(w)
         assert_enter_jumps(w, "1 error", "t.a68", 3)
 
@@ -1109,7 +1109,7 @@ def test_scala_error_row_jumps_to_its_line(tmp_path):
     need_scalac(tmp_path)
     with session(tmp_path, SCALA_ONE_ERROR, "t.scala") as w:
         build(w, slow=True)
-        assert wait_screen(w, "scalac", tmo=scaled(SLOW_FIND_TIMEOUT)), screen_text(w)
+        assert wait_screen(w, "scalac", tmo=SLOW_FIND_TIMEOUT), screen_text(w)
         assert_enter_jumps(w, "1 error", "t.scala", 3, slow=True)
 
 
@@ -1184,24 +1184,24 @@ def test_every_build_key_the_run_menu_shows_does_what_it_says(tmp_path):
     (tmp_path / "Makefile").write_text("all:\n\t@echo MAKE_RAN\n")
     with session(tmp_path, src, "t.c") as w:
         w.key(ALT_C_KEY, delay=BUILD_WAIT)
-        assert wait_screen(w, "0 errors", tmo=scaled(FIND_TIMEOUT)), screen_text(w)
+        assert wait_screen(w, "0 errors", tmo=FIND_TIMEOUT), screen_text(w)
         compiled = (tmp_path / "t.o").exists()
         linked_early = (tmp_path / "t.e").exists()
         w.key(ALT_M, delay=BUILD_WAIT)
-        assert wait_screen(w, "Success", tmo=scaled(FIND_TIMEOUT)), screen_text(w)
+        assert wait_screen(w, "Success", tmo=FIND_TIMEOUT), screen_text(w)
         made_by_alt_m = (tmp_path / "t.e").exists()
         (tmp_path / "t.e").unlink()
         w.key(F9, delay=BUILD_WAIT)
-        assert wait_screen(w, "0 errors", tmo=scaled(FIND_TIMEOUT)), screen_text(w)
+        assert wait_screen(w, "0 errors", tmo=FIND_TIMEOUT), screen_text(w)
         made_by_f9 = (tmp_path / "t.e").exists()
         w.key(CTRL_F9, delay=BUILD_WAIT)
-        ran_by_ctrl_f9 = wait_screen(w, "RANOK", tmo=scaled(FIND_TIMEOUT))
+        ran_by_ctrl_f9 = wait_screen(w, "RANOK", tmo=FIND_TIMEOUT)
         w.key(F6, delay=0.5)
         w.key(ALT_U, delay=BUILD_WAIT)
-        ran_by_alt_u = wait_screen(w, "Return-Code: 0", tmo=scaled(FIND_TIMEOUT))
+        ran_by_alt_u = wait_screen(w, "Return-Code: 0", tmo=FIND_TIMEOUT)
         w.key(F6, delay=0.5)
         w.key(ALT_A, delay=BUILD_WAIT)
-        made_by_alt_a = wait_screen(w, "MAKE_RAN", tmo=scaled(FIND_TIMEOUT))
+        made_by_alt_a = wait_screen(w, "MAKE_RAN", tmo=FIND_TIMEOUT)
         assert w.alive()
     assert compiled and not linked_early, "Alt C did not compile without linking"
     assert made_by_alt_m, "Alt M did not make the program"
@@ -1219,14 +1219,14 @@ def test_a_second_f9_says_nothing_to_build(tmp_path):
     need("gcc")
     with session(tmp_path, "int main(void){return 0;}\n", "t.c") as w:
         w.key(F9, delay=BUILD_WAIT)
-        assert wait_screen(w, "0 errors, 0 warnings", tmo=scaled(FIND_TIMEOUT)), screen_text(w)
+        assert wait_screen(w, "0 errors, 0 warnings", tmo=FIND_TIMEOUT), screen_text(w)
         w.key(F9, delay=1.5)
         assert wait_screen(w, "nothing to build: t.e is up to date",
-                           tmo=scaled(FIND_TIMEOUT)), screen_text(w)
+                           tmo=FIND_TIMEOUT), screen_text(w)
         after_f9 = screen_text(w)
         w.key(ALT_C_KEY, delay=1.5)
         assert wait_screen(w, "nothing to build: t.o is up to date",
-                           tmo=scaled(FIND_TIMEOUT)), screen_text(w)
+                           tmo=FIND_TIMEOUT), screen_text(w)
         after_alt_c = screen_text(w)
         title = active_title(w)
         assert w.alive()
@@ -1297,7 +1297,7 @@ def test_a_cpp_warning_only_build_counts_and_marks_its_warnings(tmp_path):
     need("g++")
     with tall_session(tmp_path, CPP_TWO_WARNINGS, "t.cpp") as w:
         w.key(F9, delay=BUILD_WAIT)
-        assert wait_screen(w, "0 errors, 2 warnings", tmo=scaled(FIND_TIMEOUT)), \
+        assert wait_screen(w, "0 errors, 2 warnings", tmo=FIND_TIMEOUT), \
             "no count row after a g++ warning-only build:\n" + screen_text(w)
         rows = messages_rows(w)
         last = last_messages_row(w)

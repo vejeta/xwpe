@@ -20,7 +20,8 @@ import time
 import subprocess
 import pytest
 from deep_folder import folder_of_length, held
-from wpe_driver import WpeSession, ALT, WPE_BIN, pane_text_with_history
+from wpe_driver import WpeSession, ALT, WPE_BIN, pane_text_with_history, \
+    wait_deadline, wait_screen
 
 CTRL_U = "\x15"
 ESC = "\033"
@@ -74,19 +75,10 @@ def _trace(tmp_path, name):
 
 
 def _wait_trace(s, tmp_path, name, needle, tmo=15):
-    end = time.time() + tmo
+    end = wait_deadline(tmo)
     while time.time() < end:
         s._drain(0.5)
         if needle in _trace(tmp_path, name):
-            return True
-    return False
-
-
-def _wait_screen(s, needle, tmo=12):
-    end = time.time() + tmo
-    while time.time() < end:
-        s._drain(0.4)
-        if needle in "\n".join(s.display()):
             return True
     return False
 
@@ -117,7 +109,7 @@ def _edit_env(home, reply, trace):
 def _accept_edit(s, tmp_path, trace_name):
     s.key(ALT.AI); s.key("e"); s._drain(0.4)
     s.key("change b"); s.key("\r", delay=0.8)
-    assert _wait_screen(s, REVIEW_BOX), "no review box"
+    assert wait_screen(s, REVIEW_BOX), "no review box"
     s.key("y", delay=0.7)
     assert _wait_trace(s, tmp_path, trace_name, "edit applied", tmo=10), \
         "the accepted edit was not applied:\n" + _trace(tmp_path, trace_name)

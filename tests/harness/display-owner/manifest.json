@@ -119,7 +119,7 @@
    "layer": "wayland",
    "test": "tests/wayland/test_clipboard.py::test_alt_delete_owns_the_wayland_selection",
    "status": "new",
-   "needs": ["wl-clipboard"]
+   "needs": ["wl-clipboard", "wl-copy", "wl-paste"]
   },
   {
    "id": "SC-display-02",
@@ -127,7 +127,7 @@
    "layer": "wayland",
    "test": "tests/wayland/test_clipboard.py::test_alt_insert_pastes_an_external_selection",
    "status": "new",
-   "needs": ["wl-clipboard"]
+   "needs": ["wl-clipboard", "wl-copy", "wl-paste"]
   },
   {
    "id": "SC-display-02",
@@ -135,7 +135,7 @@
    "layer": "wayland",
    "test": "tests/wayland/test_clipboard.py::test_paste_ignores_another_clients_primary_while_the_editor_owns_the_clipboard",
    "status": "new",
-   "needs": ["wl-clipboard", "primary selection"]
+   "needs": ["wl-clipboard", "wl-copy", "wl-paste", "primary selection"]
   },
   {
    "id": "SC-display-03",
@@ -183,7 +183,7 @@
    "layer": "wayland",
    "test": "tests/wayland/test_clipboard.py::test_alt_insert_in_a_field_takes_an_external_selection_whole",
    "status": "new",
-   "needs": ["wl-clipboard"]
+   "needs": ["wl-clipboard", "wl-copy", "wl-paste"]
   },
   {
    "id": "SC-display-04",

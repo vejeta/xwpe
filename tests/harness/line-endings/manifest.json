@@ -223,14 +223,16 @@
    "requirement": "Text pasted from another X11 application with CR LF line breaks leaves no carriage return in the rows",
    "layer": "x11",
    "test": "tests/x11/test_clipboard.py::test_paste_of_windows_line_breaks_leaves_no_carriage_returns",
-   "status": "new"
+   "status": "new",
+   "needs": ["xclip"]
   },
   {
    "id": "SC-line-endings-30",
    "requirement": "The same for text pasted from another Wayland client",
    "layer": "wayland",
    "test": "tests/wayland/test_clipboard.py::test_paste_of_windows_line_breaks_leaves_no_carriage_returns",
-   "status": "new"
+   "status": "new",
+   "needs": ["wl-copy", "wl-paste"]
   },
   {
    "id": "SC-line-endings-31",

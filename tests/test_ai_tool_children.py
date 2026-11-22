@@ -193,7 +193,7 @@ def test_esc_during_a_tool_command_ends_it_and_the_turn(tmp_path):
             s._drain(0.2)
             t0 = time.time()
             os.write(s.master_fd, ESC.encode())        # ends the run
-            cancelled = wait_screen(s, "[AI] cancelled", 4 * WAIT_SCALE)
+            cancelled = wait_screen(s, "[AI] cancelled", 4)
             cancel_s = time.time() - t0
             gone = pid is not None and _gone_within(s, pid, GONE_LIMIT_S)
             s._drain(1.0)
@@ -344,11 +344,11 @@ def test_ending_a_hosted_session_ends_an_engine_deaf_to_sigterm(tmp_path):
             started = _start_host_turn(s, pidf)
             if started:
                 pid, pgid = _pids_from(pidf)
-            answered = wait_screen(s, "turn complete", 8 * WAIT_SCALE)
+            answered = wait_screen(s, "turn complete", 8)
             s.key(ALT.AI); s.key("g", delay=0.8)
             s.key("\r", delay=0.8)                     # an empty task ends the session
             s.key("a", delay=0.5)                      # the review: keep everything
-            ended = wait_screen(s, "session ended", 4 * WAIT_SCALE)
+            ended = wait_screen(s, "session ended", 4)
             gone = pid is not None and _gone_within(s, pgid, GONE_LIMIT_S)
             txt = _trace(trace)
     finally:

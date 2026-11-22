@@ -15,7 +15,7 @@ import os
 import time
 import subprocess
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN
+from wpe_driver import WpeSession, ALT, WPE_BIN, wait_screen
 
 ORIG = "int a = 1;\nint b = 2;\nint c = 3;\n"
 NEW = "int a = 1;\nint b = 22;\nint c = 3;\n"
@@ -49,15 +49,6 @@ def _trace(tmp_path):
     return p.read_text() if p.exists() else ""
 
 
-def _wait_screen(s, needle, tmo=12):
-    end = time.time() + tmo
-    while time.time() < end:
-        s._drain(0.4)
-        if needle in "\n".join(s.display()):
-            return True
-    return False
-
-
 def _start_edit(s, instr="bump b"):
     s.key(ALT.AI)
     s.key("e")
@@ -72,7 +63,7 @@ def _accept_with_y(tmp_path, reply):
     Returns (text on disk, screen after the apply, trace)."""
     with WpeSession(str(tmp_path), ORIG, env_extra=_env(tmp_path, reply), filename="t.c") as s:
         _start_edit(s)
-        assert _wait_screen(s, BOX), "no review box"
+        assert wait_screen(s, BOX), "no review box"
         s.key("y", delay=0.7)
         for _ in range(20):            # the review ends when it says what it did
             if "edit applied" in _trace(tmp_path) or "edit discarded" in _trace(tmp_path):
@@ -130,7 +121,7 @@ def test_a_file_with_its_own_fences_is_taken_whole(tmp_path):
     env = _env(tmp_path, reply)
     with WpeSession(str(tmp_path), page, env_extra=env, filename="page.md") as s:
         _start_edit(s)
-        assert _wait_screen(s, BOX), "no review box"
+        assert wait_screen(s, BOX), "no review box"
         s.key("y", delay=0.9)
         s._drain(0.6)
         s.save()

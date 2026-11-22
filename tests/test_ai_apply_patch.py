@@ -13,7 +13,7 @@ import os
 import time
 import subprocess
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN
+from wpe_driver import WpeSession, ALT, WPE_BIN, wait_screen
 
 
 def _ai_build():
@@ -26,15 +26,6 @@ def _ai_build():
 
 
 pytestmark = pytest.mark.skipif(not _ai_build(), reason="wpe built without --enable-ai")
-
-
-def _wait_screen(s, needle, tmo=12):
-    end = time.time() + tmo
-    while time.time() < end:
-        s._drain(0.5)
-        if needle in "\n".join(s.display()):
-            return True
-    return False
 
 
 def test_agent_apply_patch_edits_in_place(tmp_path):
@@ -116,7 +107,7 @@ def test_apply_patch_ask_denies_on_escape_and_keeps_disk_unchanged(tmp_path):
     with WpeSession(str(tmp_path), seed, env_extra=env, filename="t.c") as s:
         s.key(ALT.AI); s.key("g"); s._drain(0.5)
         s.key("patch it"); s.key("\r", delay=0.8)
-        assert _wait_screen(s, "Write t.c ?"), "write-approval box did not open"
+        assert wait_screen(s, "Write t.c ?"), "write-approval box did not open"
         s.key("\033", delay=0.8)   # Esc = deny
         s._drain(0.8)
         disp = "\n".join(s.display())

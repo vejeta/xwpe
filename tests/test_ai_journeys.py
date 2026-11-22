@@ -19,8 +19,8 @@ import time
 
 import pytest
 
-from wpe_driver import (WpeSession, ALT, WPE_BIN, WAIT_SCALE, wait_screen,
-                        active_window_title, pane_text_with_history)
+from wpe_driver import (WpeSession, ALT, WPE_BIN, WAIT_SCALE, wait_deadline,
+                        wait_screen, active_window_title, pane_text_with_history)
 from test_ai_agent_gaps import (_fault_server, _seed_openai_xwperc, _openai_env,
                                 SERVER_MESSAGE)
 
@@ -82,7 +82,7 @@ def _screen(s):
 
 
 def _wait_trace(s, trace, needle, tmo=TRACE_POLL_S):
-    end = time.time() + tmo * WAIT_SCALE
+    end = wait_deadline(tmo)
     while time.time() < end:
         if needle in _trace(trace):
             return True

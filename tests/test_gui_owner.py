@@ -1618,7 +1618,9 @@ def test_run_tool_returns_the_output_and_takes_a_home_and_extra_variables(
 def test_run_tool_ends_a_tool_that_outlives_its_deadline_and_names_it(current_owner):
     with pytest.raises(gui_owner.OwnerTimeout) as raised:
         gui_owner.run_tool(STANDIN + ["--sleeper"], 0.5)
-    assert "python" in str(raised.value) and "0.5 s" in str(raised.value)
+    # The owner stretches the deadline by the wait scale and says so.
+    assert "python" in str(raised.value)
+    assert "%.1f s" % gui_owner.scaled(0.5) in str(raised.value)
     assert not current_owner.ledger.pids(), "the late tool is still running"
 
 

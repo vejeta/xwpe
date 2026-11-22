@@ -46,6 +46,7 @@ if TESTS_DIR not in sys.path:
     sys.path.insert(0, TESTS_DIR)
 
 import gui_owner as owner_api  # noqa: E402
+import host_tools  # noqa: E402
 import procinfo  # noqa: E402
 from gui_owner import gui_owner, wait_for  # noqa: E402,F401  (the fixture)
 from gui_owner import PreviousRowLeft  # noqa: E402,F401  (rows import it from here)
@@ -86,6 +87,9 @@ if shutil.which("weston"):
 def pytest_collection_modifyitems(config, items):
     if not _MISSING:
         return
+    # A job that installed one of the missing tools has a broken image: the
+    # layer fails the session instead of skipping whole and reading as green.
+    host_tools.fail_the_session_on_expected("Wayland GUI layer", _MISSING)
     here = os.path.dirname(os.path.abspath(__file__))
     skip = pytest.mark.skip(
         reason="Wayland GUI test dependencies missing: " + ", ".join(_MISSING))
@@ -230,11 +234,9 @@ def changed_pixels(img_a, img_b, thresh=40):
     return diff.point(lambda p: 255 if p > thresh else 0).histogram()[255]
 
 
-def incoherence(reason):
-    """Mark a test that asserts behaviour the editor does not currently honour
-    (a backend divergence found during coverage).  Recorded as a non-strict
-    xfail, matching the X11 suite's helper of the same name."""
-    return pytest.mark.xfail(reason="INCOHERENCE: " + reason, strict=False)
+# The same driver helper as the X11 suite: only a failed assertion is a known
+# divergence, a crash or an owner failure fails the run.
+from wpe_driver import incoherence  # noqa: E402,F401  (rows import it from here)
 
 
 def run_x11_module(caller_name, modname):

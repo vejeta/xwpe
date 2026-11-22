@@ -56,7 +56,7 @@ def open_wpe(files, workdir, term='xterm-256color', extra_env=None):
 # A loaded CI runner is slow; XWPE_TEST_WAIT_SCALE stretches every wait so the
 # scenarios don't flake (default 1.0; the Debian autopkgtest sets 3). All
 # scenario waits funnel through drain(), so scaling its deadline covers them.
-WAIT_SCALE = float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1") or 1)
+WAIT_SCALE = gui_owner.wait_scale()
 
 # Every action is checked by both of its routes on every system: the function
 # key, which this script writes to the pty as bytes (no keyboard layer lies

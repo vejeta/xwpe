@@ -20,7 +20,7 @@ import re
 import time
 import subprocess
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN
+from wpe_driver import WpeSession, ALT, WPE_BIN, wait_deadline, wait_screen
 
 BOX = "Proposed change"
 HINT = "y apply"
@@ -55,17 +55,8 @@ def _trace(tmp_path):
     return p.read_text() if p.exists() else ""
 
 
-def _wait_screen(s, needle, tmo=12):
-    end = time.time() + tmo
-    while time.time() < end:
-        s._drain(0.4)
-        if needle in "\n".join(s.display()):
-            return True
-    return False
-
-
 def _wait_trace(s, tmp_path, needle, tmo=12):
-    end = time.time() + tmo
+    end = wait_deadline(tmo)
     while time.time() < end:
         if needle in _trace(tmp_path):
             return True
@@ -118,7 +109,7 @@ def test_crlf_reply_shows_only_the_real_change_and_saves_lf(tmp_path):
     reply = "int a = 1;\r\nint b = 22;\r\nint c = 3;\r\n"
     with WpeSession(str(tmp_path), seed, env_extra=_env(tmp_path, reply), filename="t.c") as s:
         _start_edit(s)
-        assert _wait_screen(s, "Proposed change 1/1"), "no review box"
+        assert wait_screen(s, "Proposed change 1/1"), "no review box"
         disp = s.display()
         shown = "\n".join(disp)
         assert _gutter_rows(disp, "int b = 22;"), "the changed line is not in the box:\n" + shown
@@ -143,7 +134,7 @@ def test_row_wider_than_the_box_carries_a_clip_marker(tmp_path):
     reply = "int y = 1;\n" + long_line.replace("tail A", "tail B") + "\n"
     with WpeSession(str(tmp_path), seed, env_extra=_env(tmp_path, reply), filename="t.c") as s:
         _start_edit(s)
-        assert _wait_screen(s, BOX), "no review box"
+        assert wait_screen(s, BOX), "no review box"
         disp = s.display()
         shown = "\n".join(disp)
         changed = _gutter_rows(disp, "int x = 0;")
@@ -171,7 +162,7 @@ def test_offscreen_hunk_is_scrolled_into_view_and_stays_after_accept(tmp_path):
     reply = seed.replace("int v50 = 50;", "int v50 = 999;")
     with WpeSession(str(tmp_path), seed, env_extra=_env(tmp_path, reply), filename="t.c") as s:
         _start_edit(s)
-        assert _wait_screen(s, BOX), "no review box"
+        assert wait_screen(s, BOX), "no review box"
         disp = s.display()
         shown = "\n".join(disp)
         top = _window_top_row(disp)

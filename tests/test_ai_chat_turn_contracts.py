@@ -22,6 +22,7 @@ import subprocess
 import time
 
 import pytest
+import gui_owner
 from wpe_driver import WpeSession, ALT, WPE_BIN
 from test_ai_agent_gaps import _fault_server, _seed_openai_xwperc, _openai_env
 
@@ -46,7 +47,7 @@ TURN_POLL_S = 20
 # mock's reply lands at the same wall-clock time whatever the factor.  Every
 # delay below is scaled by hand so a key sent "during the turn" is still
 # during the turn under the slower binary.
-WAIT_SCALE = float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1"))
+WAIT_SCALE = gui_owner.wait_scale()
 SLOW_MS = int(4500 * WAIT_SCALE)
 QUEUE_MS = int(2500 * WAIT_SCALE)
 

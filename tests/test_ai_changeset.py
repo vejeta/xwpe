@@ -19,7 +19,8 @@ import subprocess
 import time
 import pytest
 from host_tools import needs
-from wpe_driver import WpeSession, ALT, WPE_BIN, pane_rows, pane_text_with_history
+from wpe_driver import WpeSession, ALT, WPE_BIN, pane_rows, pane_text_with_history, \
+    wait_deadline, wait_screen
 from mode_premise import special_bits_settable, workdir_in_my_group
 from seen_premise import reports_birth_time
 from seen_reuse import fs_type, make_folder_with_number
@@ -130,7 +131,7 @@ def _wait_trace(path, needle, tmo):
     the review is waiting for its key without depending on which window the
     screen has room for.
     """
-    end = time.time() + tmo
+    end = wait_deadline(tmo)
     while time.time() < end:
         if needle in _trace_text(path):
             return True
@@ -1138,21 +1139,11 @@ def _answer_linked_then_changed(s, trace, answers):
     s.key(first, delay=0.8)
     assert _wait_trace(trace, "agent write replaced", 60), \
         "no second question about the file the window read:\n" + _trace_text(trace)
-    assert _wait_screen_text(s, CHANGED_WORDS), \
+    assert wait_screen(s, CHANGED_WORDS, 30), \
         "the second box does not say changed or replaced:\n" + "\n".join(s.display())
     assert REPLACED_WORDS not in "\n".join(s.display()), \
         "the second box claims a replacement it cannot know"
     s.key(second, delay=0.8)
-
-
-def _wait_screen_text(s, needle, secs=30):
-    """Drain the editor until `needle` is on the screen."""
-    end = time.time() + secs
-    while time.time() < end:
-        s._drain(0.4)
-        if needle in "\n".join(s.display()):
-            return True
-    return False
 
 
 def _revert_all(s, trace):

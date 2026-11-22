@@ -26,7 +26,8 @@ import time
 import pytest
 from host_tools import needs
 from wpe_driver import (ALT, WAIT_SCALE, WPE_BIN, WpeSession, pane_rows,
-                        pane_text_with_history, title_row, wait_screen)
+                        pane_text_with_history, title_row, wait_deadline,
+                        wait_screen)
 from test_ai_changeset import _messages_rows, _trace_text, _wait_trace
 
 
@@ -443,7 +444,7 @@ def _settled_messages(s, tmo=20):
     between the link's command row and its answer; the window is read until it
     stops changing, within `tmo` seconds scaled like every other wait.
     """
-    end = time.time() + tmo * WAIT_SCALE
+    end = wait_deadline(tmo)
     last = None
     while time.time() < end:
         s._drain(1.0)
@@ -472,7 +473,7 @@ def test_a_run_that_writes_nothing_to_messages_leaves_the_compile_output(tmp_pat
         s.key(KEY_F9, delay=1.0)
         # the compile paints Messages while gcc runs: wait for the link step's
         # answer, so the window is read whole and not mid-paint under load
-        assert wait_screen(s, "gcc -o", 30 * WAIT_SCALE), \
+        assert wait_screen(s, "gcc -o", 30), \
             "F9 never reached the link step:\n" + "\n".join(_screen(s))
         compiled = _settled_messages(s)
         _start_agent(s, "say nothing")

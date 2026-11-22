@@ -205,7 +205,19 @@ SHARED_SERVER_COMM = "java"
 SHARED_SERVER_FOLDER = os.path.join(".local", "share", "scalacli", "bloop")
 
 
-class OwnerTimeout(AssertionError):
+# The start of the reason of a recorded incoherence (wpe_driver.incoherence()),
+# the text tests/harness/harness.py reads and tests/conftest.py guards.
+INCOHERENCE_PREFIX = "INCOHERENCE: "
+
+
+class OwnerFailure(AssertionError):
+    """A failure the test owner found: a timeout, a crash, a leak, a refused
+    program.  It is never the failed assertion of a known incoherence, so the
+    conftest ends an xfail that one of these caused (a crash must not hide
+    behind a recorded gap)."""
+
+
+class OwnerTimeout(OwnerFailure):
     """A named event did not happen within its scaled deadline."""
 
 
@@ -213,11 +225,11 @@ class OwnerRefused(RuntimeError):
     """The launcher refused to start something it could not own safely."""
 
 
-class EngineReached(AssertionError):
+class EngineReached(OwnerFailure):
     """A row ran a program the tool farm denies (engine_guard.py)."""
 
 
-class LeakedProcesses(AssertionError):
+class LeakedProcesses(OwnerFailure):
     """A row ended and left processes behind; the sweep ended them."""
 
 
@@ -266,20 +278,20 @@ def session_error(stray_hits, late):
     return kind("\n".join(problems))
 
 
-class OutputHandlerFailed(AssertionError):
+class OutputHandlerFailed(OwnerFailure):
     """A driver's handler for what an editor wrote raised an error while the
     owner was ending the editor; reported at the row's end."""
 
 
-class EndFailed(AssertionError):
+class EndFailed(OwnerFailure):
     """A process the owner started did not end even after SIGKILL."""
 
 
-class DisplayProtocolError(AssertionError):
+class DisplayProtocolError(OwnerFailure):
     """An editor's log holds a display protocol error or a lost-display line."""
 
 
-class UnexpectedExit(AssertionError):
+class UnexpectedExit(OwnerFailure):
     """An editor ended by itself with a crash signal or a non-zero code."""
 
 
@@ -2751,7 +2763,7 @@ def start_compositor(owner, request, x_display, log_dir, width, height):
 _CURRENT = None
 
 
-class PreviousRowLeft(AssertionError):
+class PreviousRowLeft(OwnerFailure):
     """A row started while the one before it had left something behind."""
 
 

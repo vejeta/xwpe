@@ -106,6 +106,15 @@ no gdb on this host                 it is missing, or on PATH and does not run
 gdb: not exercised by this job      this job switched it off
 ```
 
+**One owner of how long a wait lasts.** `XWPE_TEST_WAIT_SCALE` stretches every
+wait, and it is read in one place (`gui_owner.wait_scale()`). A row gives
+`wpe_driver.wait_screen(s, needle, seconds)` (or `wait_until`, or takes its end
+from `wait_deadline(seconds)`) the seconds it needs on an idle machine and never
+multiplies them itself: the owner does, so a mock reply delayed by
+`5000 * WAIT_SCALE` ms is not waited for a flat 10 s. `tests/check-test-waits.sh`
+fails on a file that reads the variable, runs a wait loop of its own, or hands
+the owner a time it already stretched.
+
 **Switch a tool off on purpose** with `XWPE_TEST_TOOLS_OFF`, a blank-separated
 list of names.  That is how a job keeps a slow or flaky server out, and how you
 check that a row skips by name instead of failing:
@@ -396,21 +405,44 @@ PY=tests/.venv/bin/python tests/harness/run.sh dialog-engine ncurses
 ```
 
 The verdicts land in `tests/harness/out/<capability>-<layer>-<timestamp>.json`
-as `PASS`, `FAIL`, `BLOCKED`, `NOT_EXERCISED` or `MISSING`. A test that did not
-run is `MISSING`. A skipped test counts as `FAIL` unless one of these holds, and
-they are tried in this order: the manifest marks the scenario `blocked` (then
-`BLOCKED`), its layer is `live` (also `BLOCKED`), the skip says `not exercised
-by this job` (then `NOT_EXERCISED`, which is a job that switched the row's tool
-off with `XWPE_TEST_TOOLS_OFF`, so the capability went unchecked on purpose and
-not for want of a tool), or the manifest row lists the tools in `"needs"` and
-every skip message of the test names one of them (then `BLOCKED`). That last one
-reads the `"needs"` field of the manifest row, not the `needs()` mark of the
-test. The not-exercised check runs before it, so a tool a job switched off is
-never read as a tool that is missing. A scenario several rows pin takes the
-worst of their verdicts, never the last one listed.
-The exit status is non-zero if any scenario is not `PASS` or `BLOCKED`, so a job
-that stops exercising a capability cannot read green, and the script can still
-gate a build.
+as `PASS`, `FAIL`, `BLOCKED`, `KNOWN`, `NOT_EXERCISED` or `MISSING`. A test that
+did not run is `MISSING`. A skipped test counts as `FAIL` unless one of these
+holds, and they are tried in this order: the manifest marks the scenario
+`blocked` (then `BLOCKED`), its layer is `live` (also `BLOCKED`), the skip says
+`not exercised by this job` (then `NOT_EXERCISED`, which is a job that switched
+the row's tool off with `XWPE_TEST_TOOLS_OFF`, so the capability went unchecked
+on purpose and not for want of a tool), the row declares a tool in `"needs"`
+that the job installed (listed in `XWPE_TEST_TOOLS_EXPECTED`) and the skip
+names it (then `FAIL`, "installed by this job but not usable": on that job the
+tool is meant to be there), the manifest row carries `"known"` text that every
+skip message contains (then `KNOWN`), or the manifest row lists the tools in
+`"needs"` and every skip message of the test names one of them (then
+`BLOCKED`). The `"needs"` check reads the `"needs"` field of the manifest row,
+not the `needs()` mark of the test; `harness.py check` fails when a row's code
+declares a tool its manifest row lacks, except the tools every host has (kind
+`base` in `tests/ci-tools.txt`). The not-exercised check runs before them, so
+a tool a job switched off is never read as a tool that is missing.
+
+`"known"` records a row that does not run clean and is not waiting for a tool:
+`INCOHERENCE: ...` for an incoherence (`wpe_driver.incoherence()`, an xfail that
+only a failed assertion counts for; the junit type must be `pytest.xfail`, so a
+row that did not run is not one), or the approval text of an unapproved golden
+(a `pytest.skip`). A text the manifest does not declare is a `FAIL`. The report
+prints each `KNOWN` scenario and its text on stderr.
+
+A scenario several rows pin takes the worst of their verdicts, never the last
+one listed. The exit status is non-zero if any scenario is not `PASS`,
+`BLOCKED` or `KNOWN`, so a job that stops exercising a capability cannot read
+green, and the script can still gate a build.
+
+`tests/ci-tools.txt` records, per host tool a row needs, the Ubuntu package and
+the kind (installed by the Linux job, a display layer's tool, on every host, on
+the runner image, absent, or not a program). `tests/check-ci-tools.sh` keeps
+it equal to the manifests' `"needs"` and to `.github/workflows/linux.yml` (the
+apt-get list, the `locale-gen` of the German locale, and the job's
+`XWPE_TEST_TOOLS_EXPECTED`). A display layer (`tests/x11`, `tests/wayland`)
+whose tool is in that list and missing stops the session with exit status 6
+instead of skipping the whole layer.
 
 Layers `run.sh` runs: `ncurses`, `asan`, `x11`, `wayland`, `console` and
 `c-unit`. A manifest row may also say `config-file` (a pyte test that seeds

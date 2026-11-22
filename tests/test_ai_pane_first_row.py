@@ -15,12 +15,13 @@ import subprocess
 import time
 
 import pytest
+import gui_owner
 from wpe_driver import WpeSession, ALT, WPE_BIN, pane_rows
 
 SEED = "int main(void){return 0;}\n"
 HEADER = "[AI: mock"
 EDIT_LINE = "[AI edit]"
-WAIT_SCALE = float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1") or 1)
+WAIT_SCALE = gui_owner.wait_scale()
 
 
 def _ai_build():

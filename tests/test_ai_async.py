@@ -10,13 +10,14 @@ import os
 import re
 import subprocess
 import pytest
+import gui_owner
 from wpe_driver import WpeSession, ALT, WPE_BIN
 
 # The driver scales its own key/drain waits by XWPE_TEST_WAIT_SCALE (the
 # in-tree default of 1 leaves the numbers below unchanged); scale the mock
 # reply's delay the same way so both readings of the spinner still fall
 # while the task is working under a slower or faster test host.
-WAIT_SCALE = float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1") or 1)
+WAIT_SCALE = gui_owner.wait_scale()
 
 
 def _ai_build():

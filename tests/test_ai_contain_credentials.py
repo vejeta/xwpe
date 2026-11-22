@@ -358,7 +358,7 @@ def test_the_header_says_uncontained_and_the_line_is_said_once(tmp_path):
     env = _agent_env(tmp_path, reply, XWPE_AI_MOCK_DELAY_MS="4000")   # the run is still going
     with WpeSession(str(tmp_path), SEED, env_extra=env) as s:
         _run_agent(s, "first task")
-        assert wait_screen(s, "[agent] task: first task", 8 * WAIT_SCALE), \
+        assert wait_screen(s, "[agent] task: first task", 8), \
             "the run never started:\n" + "\n".join(s.display())
         rows = s.display()
         header = next(i for i, r in enumerate(rows) if "[AI: mock" in r)
@@ -377,7 +377,7 @@ def test_the_header_says_uncontained_and_the_line_is_said_once(tmp_path):
                 "NOT held", "files you can read"]))
         s._drain(6.0)                    # the first run ends after the mock's delay
         _run_agent(s, "second task")
-        assert wait_screen(s, "[agent] task: second task", 8 * WAIT_SCALE), \
+        assert wait_screen(s, "[agent] task: second task", 8), \
             "the second run never started:\n" + "\n".join(s.display())
     assert "fs=none" in text and "net=uncontrolled" in text, text
     assert "NOT held" in text and "files you can read" in text, text

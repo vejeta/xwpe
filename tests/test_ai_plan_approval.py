@@ -3,7 +3,8 @@ import os
 import time
 import subprocess
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN, pane_rows
+from wpe_driver import WpeSession, ALT, WPE_BIN, pane_rows, wait_deadline, \
+    wait_screen, wait_until
 
 ORIG = "int a = 1;\nint b = 2;\nint c = 3;\n"
 NEW = "int a = 1;\nint b = 22;\nint c = 3;\n"
@@ -34,15 +35,6 @@ def _env(tmp_path, reply):
     }
 
 
-def _wait_screen(s, needle, tmo=12):
-    end = time.time() + tmo
-    while time.time() < end:
-        s._drain(0.4)
-        if needle in "\n".join(s.display()):
-            return True
-    return False
-
-
 def _screen_words(s):
     """The pane's text as one line of single-spaced words.
 
@@ -55,12 +47,7 @@ def _screen_words(s):
 
 
 def _wait_words(s, needle, tmo=12):
-    end = time.time() + tmo
-    while time.time() < end:
-        s._drain(0.4)
-        if needle in _screen_words(s):
-            return True
-    return False
+    return wait_until(s, lambda: needle in _screen_words(s), tmo)
 
 
 def _start_plan(s, task):
@@ -89,8 +76,8 @@ def test_plan_reports_task_scope_and_no_proposals(tmp_path):
     with WpeSession(str(tmp_path), ORIG,
                     env_extra=_env(tmp_path, "I would change t.c like this")) as s:
         _start_plan(s, "explain why this file is fine")
-        assert _wait_screen(s, PREFIX + " task:"), "task+scope line not shown"
-        assert _wait_screen(s, PREFIX + " the model proposed no file changes"), \
+        assert wait_screen(s, PREFIX + " task:"), "task+scope line not shown"
+        assert wait_screen(s, PREFIX + " the model proposed no file changes"), \
             "missing 'no proposals' message"
         disp = "\n".join(s.display())
         assert "scope:" in disp and "files" in disp, "scope count not visible:\n" + disp
@@ -112,7 +99,7 @@ def test_plan_approval_lists_counts_and_cancel_keys_leave_everything_unchanged(t
         (case / "other.c").write_text("int other = 1;\n")
         with WpeSession(str(case), ORIG, env_extra=_env(case, plan), filename="t.c") as s:
             _start_plan(s, "bump both files")
-            assert _wait_screen(s, BOX_TITLE), "approval box did not open"
+            assert wait_screen(s, BOX_TITLE), "approval box did not open"
             disp = "\n".join(s.display())
             assert "t.c" in disp and "other.c" in disp, "approval list is incomplete:\n" + disp
             assert "(+1 -1)" in disp, "per-file +/- counts are missing:\n" + disp
@@ -139,7 +126,7 @@ def test_plan_apply_all_opens_files_without_writing_disk_and_refuses_directories
     )
     with WpeSession(str(tmp_path), ORIG, env_extra=_env(tmp_path, plan), filename="t.c") as s:
         _start_plan(s, "apply all file updates")
-        assert _wait_screen(s, BOX_TITLE), "approval box did not open"
+        assert wait_screen(s, BOX_TITLE), "approval box did not open"
         s.key("a", delay=0.9)
         assert _wait_words(s, PREFIX + " applied 2 of 3 files"), \
             "applied/total count did not report the directory as not-applied"
@@ -165,9 +152,9 @@ def test_plan_review_file_by_file_uses_the_same_hunk_review_box(tmp_path):
     plan = "PROPOSE t.c\n" + NEW + "@@END\n@@PLAN-DONE one file\n"
     with WpeSession(str(tmp_path), ORIG, env_extra=_env(tmp_path, plan), filename="t.c") as s:
         _start_plan(s, "review one file")
-        assert _wait_screen(s, BOX_TITLE), "approval box did not open"
+        assert wait_screen(s, BOX_TITLE), "approval box did not open"
         s.key("f", delay=0.8)
-        assert _wait_screen(s, "Proposed change"), "file-by-file review did not open hunk box"
+        assert wait_screen(s, "Proposed change"), "file-by-file review did not open hunk box"
         disp = "\n".join(s.display())
         assert "y apply  n skip  a all  q cancel" in disp, \
             "review hint differs from ordinary edit hunk review:\n" + disp
@@ -183,7 +170,7 @@ def _trace(tmp_path):
 
 
 def _wait_trace(s, tmp_path, needle, tmo=12):
-    end = time.time() + tmo
+    end = wait_deadline(tmo)
     while time.time() < end:
         s._drain(0.4)
         if needle in _trace(tmp_path):
@@ -205,9 +192,9 @@ def test_plan_counts_follow_the_unsaved_buffer_and_apply_all_replaces_it(tmp_pat
     plan = "PROPOSE t.c\n" + NEW + "@@END\n@@PLAN-DONE bumped b\n"
     with WpeSession(str(tmp_path), ORIG, env_extra=_env(tmp_path, plan), filename="t.c") as s:
         s.key("ZZZ", delay=0.3)
-        assert _wait_screen(s, "ZZZint a = 1;", tmo=4), "the unsaved edit did not reach the buffer"
+        assert wait_screen(s, "ZZZint a = 1;", tmo=4), "the unsaved edit did not reach the buffer"
         _start_plan(s, "bump b")
-        assert _wait_screen(s, BOX_TITLE), "approval box did not open"
+        assert wait_screen(s, BOX_TITLE), "approval box did not open"
         box = "\n".join(s.display())
         assert "(+2 -2)" in box, "counts ignore the unsaved buffer:\n" + box
         assert "(+1 -1)" not in box, "counts were taken from the disk, not the buffer:\n" + box
@@ -219,7 +206,7 @@ def test_plan_counts_follow_the_unsaved_buffer_and_apply_all_replaces_it(tmp_pat
         with open(s.path, "rb") as fh:
             assert fh.read() == ORIG.encode("utf-8"), "t.c was written to disk before Save"
         s.key("\x15", delay=0.8)   # Ctrl-U: one step back to the unsaved buffer
-        assert _wait_screen(s, "ZZZint a = 1;", tmo=4), \
+        assert wait_screen(s, "ZZZint a = 1;", tmo=4), \
             "one Ctrl-U did not bring the unsaved edit back:\n" + "\n".join(s.display())
 
 
@@ -237,7 +224,7 @@ def test_plan_path_outside_the_workspace_is_marked_in_the_box_and_named_on_apply
     plan = "PROPOSE ../outside.c\nint outside;\n@@END\n@@PLAN-DONE add a file\n"
     with WpeSession(str(proj), ORIG, env_extra=_env(tmp_path, plan), filename="t.c") as s:
         _start_plan(s, "add outside.c")
-        assert _wait_screen(s, BOX_TITLE), "approval box did not open"
+        assert wait_screen(s, BOX_TITLE), "approval box did not open"
         box = "\n".join(s.display())
         row = [r for r in s.display() if "../outside.c" in r and "(+" in r]
         assert row, "the proposal row is missing:\n" + box

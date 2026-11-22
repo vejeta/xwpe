@@ -23,7 +23,7 @@ import subprocess
 
 import pytest
 
-from wpe_driver import WpeSession, ALT, WPE_BIN
+from wpe_driver import WpeSession, ALT, WPE_BIN, wait_deadline, wait_screen
 from test_ai_agent_gaps import _fault_server, _seed_openai_xwperc, _openai_env
 
 ORIG = "int a = 1;\nint b = 2;\nint c = 3;\n"
@@ -80,17 +80,8 @@ def _screen(s):
     return "\n".join(s.display())
 
 
-def _wait_screen(s, needle, tmo=12):
-    end = time.time() + tmo
-    while time.time() < end:
-        s._drain(0.4)
-        if needle in _screen(s):
-            return True
-    return False
-
-
 def _wait_trace(s, tmp_path, needle, tmo=12):
-    end = time.time() + tmo
+    end = wait_deadline(tmo)
     while time.time() < end:
         if needle in _trace(tmp_path):
             return True
@@ -131,7 +122,7 @@ def _chat_once(s, prompt="hello"):
     s.key("a")
     s.key(prompt)
     s.key("\r", delay=1.0)
-    assert _wait_screen(s, CHAT_REPLY), "the chat reply never showed:\n" + _screen(s)
+    assert wait_screen(s, CHAT_REPLY), "the chat reply never showed:\n" + _screen(s)
 
 
 def _refusal_on_the_pane(s, tmp_path, letter, instr):
@@ -176,7 +167,7 @@ def test_edit_complete_and_multifile_refuse_the_pane(tmp_path):
 def test_save_then_undo_marks_the_window_modified_and_quit_asks(tmp_path):
     with WpeSession(str(tmp_path), ORIG, env_extra=_env(tmp_path, NEW), filename="t.c") as s:
         _start_edit(s)
-        assert _wait_screen(s, BOX), "no review box"
+        assert wait_screen(s, BOX), "no review box"
         s.key("y", delay=0.7)
         assert _wait_trace(s, tmp_path, "edit applied"), "the hunk was not applied"
         s.key(F2, delay=0.8)
@@ -195,7 +186,7 @@ def test_save_then_undo_marks_the_window_modified_and_quit_asks(tmp_path):
             "the status row does not show the modified mark after save then undo:\n%r\n%s" % (
                 disp[status], shown)
         s.key(ALT_X, delay=0.8)
-        assert _wait_screen(s, NOT_SAVED_QUESTION, tmo=6), \
+        assert wait_screen(s, NOT_SAVED_QUESTION, tmo=6), \
             "Alt-X did not ask about the unsaved buffer:\n" + _screen(s)
         assert s.alive(), "wpe quit without asking and lost the reverted text"
         s.key(ESC, delay=0.6)
@@ -214,7 +205,7 @@ def test_resize_relays_out_the_open_box_and_its_keys_keep_working(tmp_path):
     reply = seed + "".join("int w%02d = %d;\n" % (i, i) for i in range(40))
     with WpeSession(str(tmp_path), seed, env_extra=_env(tmp_path, reply), filename="t.c") as s:
         _start_edit(s)
-        assert _wait_screen(s, BOX), "no review box at 80x30"
+        assert wait_screen(s, BOX), "no review box at 80x30"
         s.resize(SMALL_COLS, SMALL_ROWS, delay=1.2)
         assert s.alive(), "wpe died on the resize"
         disp = s.display()
@@ -256,9 +247,9 @@ def test_close_glyph_cancels_the_review_like_q(tmp_path):
     reply = "int a = 11;\nint b = 2;\nint c = 3;\nint d = 4;\nint e = 55;\n"
     with WpeSession(str(tmp_path), seed, env_extra=_env(tmp_path, reply), filename="t.c") as s:
         _start_edit(s)
-        assert _wait_screen(s, "Proposed change 1/2"), "first hunk missing"
+        assert wait_screen(s, "Proposed change 1/2"), "first hunk missing"
         s.key("y", delay=0.7)
-        assert _wait_screen(s, "Proposed change 2/2"), "second hunk missing"
+        assert wait_screen(s, "Proposed change 2/2"), "second hunk missing"
         disp = s.display()
         title = _row_with(disp, BOX)
         col = disp[title].rfind(CLOSE_GLYPH)
@@ -290,7 +281,7 @@ def test_connection_closed_under_an_edit_is_a_transport_error(tmp_path):
             while time.time() < end and not captured:
                 s._drain(0.5)
             assert captured, "the edit request never reached the server"
-            assert _wait_screen(s, EDIT_TRANSPORT_LINE, tmo=TURN_POLL_S), \
+            assert wait_screen(s, EDIT_TRANSPORT_LINE, tmo=TURN_POLL_S), \
                 "a dead connection under an Edit was not reported as a transport error:\n" + _screen(s)
             s._drain(1.0)
             disp = s.display()
@@ -303,7 +294,7 @@ def test_connection_closed_under_an_edit_is_a_transport_error(tmp_path):
             assert "edit applied" not in txt, txt
             # The failed task released its window: the editor takes text again.
             s.key("Z", delay=0.6)
-            assert _wait_screen(s, "Zint a = 1;", tmo=4), \
+            assert wait_screen(s, "Zint a = 1;", tmo=4), \
                 "the window stayed locked after the transport error:\n" + _screen(s)
             assert s.alive(), "wpe died"
     finally:

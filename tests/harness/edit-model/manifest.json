@@ -76,14 +76,16 @@
    "requirement": "The editor replays each approved golden exactly",
    "layer": "ncurses",
    "test": "tests/test_edit_model_golden.py::test_the_editor_replays_each_approved_golden_exactly",
-   "status": "new"
+   "status": "new",
+   "known": "waits for the user's approval (goldens/APPROVAL.md)"
   },
   {
    "id": "SC-edit-model-12",
    "requirement": "The model agrees with each approved golden",
    "layer": "ncurses",
    "test": "tests/test_edit_model_golden.py::test_the_model_agrees_with_each_approved_golden",
-   "status": "new"
+   "status": "new",
+   "known": "waits for the user's approval (goldens/APPROVAL.md)"
   },
   {
    "id": "SC-edit-model-13",

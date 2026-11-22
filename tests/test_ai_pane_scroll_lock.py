@@ -18,6 +18,7 @@ import subprocess
 import time
 
 import pytest
+import gui_owner
 from wpe_driver import WpeSession, ALT, WPE_BIN, title_row, pane_rows
 
 SEED = "int main(void){return 0;}\n"
@@ -28,7 +29,7 @@ LONG = "\n".join("line%02d" % i for i in range(30))
 # The mock's reply delay is fixed wall-clock time, so it is scaled by hand to
 # stay "during the turn" under the slower sanitizer binary; the driver scales
 # its own drains itself.
-WAIT_SCALE = float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1") or 1)
+WAIT_SCALE = gui_owner.wait_scale()
 DELAY_MS = 2500
 LANDED_S = DELAY_MS / 1000.0 + 1.5          # the reply has landed by then (driver-scaled)
 REPLY_POLL_S = DELAY_MS / 1000.0 + 5

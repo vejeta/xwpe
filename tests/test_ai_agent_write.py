@@ -9,12 +9,15 @@ Two regressions this covers:
 Unattended (auto) policy so the write needs no approval and the changeset review
 is produced; mock backend so no model/network is involved.
 """
+import functools
 import os
 import stat
 import time
 import subprocess
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN, pane_text_with_history
+import gui_owner
+from wpe_driver import WpeSession, ALT, WPE_BIN, pane_text_with_history, \
+    wait_deadline, wait_screen
 from mode_premise import special_bits_settable, workdir_in_my_group
 from seen_premise import reports_birth_time
 from seen_reuse import fs_type, make_file_with_number, reached_or_say
@@ -82,7 +85,7 @@ def _trace_text(trace):
 
 def _wait_trace(s, trace, needle, secs=WAIT_S):
     """Drain the editor until the trace holds `needle` (the run's own record of a step)."""
-    end = time.time() + secs
+    end = wait_deadline(secs)
     while time.time() < end:
         s._drain(0.4)
         if needle in _trace_text(trace):
@@ -197,7 +200,7 @@ SECRET = "the user's other name for this file\n"
 PLANTED = "planted text\n"
 LINKED_BOX = "names on disk"
 SLOW_TURN_BASE_MS = 4000    # a turn is held back so a row can act between two turns
-SLOW_TURN_MS = int(SLOW_TURN_BASE_MS * float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1")))
+SLOW_TURN_MS = int(SLOW_TURN_BASE_MS * gui_owner.wait_scale())
 F2 = "\033OQ"               # kf2 -> Save
 WRITE_X = "TOOL write_file x\n%s@@END" % PLANTED
 PATCH_X = ("TOOL apply_patch x\n<<<<<<< SEARCH\nalpha\n=======\nbeta\n"
@@ -217,14 +220,9 @@ def _linked_pair(tmp_path, text=SECRET):
     return secret, name
 
 
-def _wait_screen(s, needle, secs=WAIT_S):
-    """Drain the editor until `needle` is on the screen."""
-    end = time.time() + secs
-    while time.time() < end:
-        s._drain(0.4)
-        if needle in "\n".join(s.display()):
-            return True
-    return False
+# Drain the editor until `needle` is on the screen: the owner's wait, with
+# this file's own length (WAIT_S) as its default.
+_wait_screen = functools.partial(wait_screen, tmo=WAIT_S)
 
 
 def _row_after(s, needle):
@@ -352,7 +350,7 @@ def test_a_yes_to_a_linked_write_is_kept_until_the_name_count_changes(tmp_path, 
         assert _wait_screen(s, "This file has 2 names"), _trace_text(trace)
         s.key("y", delay=0.5)
         assert _wait_trace(s, trace, "agent write confirm x -> allow"), _trace_text(trace)
-        end = time.time() + WAIT_S
+        end = wait_deadline(WAIT_S)
         while time.time() < end and x.read_text() != "two\n":
             s._drain(0.4)
         assert x.read_text() == "two\n", "the second write was not made:\n" + _trace_text(trace)
@@ -390,7 +388,7 @@ def test_a_yes_to_a_linked_write_is_not_for_another_file_with_its_number(tmp_pat
         _ask(s, "write x twice")
         assert _wait_screen(s, "This file has 2 names"), _trace_text(trace)
         s.key("y", delay=0.5)
-        end = time.time() + WAIT_S
+        end = wait_deadline(WAIT_S)
         while time.time() < end and x.read_text() != "one\n":
             s._drain(0.4)
         assert x.read_text() == "one\n", "the first write was not made:\n" + _trace_text(trace)

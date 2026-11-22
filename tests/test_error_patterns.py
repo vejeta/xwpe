@@ -18,7 +18,7 @@ import time
 
 import pytest
 
-from wpe_driver import WpeSession, wait_screen
+from wpe_driver import WpeSession, wait_deadline, wait_screen
 
 F9 = "\033[20~"
 BUILD_WAIT = 5.0
@@ -40,7 +40,7 @@ def wait_build_end(w, marker, tmo):
     """Wait until ``marker`` is on screen with a count line somewhere below
     it: the build that printed ``marker`` has ended.  A timeout, never a
     sleep, ends a build that does not."""
-    end = time.time() + tmo
+    end = wait_deadline(tmo)
     while time.time() < end:
         w._drain(0.4)
         rows = w.display(drain=0)

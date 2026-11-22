@@ -278,7 +278,7 @@ def test_popup_over_a_streaming_turn_keeps_the_caret_and_every_keystroke(tmp_pat
             carets.append((s.screen.cursor.y, s.screen.cursor.x))
         field = _popup_field(s.display(), EDIT_TITLE)
         s.key(ALT_C, delay=0.6)
-        arrived = wait_screen(s, "LATE42", tmo=10 * WAIT_SCALE)
+        arrived = wait_screen(s, "LATE42", tmo=10)
     assert "abc" in field, "typed text was lost under the spinner: %r" % field
     assert len(set(y for y, _ in carets)) == 1, "the caret left the field row: %r" % carets
     assert arrived, "the streaming turn did not finish after the popup closed"

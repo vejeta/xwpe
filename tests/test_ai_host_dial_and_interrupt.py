@@ -20,7 +20,7 @@ import time
 import subprocess
 import textwrap
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN
+from wpe_driver import WpeSession, ALT, WPE_BIN, wait_screen
 
 
 def _host_build():
@@ -57,15 +57,6 @@ MOCK_PERM = textwrap.dedent('''\
 WEB_URL = "https://example.org/page"
 
 
-def _wait(s, needle, tmo=12):
-    end = time.time() + tmo
-    while time.time() < end:
-        s._drain(0.5)
-        if needle in "\n".join(s.display()):
-            return True
-    return False
-
-
 def _perm_env(tmp_path, mock, trace, policy="edits"):
     # The dial is the subject, so the web switch is answered: the switch is
     # checked before the dial, and an unanswered one would refuse the hosted
@@ -88,12 +79,12 @@ def _perm_run(tmp_path, tool, tool_input, answer_key):
         s._drain(0.5)
         s.key(ALT.AI); s.key("g"); s._drain(0.5)
         s.key("use the tool"); s.key("\r", delay=0.8)
-        asked = _wait(s, "APPROVE", tmo=6)
+        asked = wait_screen(s, "APPROVE", tmo=6)
         if answer_key is not None:
             assert asked, "no command box for %s under edits:\n%s" % (
                 tool, "\n".join(s.display()))
             s.key(answer_key, delay=0.8)
-        _wait(s, "PATH", tmo=8)
+        wait_screen(s, "PATH", tmo=8)
         disp = "\n".join(s.display())
     resp_file = tmp_path / "perm_resp.txt"
     resp = resp_file.read_text() if resp_file.exists() else ""
@@ -222,17 +213,17 @@ def test_host_esc_interrupts_turn_and_session_continues(tmp_path):
         s._drain(0.5)
         s.key(ALT.AI); s.key("g"); s._drain(0.5)
         s.key("think for a while"); s.key("\r", delay=0.8)
-        assert _wait(s, "FIRSTBLOCK", tmo=8), "the first text block never streamed"
+        assert wait_screen(s, "FIRSTBLOCK", tmo=8), "the first text block never streamed"
         s.key("\033"); s._drain(0.8)                              # Esc interrupts
-        assert _wait(s, "interrupting", tmo=4), \
+        assert wait_screen(s, "interrupting", tmo=4), \
             "Esc during the hosted turn did not say it was interrupting:\n" + \
             "\n".join(s.display())
-        assert _wait(s, "turn interrupted", tmo=8), \
+        assert wait_screen(s, "turn interrupted", tmo=8), \
             "the pane never showed the interrupted line:\n" + "\n".join(s.display())
         # a following turn is answered by the same session
         s.key(ALT.AI); s.key("g"); s._drain(0.5)
         s.key("again"); s.key("\r", delay=0.8)
-        assert _wait(s, "SECONDTURN", tmo=8), \
+        assert wait_screen(s, "SECONDTURN", tmo=8), \
             "the session did not answer a turn after the interrupt:\n" + \
             "\n".join(s.display())
         disp = "\n".join(s.display())
@@ -261,13 +252,13 @@ def test_host_esc_ignored_ends_session_at_tool_timeout(tmp_path):
         s._drain(0.5)
         s.key(ALT.AI); s.key("g"); s._drain(0.5)
         s.key("think for a while"); s.key("\r", delay=0.8)
-        assert _wait(s, "FIRSTBLOCK", tmo=8), "the first text block never streamed"
+        assert wait_screen(s, "FIRSTBLOCK", tmo=8), "the first text block never streamed"
         t0 = time.time()
         s.key("\033"); s._drain(0.8)                              # Esc interrupts
         # The session ends as at the prompt: the changeset review runs first
         # (its Messages window says "no files changed" here), then the pane
         # comes to the front with the session-ended line.
-        assert _wait(s, "session ended", tmo=TOOL_TIMEOUT_S + 6), \
+        assert wait_screen(s, "session ended", tmo=TOOL_TIMEOUT_S + 6), \
             "the deaf engine was not ended at AIToolTimeout:\n" + "\n".join(s.display())
         took = time.time() - t0
         disp = "\n".join(s.display())
@@ -325,9 +316,9 @@ def test_host_deadline_under_permission_modal_waits_for_the_answer(tmp_path):
         s._drain(0.5)
         s.key(ALT.AI); s.key("g"); s._drain(0.5)
         s.key("think for a while"); s.key("\r", delay=0.8)
-        assert _wait(s, "FIRSTBLOCK", tmo=8), "the first text block never streamed"
+        assert wait_screen(s, "FIRSTBLOCK", tmo=8), "the first text block never streamed"
         s.key("\033"); s._drain(0.3)                              # Esc interrupts
-        assert _wait(s, "APPROVE", tmo=6), \
+        assert wait_screen(s, "APPROVE", tmo=6), \
             "the permission box did not appear after the interrupt:\n" + \
             "\n".join(s.display())
         # Let the bound fall due (AIToolTimeout) while the box is up, and then
@@ -344,7 +335,7 @@ def test_host_deadline_under_permission_modal_waits_for_the_answer(tmp_path):
         assert not record.exists(), "the engine got an answer nobody gave"
         # The box still reads its key, and the answer ends the turn once.
         s.key("y", delay=0.8)
-        assert _wait(s, "session ended", tmo=TOOL_TIMEOUT_S + 6), \
+        assert wait_screen(s, "session ended", tmo=TOOL_TIMEOUT_S + 6), \
             "the turn did not end once the box was answered:\n" + "\n".join(s.display())
         s._drain(1.0)
     txt = trace.read_text()

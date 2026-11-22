@@ -45,6 +45,7 @@ import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
+import gui_owner
 from wpe_driver import WpeSession, ALT, WPE_BIN, pane_rows, pane_logical_lines
 
 SEED = "int main(void){return 0;}\n"
@@ -73,7 +74,7 @@ TRACE_POLL_S = 15
 # have exited on its own; the unfixed tree repaints only at that exit, so the
 # bound below separates the two by seconds, scaled by hand so the separation
 # holds at every scale.
-WAIT_SCALE = float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1"))
+WAIT_SCALE = gui_owner.wait_scale()
 SLOW_REPLY_MS = int(9000 * WAIT_SCALE)
 REPAINT_BOUND_S = 2.0 * WAIT_SCALE
 TIMELINE_S = 11

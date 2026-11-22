@@ -30,6 +30,7 @@ import subprocess
 import time
 
 import pytest
+import gui_owner
 from host_tools import needs
 from wpe_driver import (
     ALT,
@@ -48,7 +49,7 @@ F9 = "\033[20~"
 PGUP = "\033[5~"
 LONG_TEST_ENV_VAR = "XWPE_TEST_LONG"
 
-WAIT_SCALE = float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1") or 1)
+WAIT_SCALE = gui_owner.wait_scale()
 
 
 def _ai_build():

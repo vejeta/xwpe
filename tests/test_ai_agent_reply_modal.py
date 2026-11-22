@@ -21,7 +21,8 @@ import subprocess
 import time
 
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN
+import gui_owner
+from wpe_driver import WpeSession, ALT, WPE_BIN, wait_deadline
 
 SEED = "int main(void){return 0;}\n"
 PROMPT = "AI agent task"
@@ -32,7 +33,7 @@ HELD_LINE = "[AI agent] reply ready - shown when the dialog closes"
 # XWPE_AI_MOCK_DELAY_MS does not, since the mock's reply lands at the same
 # wall-clock time regardless of that factor, so the delay itself is scaled by
 # hand (as tests/test_ai_queue.py and tests/test_ai_pending_lock.py do).
-WAIT_SCALE = float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1"))
+WAIT_SCALE = gui_owner.wait_scale()
 MOCK_DELAY_MS = int(3000 * WAIT_SCALE)
 
 
@@ -53,7 +54,7 @@ def _trace(path):
 
 
 def _wait_trace(s, path, needle, tmo):
-    end = time.time() + tmo
+    end = wait_deadline(tmo)
     while time.time() < end:
         s._drain(0.3)
         if needle in _trace(path):

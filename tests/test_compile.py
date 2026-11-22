@@ -44,7 +44,7 @@ KEY_ESC_RAW = '\033'       # Raw ESC
 # stretches every wait/timeout (default 1.0; the Debian autopkgtest sets 3).
 # All waits here funnel through the inner drain(), so scaling its deadline
 # covers the startup wait, the ('wait', N) steps and the per-key delay.
-WAIT_SCALE = float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1") or 1)
+WAIT_SCALE = gui_owner.wait_scale()
 
 
 def run_wpe_in_dir(workdir, filename, cols=80, rows=30, wait=1.5, keys=None,

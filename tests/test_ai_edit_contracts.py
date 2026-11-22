@@ -7,7 +7,7 @@ import os
 import time
 import subprocess
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN
+from wpe_driver import WpeSession, ALT, WPE_BIN, wait_screen
 
 ORIG = "int a = 1;\nint b = 2;\nint c = 3;\n"
 NEW = "int a = 1;\nint b = 22;\nint c = 3;\n"
@@ -42,15 +42,6 @@ def _trace(tmp_path):
     return p.read_text() if p.exists() else ""
 
 
-def _wait_screen(s, needle, tmo=12):
-    end = time.time() + tmo
-    while time.time() < end:
-        s._drain(0.4)
-        if needle in "\n".join(s.display()):
-            return True
-    return False
-
-
 def _start_edit(s, instr="do it"):
     s.key(ALT.AI)
     s.key("e")
@@ -63,7 +54,7 @@ def _run_edit_once(tmp_path, reply, decision):
     tmp_path.mkdir(parents=True, exist_ok=True)   # callers pass a fresh subdirectory
     with WpeSession(str(tmp_path), ORIG, env_extra=_env(tmp_path, reply), filename="t.c") as s:
         _start_edit(s)
-        assert _wait_screen(s, BOX), "no review box"
+        assert wait_screen(s, BOX), "no review box"
         s.key(decision, delay=0.7)
         for _ in range(20):            # the review ends when it says what it did,
             tr = _trace(tmp_path)      # which on a loaded machine is not immediate
@@ -112,7 +103,7 @@ def test_enter_applies_the_same_change_as_y(tmp_path):
 def test_review_box_ignores_unrelated_keys_altg_and_mouse(tmp_path):
     with WpeSession(str(tmp_path), ORIG, env_extra=_env(tmp_path, NEW), filename="t.c") as s:
         _start_edit(s)
-        assert _wait_screen(s, BOX), "no review box"
+        assert wait_screen(s, BOX), "no review box"
         for k in ("x", "1", ALT.AI):
             s.key(k, delay=0.5)
             assert BOX in "\n".join(s.display()), "box closed after ignored key %r" % (k,)
@@ -131,7 +122,7 @@ def test_pgdn_pgup_scroll_inside_tall_hunk_and_return(tmp_path):
     reply = seed + "".join("int w%02d = %d;\n" % (i, i) for i in range(40))
     with WpeSession(str(tmp_path), seed, env_extra=_env(tmp_path, reply), filename="t.c") as s:
         _start_edit(s)
-        assert _wait_screen(s, BOX), "no review box"
+        assert wait_screen(s, BOX), "no review box"
         top = "\n".join(s.display())
         s.key("\033[6~", delay=0.8)  # PgDn
         after_pgdn = "\n".join(s.display())
@@ -147,9 +138,9 @@ def test_skip_all_hunks_leaves_window_unmodified_and_quit_needs_no_prompt(tmp_pa
     reply = "int a = 11;\nint b = 2;\nint c = 3;\nint d = 4;\nint e = 55;\n"
     with WpeSession(str(tmp_path), seed, env_extra=_env(tmp_path, reply), filename="t.c") as s:
         _start_edit(s)
-        assert _wait_screen(s, "Proposed change 1/2"), "first hunk missing"
+        assert wait_screen(s, "Proposed change 1/2"), "first hunk missing"
         s.key("n", delay=0.7)
-        assert _wait_screen(s, "Proposed change 2/2"), "second hunk missing"
+        assert wait_screen(s, "Proposed change 2/2"), "second hunk missing"
         s.key("n", delay=0.7)
         s._drain(0.5)
         s.key("\033x", delay=0.8)  # Alt-X: quit
@@ -165,7 +156,7 @@ def test_skip_all_hunks_leaves_window_unmodified_and_quit_needs_no_prompt(tmp_pa
 def test_accept_reaches_buffer_but_disk_stays_identical_until_save(tmp_path):
     with WpeSession(str(tmp_path), ORIG, env_extra=_env(tmp_path, NEW), filename="t.c") as s:
         _start_edit(s)
-        assert _wait_screen(s, BOX), "no review box"
+        assert wait_screen(s, BOX), "no review box"
         s.key("y", delay=0.7)
         s._drain(0.5)
         disp = "\n".join(s.display())
@@ -184,7 +175,7 @@ def test_reply_newline_variants_save_with_exactly_one_final_newline(tmp_path):
         case.mkdir()
         with WpeSession(str(case), ORIG, env_extra=_env(case, reply), filename="t.c") as s:
             _start_edit(s)
-            assert _wait_screen(s, BOX), "no review box"
+            assert wait_screen(s, BOX), "no review box"
             s.key("a", delay=0.7)
             s._drain(0.5)
             s.save()
@@ -205,7 +196,7 @@ def test_block_last_line_without_final_newline_replaces_cleanly(tmp_path):
         s.key("\033[C", delay=0.2)
         s.key(ALT.BLOCK, "e", delay=0.4)
         _start_edit(s, "edit last line")
-        assert _wait_screen(s, BOX), "no review box for last-line block edit"
+        assert wait_screen(s, BOX), "no review box for last-line block edit"
         s.key("y", delay=0.7)
         s._drain(0.5)
         s.save()
@@ -220,7 +211,7 @@ def test_crlf_file_with_lf_reply_shows_real_change_and_saves_crlf(tmp_path):
     reply = "int a = 1;\nint b = 22;\nint c = 3;\n"
     with WpeSession(str(tmp_path), seed, env_extra=_env(tmp_path, reply), filename="t.c") as s:
         _start_edit(s)
-        assert _wait_screen(s, "Proposed change 1/1"), "expected one real hunk"
+        assert wait_screen(s, "Proposed change 1/1"), "expected one real hunk"
         disp = "\n".join(s.display())
         assert "int b = 22;" in disp, "changed line is not in the review box"
         assert "- int a = 1;" not in disp and "+ int a = 1;" not in disp, \

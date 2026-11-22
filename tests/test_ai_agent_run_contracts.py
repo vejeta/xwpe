@@ -17,6 +17,7 @@ import subprocess
 import time
 
 import pytest
+import gui_owner
 from wpe_driver import WpeSession, ALT, WPE_BIN, pane_text_with_history
 
 SEED = "int main(void){return 0;}\n"
@@ -36,7 +37,7 @@ LOOP_POLL_S = 60
 # wall-clock time regardless of how the harness wait factor is set.  A window
 # measured straight off time.time(), rather than through a driver drain, must
 # be scaled by hand to stay in the same proportion to that delay.
-WAIT_SCALE = float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1"))
+WAIT_SCALE = gui_owner.wait_scale()
 SPINNER_DELAY_MS = int(4500 * WAIT_SCALE)
 
 

@@ -13,7 +13,7 @@ import os
 import time
 import subprocess
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN
+from wpe_driver import WpeSession, ALT, WPE_BIN, wait_screen
 
 ORIG = "int a = 1;\nint b = 2;\nint c = 3;\nint d = 4;\nint e = 5;\n"
 # what the model returns for the SELECTED region (lines 2-3) only:
@@ -32,15 +32,6 @@ def _ai_build():
 pytestmark = pytest.mark.skipif(not _ai_build(), reason="wpe built without --enable-ai")
 
 
-def _wait(s, needle, tmo=12):
-    end = time.time() + tmo
-    while time.time() < end:
-        s._drain(0.5)
-        if needle in "\n".join(s.display()):
-            return True
-    return False
-
-
 def test_edit_scoped_to_selection(tmp_path):
     trace = tmp_path / "e.trace"
     env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock", "XWPE_AI_MOCK_REPLY": REGION,
@@ -53,7 +44,7 @@ def test_edit_scoped_to_selection(tmp_path):
         s.key(ALT.BLOCK, "e", delay=0.4)      # Block -> End Mark  => region = lines 2-3
         s.key(ALT.AI); s.key("e"); s._drain(0.5)
         s.key("double the middle values"); s.key("\r", delay=0.8)
-        assert _wait(s, "Proposed change"), \
+        assert wait_screen(s, "Proposed change"), \
             "no diff overlay for the selection edit:\n" + "\n".join(s.display())
         s.key("y", delay=0.6); s._drain(0.8)  # accept the hunk
         s.save()

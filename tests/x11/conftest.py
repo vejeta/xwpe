@@ -43,6 +43,7 @@ if TESTS_DIR not in sys.path:
     sys.path.insert(0, TESTS_DIR)
 
 import gui_owner as owner_api  # noqa: E402
+import host_tools  # noqa: E402
 import procinfo  # noqa: E402
 from gui_owner import gui_owner, wait_for  # noqa: E402,F401  (the fixture)
 from gui_owner import PreviousRowLeft  # noqa: E402,F401  (rows import it from here)
@@ -82,6 +83,9 @@ if _CONV_BIN == "magick" and _XWDTOPNM is None:
 def pytest_collection_modifyitems(config, items):
     if not _MISSING:
         return
+    # A job that installed one of the missing tools has a broken image: the
+    # layer fails the session instead of skipping whole and reading as green.
+    host_tools.fail_the_session_on_expected("X11 GUI layer", _MISSING)
     here = os.path.dirname(os.path.abspath(__file__))
     skip = pytest.mark.skip(
         reason="X11 GUI test dependencies missing: " + ", ".join(_MISSING))
@@ -246,11 +250,9 @@ def _to_keycodes(keystroke):
     return "+".join(fk.get(tok.upper(), tok) for tok in keystroke.split("+"))
 
 
-def incoherence(reason):
-    """Mark an X11 test that asserts behaviour we expect but which xwpe does
-    not currently honour (a wpe-vs-xwpe divergence found during coverage).
-    Recorded as xfail; `pytest -rxX` lists every INCOHERENCE for review."""
-    return pytest.mark.xfail(reason="INCOHERENCE: " + reason, strict=False)
+# The X11 suite marks a known divergence with the driver's incoherence(): only a
+# failed assertion counts, and a crash or an owner failure fails the run.
+from wpe_driver import incoherence  # noqa: E402,F401  (rows import it from here)
 
 
 def changed_pixels(img_a, img_b, thresh=40):

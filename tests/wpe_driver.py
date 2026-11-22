@@ -110,8 +110,9 @@ SERVER_PROGRAM_POLL_S = 0.1
 # budgets that pass in-tree flake under autopkgtest. XWPE_TEST_WAIT_SCALE
 # stretches every wait without slowing the local run (default 1.0; the Debian
 # autopkgtest sets it to 3). All waits funnel through _drain(), so scaling there
-# scales the startup wait AND every per-key delay.
-WAIT_SCALE = float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1") or 1)
+# scales the startup wait AND every per-key delay.  The variable is read by
+# gui_owner.wait_scale(), the one reader of it (tests/check-test-waits.sh).
+WAIT_SCALE = gui_owner.wait_scale()
 
 # Waiting for the screen to settle instead of sleeping the whole delay.  With
 # XWPE_TEST_SETTLE_MS set (milliseconds), a drain returns once the editor has
@@ -311,11 +312,22 @@ class ALT:
     AI = "\033g"        # Alt-G: the AI assistant prefix (not a menu)
 
 
+# The start of the reason of an incoherence: the text the harness reads
+# (tests/harness/harness.py, KNOWN_XFAIL_PREFIX) to tell a recorded
+# incoherence from any other xfail.
+INCOHERENCE_PREFIX = gui_owner.INCOHERENCE_PREFIX
+
+
 def incoherence(reason):
     """Mark a test that asserts behaviour we believe SHOULD hold but which
     currently does not (an incoherence found during coverage).  Recorded as
-    xfail so CI stays green; `pytest -rxX` prints the review queue."""
-    return pytest.mark.xfail(reason="INCOHERENCE: " + reason, strict=False)
+    xfail so CI stays green; `pytest -rxX` prints the review queue.
+
+    Only a failed assertion is the known incoherence.  A crash, a timeout
+    or a refusal inside the row is a different failure and must fail the
+    run, not hide behind the marker, so the xfail names AssertionError."""
+    return pytest.mark.xfail(reason=INCOHERENCE_PREFIX + reason, strict=False,
+                             raises=AssertionError)
 
 
 def assistant_build(bin_path=None):
@@ -338,8 +350,24 @@ def assistant_build(bin_path=None):
         return False
 
 
+def wait_deadline(tmo):
+    """The clock time a wait of ``tmo`` seconds ends at, stretched by the
+    wait scale (XWPE_TEST_WAIT_SCALE).
+
+    A row that waits for a trace line or a file with a loop of its own takes
+    its end from here, so its wait is stretched like the mock reply it waits
+    for: a reply delayed by 5000 * scale ms is not waited for 10 s flat.  A
+    caller passes the seconds it needs on an idle machine and never
+    multiplies them itself."""
+    return time.time() + gui_owner.scaled(tmo)
+
+
 def wait_screen(session, needle, tmo=12):
     """Poll the screen for ``needle`` until ``tmo`` seconds run out.
+
+    ``tmo`` is the time the wait takes on an idle machine; the owner stretches
+    it by the wait scale (wait_deadline), so a caller never passes a time it
+    has already multiplied.
 
     One turn of this loop costs 0.4 s, because `display(drain=0)` reads the
     screen as it stands instead of draining for another 0.6 s first.  That
@@ -350,13 +378,26 @@ def wait_screen(session, needle, tmo=12):
 
     Fourteen test files grew their own copy of this, ten of them with the
     coarse grid, and one of those missed a 1.5 s spinner for a whole release.
-    New tests use this one; a copy is only kept where its file needs a
-    different needle shape.
+    Every test uses this one; a file that needs another needle shape (the
+    pane's words, a trace line) asks wait_until with its own reading.
     """
-    end = time.time() + tmo
+    def needle_is_shown():
+        return needle in "\n".join(session.display(drain=0))
+    return wait_until(session, needle_is_shown, tmo)
+
+
+def wait_until(session, ready, tmo=12):
+    """Drain the editor, one turn of 0.4 s at a time, until ``ready()`` is
+    true; False when ``tmo`` seconds (stretched by the wait scale) run out.
+
+    For a row that waits for something other than a needle on the screen: the
+    pane's words across wrapped rows, a line of the trace, a file on disk.
+    The row writes only what "ready" means; how long it waits is decided
+    here, with wait_screen's."""
+    end = wait_deadline(tmo)
     while time.time() < end:
         session._drain(0.4)
-        if needle in "\n".join(session.display(drain=0)):
+        if ready():
             return True
     return False
 

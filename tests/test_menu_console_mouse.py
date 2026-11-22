@@ -22,13 +22,13 @@ import time
 
 import pytest
 from build_config import requires
-from wpe_driver import WpeSession, ALT, WPE_BIN, WAIT_SCALE
+from wpe_driver import WpeSession, ALT, WPE_BIN, wait_until
 
 SEED = "int main(void){return 0;}\n"
 ENV = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock"}
 ESC = "\033"
-DIALOG_WAIT = 8.0 * WAIT_SCALE
-KEY_WAIT = 6.0 * WAIT_SCALE
+DIALOG_WAIT = 8.0       # seconds on an idle machine; wait_until stretches them
+KEY_WAIT = 6.0
 # A row of the Options submenu, spelled as the menu spells it, so its presence
 # says the submenu is open and its absence says the submenu is gone.
 SUBMENU_ROW = "ProGramming"
@@ -53,17 +53,19 @@ def _screen(s):
     return "\n".join(s.display(drain=0))
 
 
+def _needle_state(s, needle, gone):
+    """True once `needle` is on the screen, or with `gone` once it is not."""
+    if gone:
+        return needle not in _screen(s)
+    return needle in _screen(s)
+
+
 def _wait_for(s, needle, limit, gone=False):
     """The screen once `needle` is there (or, with gone, once it is not), or the
-    last screen seen when the limit passes."""
-    deadline = time.time() + limit
-    screen = ""
-    while time.time() < deadline:
-        s._drain(0.5)
-        screen = _screen(s)
-        if (needle not in screen) if gone else (needle in screen):
-            return screen
-    return screen
+    last screen seen when the limit passes.  `limit` is the time on an idle
+    machine; the owner stretches it by the wait scale."""
+    wait_until(s, lambda: _needle_state(s, needle, gone), limit)
+    return _screen(s)
 
 
 def _session(tmp_path, term):

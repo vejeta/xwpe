@@ -16,7 +16,7 @@ import time
 import subprocess
 import textwrap
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN, pane_text_with_history
+from wpe_driver import WpeSession, ALT, WPE_BIN, pane_text_with_history, wait_screen
 
 MARK = "HOSTWROTETHIS"
 
@@ -138,15 +138,6 @@ MOCK_PERM = textwrap.dedent('''\
 ''')
 
 
-def _wait(s, needle, tmo=12):
-    end = time.time() + tmo
-    while time.time() < end:
-        s._drain(0.5)
-        if needle in "\n".join(s.display()):
-            return True
-    return False
-
-
 def _perm_run(tmp_path, answer_key):
     mock = tmp_path / "mock_perm.py"
     mock.write_text(MOCK_PERM)
@@ -159,9 +150,9 @@ def _perm_run(tmp_path, answer_key):
         s._drain(0.5)
         s.key(ALT.AI); s.key("g"); s._drain(0.5)
         s.key("run echo hi"); s.key("\r", delay=0.8)
-        assert _wait(s, "APPROVE"), "no per-tool permission prompt appeared"
+        assert wait_screen(s, "APPROVE"), "no per-tool permission prompt appeared"
         s.key(answer_key, delay=0.8)
-        _wait(s, "done", tmo=8)
+        wait_screen(s, "done", tmo=8)
         disp = "\n".join(s.display())
     return trace.read_text(), disp
 

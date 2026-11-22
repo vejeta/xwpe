@@ -29,7 +29,8 @@ import os
 import subprocess
 import time
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN
+import gui_owner
+from wpe_driver import WpeSession, ALT, WPE_BIN, wait_deadline, wait_screen
 
 ORIG = "int a = 1;\nint b = 2;\nint c = 3;\nint d = 4;\nint e = 5;\n"
 NEW = "int a = 1;\nint b = 2;\nint c = 3;\nint d = 4;\nint e = 55;\n"
@@ -41,7 +42,7 @@ SUGGESTION = "/*done*/"                        # what Complete inserts at the cu
 # waits by XWPE_TEST_WAIT_SCALE (the sanitizer build runs at 2, autopkgtest at
 # 3); the mock's delay has to grow with them or the reply overtakes the keys
 # and Esc lands on the review box instead of on the pending task.
-MOCK_DELAY_MS = int(5000 * float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1")))
+MOCK_DELAY_MS = int(5000 * gui_owner.wait_scale())
 LONG_DELAY_MS = 9000           # room for a menu, a second window and typing in it
 QUEUE_DELAY_MS = 6000          # long enough to type a second request and watch it
 READABLE_S = 2.0               # the queued notice must survive this much spinning
@@ -69,19 +70,10 @@ def _trace(path):
 
 
 def _wait_trace(s, path, needle, tmo):
-    end = time.time() + tmo
+    end = wait_deadline(tmo)
     while time.time() < end:
         s._drain(0.5)
         if needle in _trace(path):
-            return True
-    return False
-
-
-def _wait_screen(s, needle, tmo):
-    end = time.time() + tmo
-    while time.time() < end:
-        s._drain(0.5)
-        if any(needle in r for r in s.display(drain=0)):
             return True
     return False
 
@@ -135,7 +127,7 @@ def test_typing_during_pending_edit_leaves_the_file_alone(tmp_path):
 
         # The review that follows offers the model's change and nothing else:
         # a second hunk would be "revert what you just typed".
-        assert _wait_screen(s, BOX, 12), \
+        assert wait_screen(s, BOX, 12), \
             "the review did not open:\n" + _screen(s)
         s.key("a", delay=1.0)                      # apply every hunk offered
         assert _wait_trace(s, trace, "edit applied", 8), \
@@ -219,7 +211,7 @@ def test_block_edit_splice_lands_on_the_marked_lines(tmp_path):
         s.key(CTRL_HOME, delay=0.5)
         s.key("\r"); s.key("\r")
         s._drain(0.6)
-        assert _wait_screen(s, BOX, 12), \
+        assert wait_screen(s, BOX, 12), \
             "the review did not open:\n" + _screen(s)
         s.key("a", delay=1.0)
         assert _wait_trace(s, trace, "edit applied", 8), \
@@ -244,10 +236,10 @@ def test_completion_is_not_raced_by_typing(tmp_path):
             "typing reached the window waiting for its completion:\n" + _screen(s)
 
         # The suggestion is offered in the review box first; y takes it.
-        assert _wait_screen(s, "Proposed completion", 12), \
+        assert wait_screen(s, "Proposed completion", 12), \
             "the completion was not offered for review:\n" + _trace(trace) + "\n" + _screen(s)
         s.key("y", delay=0.8)
-        assert _wait_screen(s, "completed at cursor", 12), \
+        assert wait_screen(s, "completed at cursor", 12), \
             "the completion never landed:\n" + _trace(trace) + "\n" + _screen(s)
         s._drain(0.6)
         s.save()
@@ -275,7 +267,7 @@ def test_second_edit_is_queued_and_runs_after_the_first(tmp_path):
         assert _on_screen(s, "queued"), \
             "the progress indicator overwrote the queued notice:\n" + _screen(s)
 
-        assert _wait_screen(s, BOX, 15), \
+        assert wait_screen(s, BOX, 15), \
             "the first edit's review did not open:\n" + _screen(s)
         s.key("q", delay=1.0)                      # discard it; the queue runs next
         assert _wait_trace(s, trace, "edit instr=SECONDEDIT", 15), \
@@ -296,7 +288,7 @@ def test_complete_is_queued_behind_a_running_edit(tmp_path):
         assert _on_screen(s, "queued"), \
             "the progress indicator overwrote the queued notice:\n" + _screen(s)
 
-        assert _wait_screen(s, BOX, 15), \
+        assert wait_screen(s, BOX, 15), \
             "the edit's review did not open:\n" + _screen(s)
         s.key("q", delay=1.0)
         assert _wait_trace(s, trace, "complete stream fd=", 15), \
@@ -318,7 +310,7 @@ def test_multifile_is_queued_behind_a_running_edit(tmp_path):
         assert _on_screen(s, "queued"), \
             "the progress indicator overwrote the queued notice:\n" + _screen(s)
 
-        assert _wait_screen(s, BOX, 15), \
+        assert wait_screen(s, BOX, 15), \
             "the edit's review did not open:\n" + _screen(s)
         s.key("q", delay=1.0)
         assert _wait_trace(s, trace, "plan task=PLANTASK", 15), \

@@ -47,7 +47,7 @@ def test_clear_removes_the_session_file_flashes_and_resets(tmp_path):
         s.key("a", delay=0.8)
         s.key("hi", delay=0.1)
         s.key("\r", delay=1.2)
-        answered = wait_screen(s, "FIRSTREPLY", tmo=8 * WAIT_SCALE)
+        answered = wait_screen(s, "FIRSTREPLY", tmo=8)
         written = _session_files(tmp_path)
         s.key("\033", delay=0.5)
         s.key(ALT.AI, delay=0.5)
@@ -80,7 +80,7 @@ def test_permissions_and_settings_work_while_a_turn_streams(tmp_path):
         s.key("s", delay=1.0)
         settings = "\n".join(s.display())
         s.key("\033", delay=0.8)
-        arrived = wait_screen(s, "LATE46", tmo=10 * WAIT_SCALE)
+        arrived = wait_screen(s, "LATE46", tmo=10)
     assert "Permissions:" in flash, "no permission flash during the turn: %r" % flash
     assert level_set, "the level did not change during the turn (trace):\n" + _trace(tmp_path)
     assert "AI settings" in settings and "Backend" in settings, \

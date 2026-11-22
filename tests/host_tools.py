@@ -33,6 +33,7 @@ layer can run at all, once, for every row of that layer; they are layer
 gates, not the skip of a row, and they stay where they are.
 """
 import os
+import re
 import shutil
 import subprocess
 
@@ -195,6 +196,51 @@ def require_absent(*tools):
     for tool in tools:
         if shutil.which(tool) is not None:
             pytest.skip("%s is installed on this host" % tool)
+
+
+EXPECTED_VARIABLE = "XWPE_TEST_TOOLS_EXPECTED"
+TOOL_WORD = re.compile(r"[A-Za-z0-9_.+-]+")
+
+
+def expected_tools():
+    """The tools this job installed, from XWPE_TEST_TOOLS_EXPECTED
+    (blank-separated).  tests/ci-tools.txt keeps the variable equal to the
+    packages the workflow installs, and tests/harness/harness.py reads a
+    declared tool of the list that skips as a failure of the image."""
+    return os.environ.get(EXPECTED_VARIABLE, "").split()
+
+
+def expected_among(missing):
+    """The tools of `missing` (names or short phrases, as a display layer
+    gate lists them: "matchbox-window-manager|twm", "xwdtopnm (netpbm)")
+    that this job installed.
+
+    A layer gate that finds one of them missing has found a broken image, not
+    a host without a display: it must fail the session, never skip."""
+    expected = set(expected_tools())
+    found = []
+    for entry in missing:
+        words = TOOL_WORD.findall(entry)
+        if any(word in expected for word in words):
+            found.append(entry)
+    return found
+
+
+def fail_the_session_on_expected(layer, missing):
+    """Stop the session, naming the tools, when a tool of `missing` is one
+    this job installed.  Called by a display layer's gate before it skips
+    the layer: a skip is right on a host without the tool and wrong on a job
+    that installed it, where it hides that the whole layer never ran."""
+    installed = expected_among(missing)
+    if installed:
+        pytest.exit("%s: %s installed by this job but not usable (%s)"
+                    % (layer, ", ".join(installed), EXPECTED_VARIABLE),
+                    returncode=EXPECTED_TOOL_EXIT)
+
+
+# The exit status of a session a layer gate stopped for an installed tool that
+# is not usable.  pytest uses 0 to 5; this one is not any of them.
+EXPECTED_TOOL_EXIT = 6
 
 
 def report_line():

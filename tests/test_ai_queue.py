@@ -7,13 +7,14 @@ explicit cancel, and it also clears the queue.
 import os
 import subprocess
 import pytest
+import gui_owner
 from wpe_driver import WpeSession, ALT, WPE_BIN
 
 # The driver scales its key waits by XWPE_TEST_WAIT_SCALE (the sanitizer build
 # runs at 2); the mock's reply delay must grow with them, or under the slower
 # binary the reply lands before the Esc the test sends and the cancel is read
 # as a cancel of nothing.
-WAIT_SCALE = float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1"))
+WAIT_SCALE = gui_owner.wait_scale()
 SLOW_DELAY_MS = int(2500 * WAIT_SCALE)
 LONG_DELAY_MS = int(12000 * WAIT_SCALE)
 SLOW = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock",

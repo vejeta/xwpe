@@ -19,7 +19,7 @@ import os
 import subprocess
 import time
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN, WAIT_SCALE
+from wpe_driver import WpeSession, ALT, WPE_BIN, WAIT_SCALE, wait_deadline
 
 ORIG = "int a = 1;\nint b = 2;\nint c = 3;\nint d = 4;\nint e = 5;\n"
 NEW = "int a = 1;\nint b = 2;\nint c = 3;\nint d = 4;\nint e = 55;\n"
@@ -46,7 +46,7 @@ def _trace(path):
 
 
 def _wait_trace(s, path, needle, tmo):
-    end = time.time() + tmo
+    end = wait_deadline(tmo)
     while time.time() < end:
         s._drain(0.5)
         if needle in _trace(path):

@@ -1276,6 +1276,21 @@ TESTS += tests/check-test-threads.sh
 # that is not in tests/test-real-tools.allow.
 TESTS += tests/check-test-real-tools.sh
 
+# One owner of how long a wait lasts: tests/gui_owner.py reads
+# XWPE_TEST_WAIT_SCALE and tests/wpe_driver.py turns a row's seconds into a
+# deadline (wait_screen, wait_until, wait_deadline).  tests/check-test-waits.sh
+# fails on a test file that reads the variable, runs a wait loop of its own, or
+# hands the owner a time it has already multiplied by the scale.
+TESTS += tests/check-test-waits.sh
+
+# The host tools the rows need and where the Linux job gets each:
+# tests/ci-tools.txt is the one record.  tests/check-ci-tools.sh fails when a
+# tool a manifest row declares has no line there, when an installed tool's
+# package is not in the workflow's apt-get list, or when the job's
+# XWPE_TEST_TOOLS_EXPECTED differs from the tools it installs.  Offline; a
+# source tarball without .github is skipped.
+TESTS += tests/check-ci-tools.sh
+
 # tests/check-test-paths.sh (listed above) also holds the pytest rules: a
 # window title is read by column, a path of N bytes is made by deep_folder, an
 # asserted phrase is one of the pane reader's needles (rules P1 to P3, run
@@ -1502,6 +1517,11 @@ EXTRA_DIST = \
   tests/test-threads.allow \
   tests/check-test-real-tools.sh \
   tests/check_test_real_tools.py \
+  tests/check-test-waits.sh \
+  tests/check_test_waits.py \
+  tests/check-ci-tools.sh \
+  tests/check_ci_tools.py \
+  tests/ci-tools.txt \
   tests/test-real-tools.allow \
   tests/engine_guard.py \
   tests/live_gate.py \

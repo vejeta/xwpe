@@ -9,6 +9,7 @@ editor on their own.  A row that asks the first-run question, or runs another
 style, removes or changes the variable in its own environment (test_first_run.py,
 test_keys_session.py).
 """
+import json
 import os
 
 import pytest
@@ -23,12 +24,55 @@ from live_gate import pytest_pycollect_makemodule  # noqa: F401
 os.environ.setdefault("XWPE_KEYS", "borland")
 
 
+def make_basetemp_parent(config):
+    """Make the folder above the --basetemp a job named, when it is missing.
+
+    A job that asks for `--basetemp wl-logs/gate` in a checkout with no
+    `wl-logs` gets its run started instead of an internal error at the first
+    line of the session: pytest makes the basetemp folder and never its
+    parents.  Under xdist the controller makes it here, before the workers
+    make theirs below it.
+    """
+    given = config.option.basetemp
+    if given:
+        parent = os.path.dirname(os.path.abspath(str(given)))
+        os.makedirs(parent, exist_ok=True)
+
+
 def pytest_sessionstart(session):
     """Put the owner's tool farm under the session's pytest basetemp: it goes
     with the session and is outside the working folder of every row."""
+    make_basetemp_parent(session.config)
     factory = getattr(session.config, "_tmp_path_factory", None)
     if factory is not None:
         gui_owner.current().use_farm_base(str(factory.getbasetemp()))
+
+
+def is_known_gap_hidden_failure(report, call):
+    """True when a report reads as a recorded incoherence (an xfail whose
+    reason starts with INCOHERENCE_PREFIX) but what failed was the test
+    owner (a timeout, a crash, a leak): that is never the known gap."""
+    reason = getattr(report, "wasxfail", None)
+    if not isinstance(reason, str) or not reason.startswith(gui_owner.INCOHERENCE_PREFIX):
+        return False
+    return call.excinfo is not None and isinstance(call.excinfo.value, gui_owner.OwnerFailure)
+
+
+@pytest.hookimpl(hookwrapper=True, tryfirst=True)
+def pytest_runtest_makereport(item, call):
+    """Make a failure of the owner in any phase (the row, its teardown) fail
+    the run even when the row is marked as an incoherence.
+
+    The owner's failures are assertion errors, which an xfail that names
+    AssertionError would take for the known gap: an editor that crashed
+    would read KNOWN and the gate would go green.  Only a failed assertion
+    of the row itself is the recorded gap."""
+    outcome = yield
+    report = outcome.get_result()
+    if is_known_gap_hidden_failure(report, call):
+        report.outcome = "failed"
+        report.longrepr = item.repr_failure(call.excinfo)
+        del report.wasxfail
 
 
 def pytest_configure(config):
@@ -40,6 +84,32 @@ def pytest_configure(config):
         "markers",
         "wpe_needs(*tools): skip, naming the tool, unless every host tool is "
         "usable and not switched off by this job (tests/host_tools.py, needs())")
+
+
+NEEDS_DUMP_VARIABLE = "XWPE_NEEDS_DUMP"
+
+
+def needs_of(item):
+    """The host tools a collected row declares with needs(), in the order
+    written ("a|b" stays one entry, an alternative)."""
+    tools = []
+    for mark in item.iter_markers("wpe_needs"):
+        tools.extend(mark.args)
+    return tools
+
+
+def pytest_collection_finish(session):
+    """When asked (tests/harness/harness.py check), write the host tools every
+    collected row declares, as {node id: [tool, ...]}, to the file named by
+    XWPE_NEEDS_DUMP.  The harness compares them with the needs its manifests
+    declare for the row, so a row that needs a tool its scenario does not
+    name is found at collection, not at the first run on a host without it."""
+    path = os.environ.get(NEEDS_DUMP_VARIABLE)
+    if not path:
+        return
+    declared = {item.nodeid: needs_of(item) for item in session.items}
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump({node: tools for node, tools in declared.items() if tools}, fh)
 
 
 def pytest_report_header(config):

@@ -160,21 +160,24 @@
    "requirement": "Breakpoints move with their lines, and come back with Undo",
    "layer": "ncurses",
    "test": "tests/test_debugger_integration.py::test_enter_above_a_breakpoint_at_a_stop_moves_it_in_gdb",
-   "status": "new"
+   "status": "new",
+   "needs": ["gcc", "gdb"]
   },
   {
    "id": "SC-buffer-04",
    "requirement": "Breakpoints move with their lines, and come back with Undo",
    "layer": "ncurses",
    "test": "tests/test_debugger_integration.py::test_a_breakpoint_moved_while_gdb_answers_is_told_after_the_answer",
-   "status": "new"
+   "status": "new",
+   "needs": ["gcc", "gdb"]
   },
   {
    "id": "SC-buffer-04",
    "requirement": "Breakpoints move with their lines, and come back with Undo",
    "layer": "ncurses",
    "test": "tests/test_debugger_integration.py::test_enter_above_a_breakpoint_at_a_stop_moves_it_under_each_debugger",
-   "status": "new"
+   "status": "new",
+   "needs": ["python3", "jdb", "javac", "dlv", "go", "rustc", "lldb-dap", "gdb"]
   },
   {
    "id": "SC-buffer-04",
@@ -272,21 +275,24 @@
    "requirement": "The dirty mark lands on the written window, on Undo too",
    "layer": "ncurses",
    "test": "tests/test_buffer_owner.py::test_the_stack_window_has_no_undo_after_three_refreshes",
-   "status": "new"
+   "status": "new",
+   "needs": ["gcc", "gdb"]
   },
   {
    "id": "SC-buffer-02",
    "requirement": "The dirty mark lands on the written window, on Undo too",
    "layer": "ncurses",
    "test": "tests/test_buffer_owner.py::test_the_watches_window_has_no_undo_after_a_refresh",
-   "status": "new"
+   "status": "new",
+   "needs": ["gcc", "gdb"]
   },
   {
    "id": "SC-buffer-06",
    "requirement": "A view says so with a flag",
    "layer": "ncurses",
    "test": "tests/test_buffer_owner.py::test_a_stack_shrinking_by_two_leaves_no_stale_row",
-   "status": "new"
+   "status": "new",
+   "needs": ["gcc", "gdb"]
   },
   {
    "id": "SC-buffer-06",

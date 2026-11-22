@@ -18,7 +18,9 @@ import subprocess
 import time
 
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN, pane_text_with_history
+import gui_owner
+from wpe_driver import WpeSession, ALT, WPE_BIN, pane_text_with_history, \
+    wait_deadline, wait_screen
 
 ESC = "\033"
 ORIG = "int a = 1;\nint b = 2;\nint c = 3;\nint d = 4;\nint e = 5;\n"
@@ -32,7 +34,7 @@ LOCKED_ROW = "working on this window"
 # The mock's delay is wall-clock: scale it like the driver scales its own
 # waits, so the waiting line has ticked before the review opens under the
 # slower sanitizer build as well.
-WAIT_SCALE = float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1"))
+WAIT_SCALE = gui_owner.wait_scale()
 REPLY_DELAY_MS = int(1500 * WAIT_SCALE)
 REVIEW_POLL_S = 12
 RESULT_POLL_S = 10
@@ -62,17 +64,8 @@ def _trace(tmp_path):
     return t.read_text() if t.exists() else ""
 
 
-def _wait_screen(s, needle, tmo):
-    end = time.time() + tmo
-    while time.time() < end:
-        s._drain(0.4)
-        if needle in "\n".join(s.display(drain=0)):
-            return True
-    return False
-
-
 def _wait_trace(s, tmp_path, needle, tmo):
-    end = time.time() + tmo
+    end = wait_deadline(tmo)
     while time.time() < end:
         s._drain(0.4)
         if needle in _trace(tmp_path):
@@ -84,9 +77,9 @@ def _start_edit(s, tmp_path):
     """Ask for the Edit, see the waiting line spin, wait for the review box."""
     s.key(ALT.AI); s.key("e"); s._drain(0.4)
     s.key("change b and d"); s.key("\r", delay=0.6)
-    assert _wait_screen(s, "[AI edit] " + WAITING, REVIEW_POLL_S), \
+    assert wait_screen(s, "[AI edit] " + WAITING, REVIEW_POLL_S), \
         "the waiting line never showed:\n" + "\n".join(s.display(drain=0))
-    assert _wait_screen(s, REVIEW_BOX, REVIEW_POLL_S), \
+    assert wait_screen(s, REVIEW_BOX, REVIEW_POLL_S), \
         "no review box:\n" + "\n".join(s.display(drain=0))
 
 

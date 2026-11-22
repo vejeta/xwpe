@@ -1,0 +1,95 @@
+# The host tools the suite's rows need, and where the Linux CI job gets each.
+# One line per item, fields separated by "|":
+#   need | ubuntu-package | kind | note
+# "need" is the name a row declares (needs("gdb") in the code, "needs": ["gdb"]
+# in a manifest row of tests/harness) or the name a display-layer gate of
+# tests/x11 and tests/wayland reports.  tests/check-ci-tools.sh keeps this
+# record, the manifests and .github/workflows/linux.yml equal, offline: a need
+# with no line here, a package the job does not install, or a job whose
+# XWPE_TEST_TOOLS_EXPECTED differs from the lines below, fails.
+#
+# kind:
+#   apt        installed by the job (the package is in its apt-get list).  A
+#              row of this need that skips on the job is a FAIL, not a
+#              declared absence: the image is wrong.
+#   layer      the same, for a tool of a display layer gate (tests/x11/conftest.py,
+#              tests/wayland/conftest.py).  No manifest row names it; the gate
+#              fails the session instead of skipping when the job expects it.
+#   base       on every Linux host the suite runs on (shell, compiler, git,
+#              the terminfo tools).  Not installed by name, not declared by a
+#              row, not expected.
+#   image      on the GitHub runner image, not installed by the job (the JDK,
+#              Go, a Rust toolchain).  A row that needs it declares it, so a
+#              host without it reads BLOCKED.  Not expected.
+#   absent:R   not installed by the job, for the reason R.  A row that needs it
+#              declares it, so its skip reads BLOCKED and is named in the report.
+#   condition  not a program: a fact about the host or the build.
+#
+# A note that starts with "run: " names a command the job must also run
+# (the package alone is not enough).
+#
+# Ubuntu 26.04 (resolute) package names and components read on
+# packages.ubuntu.com on 2026-11-22; the first CI run on this image is the proof
+# that each installed version is usable.
+#
+# Debuggers and runtimes the rows start.
+gdb|gdb|apt|17.1-2ubuntu1, main
+dlv|delve|apt|1.24.0-4, universe; /usr/bin/dlv. Older than the 1.27 the rows pass with on sid: the first run shows whether it accepts the runner's Go
+go|golang-go|image|the runner image ships Go; the dlv rows build with it
+scalac|scala|apt|2.11.12-6build1, universe. Scala 2.11 (sid has 2.12): the first run shows whether it runs on the runner's JDK
+scala|scala|apt|the runner of the same package
+scala-cli|-|absent:no package in resolute|the 15 scala-cli rows stay BLOCKED
+ga68|ga68|apt|4:15.2.0-5ubuntu1, universe; /usr/bin/ga68 comes with it, as on sid. gcc 15 based (sid passes with 16.2; ga68-16 on 26.04 is 16-20260322-1ubuntu1 but installs no ga68 name): the first run shows whether 15.2 builds the row's source
+a68g|algol68g|apt|3.1.2-1.2, universe
+lldb-dap|-|absent:not read from the resolute Contents index|the 29 lldb rows stay BLOCKED
+rustc|-|image|the runner image ships a Rust toolchain
+javac|-|image|the runner image ships a JDK
+jdb|-|image|the runner image ships a JDK
+java|-|image|the runner image ships a JDK
+clangd|-|absent:not installed here|one assistant row stays BLOCKED
+cobc|-|absent:not installed here|
+fpc|-|absent:not installed here|
+gfortran|-|absent:not installed here|
+hypothesis|-|absent:not installed in the pytest venv|
+#
+# Locale.
+de_DE.UTF-8|locales|apt|2.43-2ubuntu2.4, main. run: sudo locale-gen de_DE.UTF-8
+#
+# Display layers.
+Xvfb|xvfb|layer|
+xdotool|xdotool|layer|
+xwd|x11-apps|layer|7.7+11build4, universe; /usr/bin/xwd
+xlogo|x11-apps|layer|/usr/bin/xlogo
+xwininfo|x11-utils|layer|
+weston|weston|layer|
+matchbox-window-manager|matchbox-window-manager|layer|
+magick|imagemagick|layer|ImageMagick 7: its xwd decode goes through xwdtopnm
+xwdtopnm|netpbm|layer|2:11.10.02-1build1, universe. Needed by magick; missing on 26.04 until now, so the X11 suite skipped whole
+wl-clipboard|wl-clipboard|apt|
+wl-copy|wl-clipboard|apt|
+wl-paste|wl-clipboard|apt|
+xclip|-|absent:not installed here|four X11 clipboard rows stay BLOCKED
+xterm|-|absent:not installed here|
+#
+# Tools every row may assume.
+sh|-|base|
+gcc|-|base|build-essential
+g++|-|base|build-essential
+make|-|base|build-essential
+git|-|base|
+python3|-|base|
+prlimit|-|base|util-linux
+tput|-|base|ncurses-bin
+tic|-|base|ncurses-bin
+infocmp|-|base|ncurses-bin
+man|-|image|man-db on the runner image
+#
+# Facts about the host or the build, not programs.
+/proc|-|condition|
+linux|-|condition|
+pidfd|-|condition|
+started no thread|-|condition|
+primary selection|-|condition|
+the Wayland build|-|condition|
+GPM daemon|-|condition|the gpm daemon is not installed by the job
+the rxvt-unicode-256color terminfo entry|ncurses-term|condition|ncurses-term is installed by the job

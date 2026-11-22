@@ -12,7 +12,7 @@ import time
 
 import pytest
 
-from wpe_driver import ALT, WPE_BIN, WpeSession
+from wpe_driver import ALT, WPE_BIN, WpeSession, wait_deadline, wait_screen
 
 
 def _ai_build():
@@ -39,15 +39,6 @@ def _env(tmp_path, reply):
     }
 
 
-def _wait_screen(s, needle, tmo=12):
-    end = time.time() + tmo
-    while time.time() < end:
-        s._drain(0.4)
-        if needle in "\n".join(s.display()):
-            return True
-    return False
-
-
 def _start_edit(s, instr="do it"):
     s.key(ALT.AI)
     s.key("e")
@@ -67,7 +58,7 @@ def _edit_whole_file(tmp_path, seed, reply):
     with WpeSession(str(tmp_path), seed, env_extra=_env(tmp_path, reply),
                     filename="t.c") as s:
         _start_edit(s)
-        assert _wait_screen(s, BOX), "no review box"
+        assert wait_screen(s, BOX), "no review box"
         shown = "\n".join(s.display())
         s.key("y", delay=0.7)
         s._drain(0.5)
@@ -108,7 +99,7 @@ def test_a_block_edit_keeps_the_carriage_returns_around_the_block(tmp_path):
         s.key("\033[C", delay=0.2)
         s.key(ALT.BLOCK, "e", delay=0.4)
         _start_edit(s, "edit line two")
-        assert _wait_screen(s, BOX), "no review box for the block edit"
+        assert wait_screen(s, BOX), "no review box for the block edit"
         s.key("y", delay=0.7)
         s._drain(0.5)
         s.save()
@@ -127,7 +118,7 @@ def test_a_long_line_is_one_line_to_the_model(tmp_path):
     with WpeSession(str(tmp_path), seed, env_extra=_env(tmp_path, reply),
                     filename="t.c") as s:
         _start_edit(s)
-        assert _wait_screen(s, BOX), "no review box"
+        assert wait_screen(s, BOX), "no review box"
         shown = "\n".join(s.display())
         s.key("y", delay=0.7)
         s._drain(0.5)
@@ -144,7 +135,7 @@ def _trace(tmp_path):
 
 
 def _wait_trace(s, tmp_path, needle, tmo=20):
-    end = time.time() + tmo
+    end = wait_deadline(tmo)
     while time.time() < end:
         s._drain(0.4)
         if needle in _trace(tmp_path):
@@ -166,7 +157,7 @@ def test_apply_all_keeps_the_carriage_return_of_a_line_it_left_alone(tmp_path):
         s._drain(0.5)
         s.key("bump b")
         s.key("\r", delay=0.8)
-        assert _wait_screen(s, "Multi-file edit - 1 file"), "no plan box"
+        assert wait_screen(s, "Multi-file edit - 1 file"), "no plan box"
         shown = "\n".join(s.display())
         s.key("a", delay=1.0)
         assert _wait_trace(s, tmp_path, "plan done"), _trace(tmp_path)
@@ -192,7 +183,7 @@ def test_a_tool_that_changes_only_line_endings_shows_every_line_it_changes(tmp_p
         s._drain(0.5)
         s.key("rewrite")
         s.key("\r", delay=0.8)
-        assert _wait_screen(s, "Write t.c"), "no write box"
+        assert wait_screen(s, "Write t.c"), "no write box"
         shown = "\n".join(s.display())
         s.key("n", delay=0.8)
     assert "-int a = 1;" in shown and "+int a = 1;" in shown, shown

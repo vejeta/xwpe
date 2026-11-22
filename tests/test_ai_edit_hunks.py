@@ -11,7 +11,7 @@ import os
 import time
 import subprocess
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN
+from wpe_driver import WpeSession, ALT, WPE_BIN, wait_screen
 
 ORIG = "int a = 1;\nint b = 2;\nint c = 3;\nint d = 4;\nint e = 5;\n"
 NEW = "int a = 11;\nint b = 2;\nint c = 3;\nint d = 4;\nint e = 55;\n"
@@ -29,15 +29,6 @@ def _ai_build():
 pytestmark = pytest.mark.skipif(not _ai_build(), reason="wpe built without --enable-ai")
 
 
-def _wait(s, needle, tmo=12):
-    end = time.time() + tmo
-    while time.time() < end:
-        s._drain(0.5)
-        if needle in "\n".join(s.display()):
-            return True
-    return False
-
-
 def test_reject_one_hunk_accept_the_other(tmp_path):
     trace = tmp_path / "e.trace"
     env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock", "XWPE_AI_MOCK_REPLY": NEW,
@@ -45,9 +36,9 @@ def test_reject_one_hunk_accept_the_other(tmp_path):
     with WpeSession(str(tmp_path), ORIG, env_extra=env, filename="t.c") as s:
         s.key(ALT.AI); s.key("e"); s._drain(0.5)
         s.key("bump a and e"); s.key("\r", delay=0.8)
-        assert _wait(s, "Proposed change 1/2"), "first hunk not shown"
+        assert wait_screen(s, "Proposed change 1/2"), "first hunk not shown"
         s.key("n", delay=0.6)                          # REJECT hunk 1 (line a)
-        assert _wait(s, "Proposed change 2/2"), "second hunk not shown"
+        assert wait_screen(s, "Proposed change 2/2"), "second hunk not shown"
         s.key("y", delay=0.6); s._drain(0.8)           # ACCEPT hunk 2 (line e)
         s.save()
         out = s.text()

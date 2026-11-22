@@ -24,7 +24,7 @@ import subprocess
 
 import pytest
 
-from wpe_driver import WpeSession, ALT, WPE_BIN
+from wpe_driver import WpeSession, ALT, WPE_BIN, wait_screen
 
 ORIG = "int a = 1;\nint b = 2;\nint c = 3;\n"
 INSTRUCTION = "rename a to alpha"
@@ -58,15 +58,6 @@ def _stub_claude_capturing(dir_, capture, reply):
     return d
 
 
-def _wait_screen(s, needle, tmo=15):
-    end = time.time() + tmo
-    while time.time() < end:
-        s._drain(0.4)
-        if needle in "\n".join(s.display()):
-            return True
-    return False
-
-
 # @scenario SC-ai-edit-06
 def test_whole_file_edit_sends_instruction_windows_header_and_file(tmp_path):
     capture = str(tmp_path / "request.txt")
@@ -87,7 +78,7 @@ def test_whole_file_edit_sends_instruction_windows_header_and_file(tmp_path):
     with WpeSession(str(tmp_path), ORIG, env_extra=env, filename="t.c") as s:
         s.key(ALT.AI); s.key("e"); s._drain(0.5)
         s.key(INSTRUCTION); s.key("\r", delay=0.8)
-        assert _wait_screen(s, "[AI edit] no change"), \
+        assert wait_screen(s, "[AI edit] no change", 15), \
             "the edit did not complete:\n" + "\n".join(s.display())
 
     body = open(capture).read()

@@ -53,12 +53,35 @@ Sub-commands (all stdlib, no third-party imports, so CI can run it bare):
                                      disagreements by class; exit 1 while a
                                      cell or a tuple is empty
 
-Verdicts are PASS, FAIL, BLOCKED (manifest says so), NOT_EXERCISED (a job
-switched the row's host tool off, XWPE_TEST_TOOLS_OFF; the report fails on it,
-so a capability a job stopped checking never reads green) or MISSING (the test
-did not run).  A skipped test counts as FAIL unless its scenario is ``blocked``,
-its layer is ``live``, or the row declares what the test needs and the skip
-says that is what was missing: a silent skip must never read as coverage.
+Verdicts are PASS, FAIL, BLOCKED (manifest says so), KNOWN (see below),
+NOT_EXERCISED (a job switched the row's host tool off, XWPE_TEST_TOOLS_OFF;
+the report fails on it, so a capability a job stopped checking never reads
+green) or MISSING (the test did not run).  A skipped test counts as FAIL
+unless its scenario is ``blocked``, its layer is ``live``, the row declares
+what the test needs and the skip says that is what was missing, or the row
+declares it ``known``: a silent skip must never read as coverage.  The report
+passes (exit 0) on PASS, BLOCKED and KNOWN only.
+
+A row may carry ``"known": "<text>"``: the recorded state of a row that does
+not run clean and is not a tool missing from the host.  The text must be in
+every skip message of the row.  ``INCOHERENCE: ...`` names an incoherence
+(tests/wpe_driver.py incoherence(), an xfail that only an AssertionError
+counts for: the junit type must be pytest.xfail); any other text must name the
+approval an unapproved golden waits for (a pytest.skip).  An incoherence or a
+golden the manifest does not declare is a FAIL, so a row cannot make its own
+skip a reviewed state.  The report prints the KNOWN scenarios with their text
+on stderr.
+
+XWPE_TEST_TOOLS_EXPECTED (blank-separated, set by a job) lists the host tools
+the job installed (tests/ci-tools.txt keeps it equal to the workflow).  A row
+that declares one of them and skips for its absence is a FAIL there, with the
+line "<tool> is installed by this job but not usable": on that job the tool is
+meant to be there.  On a host without the variable the same skip is BLOCKED.
+
+``check`` also reads, from the code of every collected row (the host tools it
+declares with needs(), dumped by tests/conftest.py when XWPE_NEEDS_DUMP names a
+file), that its manifest row declares each tool that is not one every host has
+(kind ``base`` of tests/ci-tools.txt).
 
 A row may carry ``"needs": ["clangd"]``: the host tools the test cannot run
 without (a language server, a GPM daemon).  Where the tool is installed the
@@ -79,6 +102,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 import xml.etree.ElementTree as ET
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -87,6 +111,30 @@ TOP = os.path.dirname(os.path.dirname(HERE))
 sys.path.insert(0, os.path.dirname(HERE))
 import engine_guard  # noqa: E402
 PYTHON_LAYERS = ("ncurses", "x11", "wayland", "asan", "config-file", "live")
+# The file tests/conftest.py writes the host tools of every collected row to
+# when this variable names one (see collect_suite).
+NEEDS_DUMP_VARIABLE = "XWPE_NEEDS_DUMP"
+# The host tools the job installed (tests/ci-tools.txt keeps it equal to the
+# workflow's apt-get list); a declared tool of the list that skips is a FAIL.
+EXPECTED_VARIABLE = "XWPE_TEST_TOOLS_EXPECTED"
+# The types pytest writes on a <skipped> element of the junit file.
+XFAIL_TYPE = "pytest.xfail"
+SKIP_TYPE = "pytest.skip"
+# A manifest row's ``known`` names a recorded incoherence by this prefix (the
+# text tests/wpe_driver.py incoherence() puts on its marker) or an unapproved
+# golden by the approval text of tests/test_edit_model_golden.py.
+KNOWN_XFAIL_PREFIX = "INCOHERENCE:"
+KNOWN_APPROVAL_TEXT = "waits for the user's approval"
+# Worst first: the verdict of a scenario pinned by several rows is the worst.
+SEVERITY = {"FAIL": 0, "MISSING": 1, "NOT_EXERCISED": 2, "KNOWN": 3,
+            "BLOCKED": 4, "PASS": 5}
+# The verdicts that let the gate pass: a declared absence and a recorded
+# known state are reviewed declarations of the manifest, nothing else is.
+PASSING = ("PASS", "BLOCKED", "KNOWN")
+# The record of the host tools (tests/ci-tools.txt) and the kind that needs no
+# declaration: a tool every Linux host the suite runs on has.
+CI_TOOLS_RECORD = os.path.join(os.path.dirname(HERE), "ci-tools.txt")
+BASE_KIND = "base"
 
 
 def manifest_path(capability):
@@ -145,11 +193,15 @@ def cmd_files(capability, layer):
     print("\n".join(seen))
 
 
-def junit_results(xml_path, skip_reasons=None):
+def junit_results(xml_path, skip_reasons=None, skip_kinds=None):
     """{(classname, name): 'PASS'|'FAIL'|'SKIP'} from a pytest junit file.
 
     When ``skip_reasons`` is a dict it also receives, per skipped case, the
     skip message, so a row's declared needs can be matched against it.
+    ``skip_kinds`` receives the type pytest wrote on the skip: XFAIL_TYPE
+    for a row that failed as it is expected to (an xfail), SKIP_TYPE for a
+    row that did not run.  The two are not the same thing, and a row that
+    did not run must never read like one that ran and failed as expected.
     """
     results = {}
     for case in ET.parse(xml_path).iter("testcase"):
@@ -161,6 +213,8 @@ def junit_results(xml_path, skip_reasons=None):
             results[key] = "SKIP"
             if skip_reasons is not None:
                 skip_reasons[key] = (skipped.get("message") or "") + " " + (skipped.text or "")
+            if skip_kinds is not None:
+                skip_kinds[key] = skipped.get("type") or SKIP_TYPE
         else:
             results[key] = "PASS"
     return results
@@ -203,6 +257,47 @@ def skip_names_a_need(scenario, reasons):
     return all(any(n in r.lower() for n in needs) for r in reasons)
 
 
+def expected_tools():
+    """The host tools this job installed, from XWPE_TEST_TOOLS_EXPECTED
+    (blank-separated, the same names the manifests' ``needs`` use)."""
+    return os.environ.get(EXPECTED_VARIABLE, "").split()
+
+
+def skip_names_an_expected_need(scenario, reasons, expected):
+    """The declared tools a skip names that the job says it installed.
+
+    A row that declares a tool and skips for its absence reads BLOCKED on a
+    host that never had the tool.  On a job that installed it, the same skip
+    means the tool is there and does not work, which is a failure of the
+    image the report must not hide behind the declaration."""
+    named = []
+    wanted = {e.lower() for e in expected}
+    for need in scenario.get("needs") or []:
+        if need.lower() in wanted and any(need.lower() in r.lower() for r in reasons or []):
+            named.append(need)
+    return named
+
+
+def skip_is_known(scenario, reasons, kinds):
+    """Is every skip of the row the incoherence or unapproved golden the
+    manifest row declares in ``known``?
+
+    ``known`` is text the skip message must contain, so a row cannot become
+    a known one by writing a marker of its own.  A row whose ``known`` starts
+    with KNOWN_XFAIL_PREFIX must have failed as an xfail: a row that did not
+    run, or one that ended on a crash, is not a recorded incoherence.  Any
+    other ``known`` must name the approval a golden waits for (checked by
+    ``check``) and must be a skip, not an xfail.
+    """
+    known = (scenario.get("known") or "").lower()
+    if not known or not reasons:
+        return False
+    if not all(known in r.lower() for r in reasons):
+        return False
+    wanted_kind = XFAIL_TYPE if scenario["known"].startswith(KNOWN_XFAIL_PREFIX) else SKIP_TYPE
+    return all(kind == wanted_kind for kind in kinds or [])
+
+
 # The tail of the skip a job gives a row whose host tool it switched off
 # (tests/host_tools.py, NOT_EXERCISED; tests/test_host_tools.py keeps the two
 # equal).  This file takes no third-party import, so it repeats the text.
@@ -219,8 +314,14 @@ def skip_says_not_exercised(reasons):
     return any(NOT_EXERCISED in r.lower() for r in reasons or [])
 
 
-def verdict(scenario, raw, reasons=None):
-    """Fold a raw test result into the scenario's verdict."""
+def verdict(scenario, raw, reasons=None, kinds=None, expected=()):
+    """Fold a raw test result into the scenario's verdict.
+
+    The one place a skip becomes a verdict.  In this order: a skip of a live
+    row or a switched-off tool is BLOCKED or NOT_EXERCISED; a skip that names
+    a declared tool the job installed is FAIL (the tool is there and does not
+    work); a skip the manifest row declares as ``known`` is KNOWN; a skip that
+    names a declared tool is BLOCKED; any other skip is FAIL."""
     if scenario["status"] == "blocked":
         return "BLOCKED"
     if raw is None:
@@ -231,6 +332,10 @@ def verdict(scenario, raw, reasons=None):
         return "BLOCKED"
     if raw == "SKIP" and skip_says_not_exercised(reasons):
         return "NOT_EXERCISED"
+    if raw == "SKIP" and skip_names_an_expected_need(scenario, reasons, expected):
+        return "FAIL"
+    if raw == "SKIP" and skip_is_known(scenario, reasons, kinds):
+        return "KNOWN"
     if raw == "SKIP" and skip_names_a_need(scenario, reasons):
         return "BLOCKED"
     return "FAIL"
@@ -271,7 +376,7 @@ def junit_skip_reasons(skip_reasons, test_id):
             if c == classname and (n == name or n.startswith(name + "["))]
 
 
-def junit_results_of(sources, skip_reasons=None):
+def junit_results_of(sources, skip_reasons=None, skip_kinds=None):
     """Merged results of one or more junit files, given comma-separated.
 
     The CI suite writes one junit for the whole run, and the gate tops it up
@@ -283,7 +388,7 @@ def junit_results_of(sources, skip_reasons=None):
         # A suite that died before writing its junit leaves no file: read it
         # as "nothing ran", so the gate falls back to running every test.
         if path and os.path.exists(path):
-            raw.update(junit_results(path, skip_reasons))
+            raw.update(junit_results(path, skip_reasons, skip_kinds))
     return raw
 
 
@@ -305,47 +410,180 @@ def cmd_missing(capability, layer, sources):
     return 0
 
 
+def junit_skip_kinds(skip_kinds, test_id):
+    """The skip types of a node id's cases, folded like junit_lookup."""
+    return junit_skip_reasons(skip_kinds, test_id)
+
+
+def say_why(this, scenario, reasons, expected):
+    """The line, on stderr, that says why a scenario read FAIL or KNOWN when
+    the JSON verdict alone cannot: a tool the job installed that its row
+    could not use, or the declared text of a known row."""
+    if this == "FAIL":
+        for tool in skip_names_an_expected_need(scenario, reasons, expected):
+            sys.stderr.write("%s: %s is installed by this job but not usable\n"
+                             % (scenario["id"], tool))
+    elif this == "KNOWN":
+        sys.stderr.write("%s: KNOWN, %s\n" % (scenario["id"], scenario["known"]))
+
+
 def cmd_report(capability, layer, source):
     manifest = load_manifest(capability)
     skip_reasons = {}
+    skip_kinds = {}
+    expected = expected_tools()
     if layer == "c-unit":
         raw = automake_results(source)
         lookup = lambda test_id: raw.get(test_id)
     else:
-        raw = junit_results_of(source, skip_reasons)
+        raw = junit_results_of(source, skip_reasons, skip_kinds)
         lookup = lambda test_id: junit_lookup(raw, test_id)
     # A scenario may be pinned by several tests (several rows with one id);
     # the scenario's verdict is the worst of them, never the last one listed.
-    severity = {"FAIL": 0, "MISSING": 1, "NOT_EXERCISED": 2, "BLOCKED": 3, "PASS": 4}
     report = {}
     for scenario in scenarios_for_layer(manifest, layer):
         result = lookup(scenario["test"]) if scenario.get("test") else None
         reasons = junit_skip_reasons(skip_reasons, scenario["test"]) if scenario.get("test") else []
-        this = verdict(scenario, result, reasons)
+        kinds = junit_skip_kinds(skip_kinds, scenario["test"]) if scenario.get("test") else []
+        this = verdict(scenario, result, reasons, kinds, expected)
+        say_why(this, scenario, reasons, expected)
         seen = report.get(scenario["id"])
-        if seen is None or severity[this] < severity[seen]:
+        if seen is None or SEVERITY[this] < SEVERITY[seen]:
             report[scenario["id"]] = this
     json.dump(report, sys.stdout, indent=1, sort_keys=True)
     print()
-    return 0 if all(v in ("PASS", "BLOCKED") for v in report.values()) else 1
+    return 0 if all(v in PASSING for v in report.values()) else 1
 
 
-def collected_node_ids():
-    """Every pytest node id of the three suites, via --collect-only.
+def collect_suite(suite):
+    """(node ids, {node id: [tool, ...]}) of one suite, via --collect-only.
+
+    The second part is what tests/conftest.py dumps when XWPE_NEEDS_DUMP
+    names a file: the host tools each collected row declares with needs().
+    """
+    with tempfile.TemporaryDirectory(prefix="needs-dump.") as scratch:
+        dump = os.path.join(scratch, "needs.json")
+        env = dict(os.environ, **{NEEDS_DUMP_VARIABLE: dump})
+        out = subprocess.run(
+            [sys.executable, "-m", "pytest", "--collect-only", "-q", suite,
+             "-p", "no:cacheprovider"],
+            cwd=TOP, env=env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            text=True,
+        ).stdout
+        ids = {line.strip() for line in out.splitlines() if "::" in line}
+        needs = {}
+        if os.path.exists(dump):
+            with open(dump, encoding="utf-8") as fh:
+                needs = json.load(fh)
+    return ids, needs
+
+
+def collected_items():
+    """Every pytest node id of the three suites, and the host tools each one
+    declares, via --collect-only.
 
     The GUI suites are collected on their own: their conftest files keep
     them out of a whole-tree ``pytest tests`` run so the default suite stays
     green on a machine without an X server or a compositor.
     """
     ids = set()
+    needs = {}
     for suite in ("tests", "tests/x11", "tests/wayland"):
-        out = subprocess.run(
-            [sys.executable, "-m", "pytest", "--collect-only", "-q", suite,
-             "-p", "no:cacheprovider"],
-            cwd=TOP, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
-        ).stdout
-        ids.update(line.strip() for line in out.splitlines() if "::" in line)
-    return ids
+        suite_ids, suite_needs = collect_suite(suite)
+        ids.update(suite_ids)
+        needs.update(suite_needs)
+    return ids, needs
+
+
+def row_covers(row_test, node_id):
+    """Does a manifest row's test id name this collected node?
+
+    A row names a file, a test, or one case of a parametrized test."""
+    if node_id == row_test or node_id.startswith(row_test + "[") \
+            or node_id.startswith(row_test + "::"):
+        return True
+    return "::" not in row_test and node_id.split("::", 1)[0] == row_test
+
+
+def tool_declared(spec, declared):
+    """Is a code-side need ("gdb", or "a|b" for alternatives) named by the
+    row's declared needs: the whole spec, or any one alternative."""
+    return spec in declared or any(alt in declared for alt in spec.split("|"))
+
+
+def known_incoherence_text(known):
+    """True for an INCOHERENCE: text that says something after the prefix: a
+    bare prefix would match every incoherence of the row."""
+    return known.startswith(KNOWN_XFAIL_PREFIX) and bool(known[len(KNOWN_XFAIL_PREFIX):].strip())
+
+
+def known_problems(manifests):
+    """The rows whose ``known`` text is not one a skip may carry.
+
+    A ``known`` is an incoherence (INCOHERENCE:, an xfail) or an unapproved
+    golden (the approval text).  Anything else would let a row declare its
+    own skip a reviewed state."""
+    problems = []
+    for capability, manifest in sorted(manifests.items()):
+        for scenario in manifest["scenarios"]:
+            known = scenario.get("known")
+            if known is None:
+                continue
+            if scenario["status"] == "blocked" or not scenario.get("test"):
+                problems.append("%s: %s has known and no test to run" % (capability, scenario["id"]))
+            elif not (known_incoherence_text(known) or KNOWN_APPROVAL_TEXT in known):
+                problems.append("%s: %s known must start with '%s' and say what, or name '%s'"
+                                % (capability, scenario["id"], KNOWN_XFAIL_PREFIX,
+                                   KNOWN_APPROVAL_TEXT))
+    return problems
+
+
+def read_ci_tools(path=CI_TOOLS_RECORD):
+    """{need: kind} from the record of host tools; the kind is the word
+    before any ':' (absent:no package -> absent)."""
+    kinds = {}
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.rstrip("\n")
+            if not line.strip() or line.startswith("#"):
+                continue
+            fields = line.split("|")
+            if len(fields) >= 3:
+                kinds[fields[0]] = fields[2].split(":", 1)[0]
+    return kinds
+
+
+def base_tools(path=CI_TOOLS_RECORD):
+    """The tools every Linux host the suite runs on has: a row that needs
+    only these need not declare them."""
+    return {need for need, kind in read_ci_tools(path).items() if kind == BASE_KIND}
+
+
+def needs_drift(manifests, node_needs, exempt=()):
+    """The rows whose code declares a host tool its manifest row does not.
+
+    A row that needs a tool and does not say so skips, on a host without the
+    tool, for a reason the harness cannot read as a declared absence, and the
+    scenario reads FAIL.  ``manifests`` is {capability: manifest}; ``exempt``
+    are the tools every host has (base_tools()), which no row declares."""
+    problems = []
+    for capability, manifest in sorted(manifests.items()):
+        for scenario in manifest["scenarios"]:
+            test_id = scenario.get("test")
+            if not test_id or scenario["status"] == "blocked":
+                continue
+            declared = scenario.get("needs") or []
+            for node, tools in sorted(node_needs.items()):
+                if not row_covers(test_id, node):
+                    continue
+                lacking = [t for t in tools
+                           if not tool_declared(t, declared)
+                           and not tool_declared(t, exempt)]
+                if lacking:
+                    problems.append(
+                        "%s: %s -> %s uses needs(%s) and the row's needs lack it"
+                        % (capability, scenario["id"], node, ", ".join(lacking)))
+    return problems
 
 
 def ai_test_files():
@@ -368,11 +606,13 @@ def unmapped_allowed():
 def cmd_check():
     problems = []
     mapped_files = set()
-    node_ids = collected_node_ids()
+    node_ids, node_needs = collected_items()
+    manifests = {}
     for entry in sorted(os.listdir(HERE)):
         if not os.path.exists(manifest_path(entry)):
             continue
         manifest = load_manifest(entry)
+        manifests[entry] = manifest
         for scenario in manifest["scenarios"]:
             test_id = scenario.get("test")
             if not test_id:
@@ -385,6 +625,8 @@ def cmd_check():
                 collects = any(n == test_id or n.startswith(base) for n in node_ids)
                 if not collects and not live_gated_test_exists(test_id):
                     problems.append("%s: %s -> %s does not collect" % (entry, scenario["id"], test_id))
+    problems.extend(needs_drift(manifests, node_needs, base_tools()))
+    problems.extend(known_problems(manifests))
     allowed = unmapped_allowed()
     for path in ai_test_files():
         if path not in mapped_files and path not in allowed:

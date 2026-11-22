@@ -13,7 +13,8 @@ import subprocess
 
 import pytest
 
-from wpe_driver import WpeSession, ALT, WPE_BIN
+import gui_owner
+from wpe_driver import WpeSession, ALT, WPE_BIN, wait_screen
 
 ORIG = "int a = 1;\n"
 BOX = "Proposed change"
@@ -21,7 +22,7 @@ BOX = "Proposed change"
 # A waiting sign lives only while the backend is working, so the poll below has
 # to be finer than the sign is short, and the backend has to be held for longer
 # on a loaded machine, the way test_ai_edit_waiting_line.py holds it.
-WAIT_SCALE = float(os.environ.get("XWPE_TEST_WAIT_SCALE", "1"))
+WAIT_SCALE = gui_owner.wait_scale()
 SPIN_DELAY_MS = int(1500 * WAIT_SCALE)
 
 
@@ -51,23 +52,6 @@ def _env(tmp_path, **extra):
 def _trace(tmp_path):
     p = tmp_path / "e.trace"
     return p.read_text() if p.exists() else ""
-
-
-def _wait_screen(s, needle, tmo=12):
-    """Poll the screen for `needle` until `tmo` runs out.
-
-    `display(drain=0)` reads the screen as it stands instead of draining for
-    another 0.6 s first, which makes one turn of this loop cost 0.4 s rather
-    than 1.0 s.  A reply box stays up and is found either way; a waiting line
-    that lives as long as the backend takes is not, and the coarse grid cannot
-    look until the sign is already gone.
-    """
-    end = time.time() + tmo
-    while time.time() < end:
-        s._drain(0.4)
-        if needle in "\n".join(s.display(drain=0)):
-            return True
-    return False
 
 
 def _stub_claude(dir_, body, marker):
@@ -131,7 +115,7 @@ def test_preflight_failure_refuses_to_start(tmp_path):
     with WpeSession(str(tmp_path), ORIG, env_extra=env, filename="t.c") as s:
         s.key(ALT.AI); s.key("e"); s._drain(0.4)
         s.key("do it"); s.key("\r", delay=0.8)
-        assert _wait_screen(s, "Ollama not reachable"), \
+        assert wait_screen(s, "Ollama not reachable"), \
             "preflight error never reached the pane:\n" + "\n".join(s.display())
         disp = "\n".join(s.display())
         # The pane is narrower than the message, so it wraps across rows; each
@@ -159,7 +143,7 @@ def test_empty_reply_says_no_response(tmp_path):
     with WpeSession(str(tmp_path), ORIG, env_extra=env, filename="t.c") as s:
         s.key(ALT.AI); s.key("e"); s._drain(0.4)
         s.key("do it"); s.key("\r", delay=0.8)
-        assert _wait_screen(s, "[AI edit] no response"), \
+        assert wait_screen(s, "[AI edit] no response"), \
             "the exact 'no response' line never appeared:\n" + "\n".join(s.display())
         assert BOX not in "\n".join(s.display()), "a review box opened for an empty reply"
         s.save()
@@ -184,7 +168,7 @@ def test_a_applies_the_rest_unseen(tmp_path):
     with WpeSession(str(tmp_path), seed, env_extra=env, filename="t.c") as s:
         s.key(ALT.AI); s.key("e"); s._drain(0.4)
         s.key("do it"); s.key("\r", delay=0.8)
-        assert _wait_screen(s, "Proposed change 1/3"), "first of three hunks not shown"
+        assert wait_screen(s, "Proposed change 1/3"), "first of three hunks not shown"
         s.key("a", delay=0.7)
         saw_second = False
         end = time.time() + 8
@@ -252,7 +236,7 @@ def test_complete_spinner_in_text_window(tmp_path):
     env = _env(tmp_path, XWPE_AI_MOCK_DELAY_MS=str(SPIN_DELAY_MS))
     with WpeSession(str(tmp_path), ORIG, env_extra=env, filename="t.c") as s:
         s.key(ALT.AI); s.key("c", delay=0.6)
-        assert _wait_screen(s, "[AI] completing"), \
+        assert wait_screen(s, "[AI] completing"), \
             "the completing spinner never showed:\n" + "\n".join(s.display())
 
 
@@ -282,7 +266,7 @@ def test_complete_no_suggestion_on_empty_reply(tmp_path):
     env = _env(tmp_path, XWPE_AI_MOCK_REPLY="")
     with WpeSession(str(tmp_path), ORIG, env_extra=env, filename="t.c") as s:
         s.key(ALT.AI); s.key("c", delay=0.8)
-        assert _wait_screen(s, "[AI complete] no suggestion"), \
+        assert wait_screen(s, "[AI complete] no suggestion"), \
             "the exact 'no suggestion' line never appeared:\n" + "\n".join(s.display())
         s.save()
         assert s.text() == ORIG, "disk changed when there was no suggestion"
@@ -308,7 +292,7 @@ def test_complete_backend_error(tmp_path):
     }
     with WpeSession(str(tmp_path), ORIG, env_extra=env, filename="t.c") as s:
         s.key(ALT.AI); s.key("c", delay=0.8)
-        assert _wait_screen(s, "[AI complete] backend error", tmo=20), \
+        assert wait_screen(s, "[AI complete] backend error", tmo=20), \
             "the exact 'backend error' line never appeared:\n" + "\n".join(s.display())
         assert marker.exists(), "the stand-in never ran, so the line is not its answer"
         s.save()

@@ -392,7 +392,7 @@ CUT_SIZES = [(41, 12), (45, 15), (30, 8), (31, 7)]
 CUT_ON_STATUS_ROW = pytest.mark.xfail(
     reason="INCOHERENCE: after a resize from 80x30 to 45x15 a '(' is left on "
            "the last column of the status line under Find; also on 0060461",
-    strict=False)
+    strict=False, raises=AssertionError)
 
 
 def _bottom_border_whole(rows, title):

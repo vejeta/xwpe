@@ -20,7 +20,7 @@ import os
 import time
 import subprocess
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN
+from wpe_driver import WpeSession, ALT, WPE_BIN, wait_deadline, wait_screen
 
 ORIG3 = "int a = 1;\nint b = 2;\nint c = 3;\n"
 BOX = "Proposed change"
@@ -61,17 +61,8 @@ def _status_row(s):
     return ""
 
 
-def _wait_screen(s, needle, tmo=12):
-    end = time.time() + tmo
-    while time.time() < end:
-        s._drain(0.4)
-        if needle in "\n".join(s.display()):
-            return True
-    return False
-
-
 def _wait_trace(s, workdir, needle, tmo=12):
-    end = time.time() + tmo
+    end = wait_deadline(tmo)
     while time.time() < end:
         if needle in _trace(workdir):
             return True
@@ -103,7 +94,7 @@ def test_destructive_reply_asks_before_review_and_declining_keeps_the_file(
     case.mkdir()
     with WpeSession(str(case), ORIG3, env_extra=_env(case, reply), filename="t.c") as s:
         _start_edit(s)
-        assert _wait_screen(s, QUESTION), \
+        assert wait_screen(s, QUESTION), \
             "no confirmation for a %s reply:\n%s" % (name, "\n".join(s.display()))
         disp = "\n".join(s.display())
         assert "file has 3" in disp, "the question does not name the file's lines:\n" + disp
@@ -125,7 +116,7 @@ def test_truncated_reply_names_both_line_counts_and_can_be_declined(tmp_path):
     with WpeSession(str(tmp_path), seed, env_extra=_env(tmp_path, reply),
                     filename="t.c") as s:
         _start_edit(s)
-        assert _wait_screen(s, QUESTION), \
+        assert wait_screen(s, QUESTION), \
             "no confirmation for a truncated reply:\n" + "\n".join(s.display())
         disp = "\n".join(s.display())
         assert "reply has 10 lines" in disp, "reply line count missing:\n" + disp
@@ -142,9 +133,9 @@ def test_confirming_the_question_opens_the_review_as_usual(tmp_path):
     with WpeSession(str(tmp_path), ORIG3, env_extra=_env(tmp_path, "I cannot do that\n"),
                     filename="t.c") as s:
         _start_edit(s)
-        assert _wait_screen(s, QUESTION), "no confirmation box"
+        assert wait_screen(s, QUESTION), "no confirmation box"
         s.key("\r", delay=0.8)                        # Enter = Yes, review it
-        assert _wait_screen(s, BOX), \
+        assert wait_screen(s, BOX), \
             "confirming did not open the review:\n" + "\n".join(s.display())
         s.key("q", delay=0.8)
         s.save()
@@ -162,10 +153,10 @@ def test_apply_rest_stops_at_a_hunk_that_only_deletes(tmp_path):
     with WpeSession(str(tmp_path), seed, env_extra=_env(tmp_path, reply),
                     filename="t.c") as s:
         _start_edit(s)
-        assert _wait_screen(s, "Proposed change 1/2"), \
+        assert wait_screen(s, "Proposed change 1/2"), \
             "first hunk not shown:\n" + "\n".join(s.display())
         s.key("a", delay=0.8)                         # apply the rest
-        assert _wait_screen(s, "Proposed change 2/2"), \
+        assert wait_screen(s, "Proposed change 2/2"), \
             "'a' applied the deletion hunk unseen:\n" + "\n".join(s.display())
         disp = "\n".join(s.display())
         assert "deletes 2 adds 0" in disp, \
@@ -186,9 +177,9 @@ def test_quit_after_accepting_drops_the_accepted_hunks_and_says_how_many(tmp_pat
     with WpeSession(str(tmp_path), seed, env_extra=_env(tmp_path, reply),
                     filename="t.c") as s:
         _start_edit(s, "bump a and e")
-        assert _wait_screen(s, "Proposed change 1/2"), "first hunk not shown"
+        assert wait_screen(s, "Proposed change 1/2"), "first hunk not shown"
         s.key("y", delay=0.8)                         # accept hunk 1
-        assert _wait_screen(s, "Proposed change 2/2"), "second hunk not shown"
+        assert wait_screen(s, "Proposed change 2/2"), "second hunk not shown"
         s.key("q", delay=0.8)                         # quit the review
         assert _wait_trace(s, tmp_path, "edit discarded"), _trace(tmp_path)
         disp = "\n".join(s.display())

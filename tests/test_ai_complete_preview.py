@@ -23,7 +23,7 @@ import os
 import subprocess
 import time
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN, WAIT_SCALE
+from wpe_driver import WpeSession, ALT, WPE_BIN, WAIT_SCALE, wait_deadline, wait_screen
 
 BOX = "Proposed completion"       # the completion review box title
 PROMPT = "AI agent task"          # the Alt-G g task prompt title
@@ -73,17 +73,8 @@ def _on_screen(s, needle):
     return any(needle in r for r in s.display())
 
 
-def _wait_screen(s, needle, tmo=12):
-    end = time.time() + tmo
-    while time.time() < end:
-        s._drain(0.4)
-        if _on_screen(s, needle):
-            return True
-    return False
-
-
 def _wait_trace(s, tmp_path, needle, tmo=10):
-    end = time.time() + tmo
+    end = wait_deadline(tmo)
     while time.time() < end:
         s._drain(0.4)
         if needle in _trace(tmp_path):
@@ -107,7 +98,7 @@ def _discard_with(tmp_path, key):
     seed = "ZZZ\n"
     with WpeSession(str(tmp_path), seed, env_extra=_env(tmp_path, "PREFIX"), filename="t.c") as s:
         _start_complete(s, tmp_path)
-        assert _wait_screen(s, BOX), "no review box:\n" + _screen(s)
+        assert wait_screen(s, BOX), "no review box:\n" + _screen(s)
         s.key(key, delay=0.8)
         assert _wait_trace(s, tmp_path, "complete discarded", 8), \
             "the discard was not reported:\n" + _trace(tmp_path)
@@ -128,7 +119,7 @@ def test_completion_opens_review_box_and_lands_only_on_y(tmp_path):
     seed = "ZZZ\n"
     with WpeSession(str(tmp_path), seed, env_extra=_env(tmp_path, "PREFIX"), filename="t.c") as s:
         _start_complete(s, tmp_path)
-        assert _wait_screen(s, BOX), "no review box:\n" + _screen(s)
+        assert wait_screen(s, BOX), "no review box:\n" + _screen(s)
         disp = _screen(s)
         assert "PREFIX" in disp, "the suggestion is not shown in the box:\n" + disp
         assert "complete applied" not in _trace(tmp_path), \
@@ -164,7 +155,7 @@ def test_midline_completion_adds_no_newline_and_one_undo_removes_it(tmp_path):
         for _ in range(4):                       # cursor after "foo("
             s.key(RIGHT, delay=0.1)
         _start_complete(s, tmp_path)
-        assert _wait_screen(s, BOX), "no review box:\n" + _screen(s)
+        assert wait_screen(s, BOX), "no review box:\n" + _screen(s)
         assert _on_screen(s, "foo(bar)"), \
             "the box does not show the completed line:\n" + _screen(s)
         s.key("y", delay=0.8)
@@ -204,7 +195,7 @@ def test_completion_behind_task_prompt_waits_and_opens_its_box_after_esc(tmp_pat
 
         # Esc closes the prompt: the review opens as if the reply had just landed.
         s.key(ESC, delay=0.8)
-        assert _wait_screen(s, BOX, 5), \
+        assert wait_screen(s, BOX, 5), \
             "the review did not open once the prompt closed:\n" + _screen(s)
         assert not _on_screen(s, PROMPT), "the prompt is still up:\n" + _screen(s)
         assert _disk(s) == seed, "disk changed before the review was answered"

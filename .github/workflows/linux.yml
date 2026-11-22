@@ -43,10 +43,22 @@ jobs:
       # harness settle (keystroke -> screenshot) so timing flakes don't masquerade
       # as failures -- same knob the Debian autopkgtest uses.
       XWPE_TEST_WAIT_SCALE: "3"
+      # The host tools this job installs (tests/ci-tools.txt, kept equal to the
+      # apt-get list below by tests/check-ci-tools.sh).  A row that declares one
+      # of them and skips is a failure of the image, not a declared absence,
+      # and a display layer whose tool is missing stops the session.
+      XWPE_TEST_TOOLS_EXPECTED: >-
+        gdb dlv scalac scala ga68 a68g de_DE.UTF-8
+        Xvfb xdotool xwd xlogo xwininfo weston matchbox-window-manager
+        magick xwdtopnm wl-clipboard wl-copy wl-paste
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install build + GUI-test dependencies
+        # gdb, delve, scala, ga68, algol68g and locales are the debuggers,
+        # compilers and the German locale rows of the harness declare; x11-apps
+        # (xwd, xlogo) and netpbm (xwdtopnm, which ImageMagick 7 needs to read
+        # a screen dump) are what the X11 layer gate needs to run at all.
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -55,9 +67,11 @@ jobs:
             libfontconfig1-dev libcairo2-dev libpango1.0-dev libfreetype-dev \
             libvterm-dev libjson-c-dev zlib1g-dev libgpm-dev libssl-dev \
             libwayland-dev wayland-protocols libwayland-bin libxkbcommon-dev \
-            xvfb x11-utils x11-xserver-utils xauth xdotool \
+            xvfb x11-utils x11-xserver-utils xauth xdotool x11-apps netpbm \
             matchbox-window-manager imagemagick weston wl-clipboard \
+            gdb delve scala ga68 algol68g locales \
             python3 python3-pip python3-venv python3-pil
+          sudo locale-gen de_DE.UTF-8
 
       - name: Build (--with-wayland --enable-ai)
         # The assistant is off by default at configure time, so a build without
@@ -210,10 +224,11 @@ jobs:
         if: always()
         env:
           XDG_RUNTIME_DIR: /tmp/xdg
-        run: >-
-          XWPE_BIN="$PWD/xwpe" /tmp/ptenv/bin/python -m pytest -q
-          tests/wayland/test_resize.py tests/wayland/test_resize_mouse.py
-          --basetemp "$PWD/wl-logs/gate" -rxX
+        run: |
+          mkdir -p wl-logs
+          XWPE_BIN="$PWD/xwpe" /tmp/ptenv/bin/python -m pytest -q \
+            tests/wayland/test_resize.py tests/wayland/test_resize_mouse.py \
+            --basetemp "$PWD/wl-logs/gate" -rxX
 
       - name: Native Wayland GUI suite -- full breadth (Xvfb + weston)
         # The conftest starts its own Xvfb + weston (x11-backend, kiosk-shell) and
@@ -239,9 +254,10 @@ jobs:
         # The weston log and each row's editor log stay under --basetemp, so a
         # failure on a loaded runner is explainable (a real crash vs a
         # slow-runner mistime).
-        run: >-
-          XWPE_BIN="$PWD/xwpe" /tmp/ptenv/bin/python -m pytest -q tests/wayland
-          --basetemp "$PWD/wl-logs/full" -rxX
+        run: |
+          mkdir -p wl-logs
+          XWPE_BIN="$PWD/xwpe" /tmp/ptenv/bin/python -m pytest -q tests/wayland \
+            --basetemp "$PWD/wl-logs/full" -rxX
 
       - name: Upload test logs
         if: always()
@@ -269,12 +285,18 @@ jobs:
       XDG_CONFIG_HOME: ""
       XDG_STATE_HOME: ""
       XWPE_TEST_WAIT_SCALE: "3"
+      # The host tools this job installs (see the job above): the X11 layer
+      # gate stops the session when one of them is missing, where it used to
+      # skip the whole layer.
+      XWPE_TEST_TOOLS_EXPECTED: >-
+        Xvfb xdotool xwd xlogo xwininfo matchbox-window-manager magick xwdtopnm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Install build + GUI-test dependencies
         # xfonts-base is the core font ("8x13") this build draws with; without
-        # it the editor exits at start, and xvfb does not depend on it.
+        # it the editor exits at start, and xvfb does not depend on it.  netpbm
+        # carries xwdtopnm, which ImageMagick 7 needs to read a screen dump.
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -283,7 +305,7 @@ jobs:
             libfontconfig1-dev libcairo2-dev libpango1.0-dev libfreetype-dev \
             libjson-c-dev zlib1g-dev libssl-dev \
             libwayland-dev wayland-protocols libwayland-bin libxkbcommon-dev \
-            xvfb x11-utils x11-xserver-utils xauth xdotool x11-apps \
+            xvfb x11-utils x11-xserver-utils xauth xdotool x11-apps netpbm \
             xfonts-base matchbox-window-manager imagemagick \
             python3 python3-pip python3-venv python3-pil
 

@@ -18,7 +18,7 @@ import os
 import subprocess
 import time
 import pytest
-from wpe_driver import WpeSession, ALT, WPE_BIN
+from wpe_driver import WpeSession, ALT, WPE_BIN, wait_screen
 
 
 def _ai_build():
@@ -238,15 +238,6 @@ def _stub_claude_capturing(dir_, capture, reply):
     return d
 
 
-def _wait_screen(s, needle, tmo=15):
-    end = time.time() + tmo
-    while time.time() < end:
-        s._drain(0.4)
-        if needle in "\n".join(s.display()):
-            return True
-    return False
-
-
 # @scenario SC-ai-chat-11b
 def test_chat_context_is_the_file_not_the_transcript(tmp_path):
     orig = "int unique_marker_fn(void){return 7;}\n"
@@ -266,7 +257,7 @@ def test_chat_context_is_the_file_not_the_transcript(tmp_path):
         s.key(ALT.AI); s.key("a", delay=0.8)
         s._drain(0.5)
         s.key("what is this"); s.key("\r", delay=0.8)
-        assert _wait_screen(s, "STUBREPLY"), \
+        assert wait_screen(s, "STUBREPLY", 15), \
             "the chat turn did not complete:\n" + "\n".join(s.display())
     body = open(capture).read()
     assert "--- current file ---\n" + orig in body, \
