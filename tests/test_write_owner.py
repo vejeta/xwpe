@@ -22,6 +22,7 @@ import pytest
 
 pytest.importorskip("pyte")
 
+import gui_owner                                     # noqa: E402
 import procinfo                                      # noqa: E402
 import wpe_driver                                    # noqa: E402
 from wpe_driver import ALT, WpeSession, WAIT_SCALE  # noqa: E402
@@ -81,7 +82,12 @@ def _write_executable(path, text):
 
 def _limited_editor(tmp_path, monkeypatch, kib):
     """The editor started under `ulimit -f <kib>`, still under its own name:
-    a write past the limit then fails (SIGXFSZ ignored by the owner)."""
+    a write past the limit then fails (SIGXFSZ ignored by the owner).
+
+    The trace files are kept out of its environment: a CI run appends every
+    row of a shard to one XWPE_UI_TRACE, which is already far past this limit
+    when the row starts, so the editor's first trace line would kill it with
+    SIGXFSZ before it painted anything."""
     real = os.path.abspath(wpe_driver.WPE_BIN)
     name = os.path.basename(real)
     bindir = tmp_path / "limited"
@@ -90,7 +96,9 @@ def _limited_editor(tmp_path, monkeypatch, kib):
     _write_executable(wrapper, "#!/bin/bash\nulimit -f %d\nexec -a %s %s \"$@\"\n"
                       % (kib, name, real))
     monkeypatch.setattr(wpe_driver, "WPE_BIN", wrapper)
-    return {"XWPE_LIB": os.path.dirname(real)}
+    env = {"XWPE_LIB": os.path.dirname(real)}
+    env.update({var: None for var in gui_owner.TRACE_PASS_THROUGH})
+    return env
 
 
 def _grow(s, kib=3):

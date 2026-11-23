@@ -166,6 +166,50 @@ def test_a_parametrized_node_is_covered_by_the_row_that_names_its_test():
     assert not harness.row_covers("tests/t.py::t", "tests/t.py::t_other")
 
 
+FILE_ROW = "tests/t.py"
+FILE_CASES = {("tests.t", "test_a"): "PASS",
+              ("tests.t", "test_b[one]"): "PASS",
+              ("tests.t", "test_b[two]"): "PASS",
+              ("tests.t.TestC", "test_d"): "PASS"}
+
+
+def test_a_row_that_names_a_whole_file_reads_every_case_of_it():
+    """A manifest row may name a file and no test: it then reads every
+    testcase of that file, so it passes only when they all did, fails when any
+    one failed, and is MISSING (None) only when none of them ran.  A path in
+    the name slot, which junit_key gives a bare file, is no testcase's name,
+    so 13 such rows of SC-config-14 read MISSING over files that ran green."""
+    assert harness.junit_lookup(FILE_CASES, FILE_ROW) == "PASS"
+    one_failed = dict(FILE_CASES)
+    one_failed[("tests.t", "test_e")] = "FAIL"
+    assert harness.junit_lookup(one_failed, FILE_ROW) == "FAIL"
+    assert harness.junit_lookup(FILE_CASES, "tests/never_ran.py") is None
+
+
+def test_a_row_that_names_a_whole_file_holds_no_other_file():
+    """The file's own cases only: not a file whose module begins with the same
+    letters, and not a case of another row's test."""
+    other = {("tests.too", "test_a"): "FAIL", ("tests.u", "test_a"): "FAIL"}
+    both = dict(FILE_CASES)
+    both.update(other)
+    assert harness.junit_lookup(both, FILE_ROW) == "PASS"
+    assert harness.junit_lookup(other, FILE_ROW) is None
+
+
+def test_a_row_that_names_a_whole_file_reads_its_skips():
+    """A file that skipped reads SKIP, with the skip messages of its cases, so
+    the classifier still decides between a declared absence and a gap."""
+    skipped = {("tests.t", "test_a"): "SKIP", ("tests.t", "test_b"): "SKIP"}
+    reasons = {("tests.t", "test_a"): "no gdb on this host",
+               ("tests.t", "test_b"): "no dlv on this host"}
+    assert harness.junit_lookup(skipped, FILE_ROW) == "SKIP"
+    assert sorted(harness.junit_skip_reasons(reasons, FILE_ROW)) == sorted(reasons.values())
+    assert harness.verdict(scenario(test=FILE_ROW), "SKIP",
+                           ["no gdb on this host"], [SKIP]) == "FAIL"
+    assert harness.verdict(scenario(test=FILE_ROW, needs=["gdb"]), "SKIP",
+                           ["no gdb on this host"], [SKIP]) == "BLOCKED"
+
+
 INCOHERENT_ROWS = os.path.join(HERE, "one_row_incoherent.py")
 
 

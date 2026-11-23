@@ -35,6 +35,10 @@ pytest|9.1.1|-|https://pypi.org/project/pytest/|2026-11-23|8.2 or newer reads th
 pytest-xdist|3.8.0|-|https://pypi.org/project/pytest-xdist/|2026-11-23|
 pytest-rerunfailures|16.7|-|https://pypi.org/project/pytest-rerunfailures/|2026-11-23|gives --rerun-except, measured present in 16.7
 #
+# Tools a job builds at a tag instead of taking from the archive, because the
+# package is too old for the image's own toolchain (tests/ci-install.sh).
+delve|1.27.1|-|https://github.com/go-delve/delve/releases/latest|2026-11-23|ubuntu-26.04 ships 1.24.0-4, which refuses the image's Go ("Version of Delve is too old for Go version go1.26.11"); a tagged go install is built against that Go
+#
 # Package names inside the BSD virtual machines, read from each release's own
 # package index.
 pkg-freebsd-python|py312|-|https://pkg.freebsd.org/FreeBSD:15:amd64/quarterly/packagesite.pkg|2026-11-19|keep: FreeBSD's default Python is 3.12; there is no py313-pytest or py313-pyte in the index

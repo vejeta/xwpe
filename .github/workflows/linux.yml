@@ -327,8 +327,17 @@ jobs:
         # The conftest starts its own Xvfb + window manager; it skips cleanly if
         # a tool is missing.  always(): run even if an earlier step failed, so a
         # flake in one backend never hides another's result.
+        # --basetemp inside the workspace, as the Wayland steps have it: the
+        # owner keeps every process's log, the session's Xvfb log and an
+        # editor's crash file in the row's folder under it, and the upload
+        # below collects them.  Without it they stay in /tmp/pytest-of-runner,
+        # which no artifact holds, so the three display_lost rows that died of
+        # SIGSEGV left neither a crash file nor a backtrace to read.
         if: always()
-        run: XWPE_BIN="$PWD/xwpe" /tmp/ptenv/bin/python -m pytest -q tests/x11
+        run: |
+          mkdir -p x11-logs
+          XWPE_BIN="$PWD/xwpe" /tmp/ptenv/bin/python -m pytest -q tests/x11 \
+            --basetemp "$PWD/x11-logs"
 
       - name: Native Wayland resize/relayout gate (BLOCKING)
         # The one cross-cutting concern that has silently regressed before (the
@@ -381,7 +390,9 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: gui-test-logs
-          path: wl-logs/
+          path: |
+            wl-logs/
+            x11-logs/
           if-no-files-found: ignore
 
   gate:

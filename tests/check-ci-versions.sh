@@ -2,9 +2,10 @@
 # check-ci-versions.sh -- the CI workflows say what tests/ci-versions.txt says.
 #
 # One record (tests/ci-versions.txt) names every version the pipelines run:
-# runner labels, BSD releases, actions (tag and commit), pyte, and the BSD
-# package names that carry a version.  A migration edits the record and the
-# workflows in one change; this script keeps them equal, offline.
+# runner labels, BSD releases, actions (tag and commit), pyte, the tools
+# tests/ci-install.sh builds at a tag, and the BSD package names that carry a
+# version.  A migration edits the record and the workflows in one change; this
+# script keeps them equal, offline.
 #
 #   check-ci-versions.sh [--srcdir DIR] [--selftest] [--max-age DAYS]
 #
@@ -20,7 +21,9 @@
 # action not pinned by a 40-digit commit with a "# vX.Y.Z" comment; the two
 # macOS runner lists of macos.yml unequal; a BSD job whose name or release
 # input does not come from its matrix.release; a hard-coded Python minor
-# version in ci-run.sh; a record line without its fields.
+# version in ci-run.sh; a tool ci-install.sh builds at another tag than the
+# record's, or does not build at the recorded one; a record line without its
+# fields.
 # Not seen: a release or tag NEWER than the record (that needs the network;
 # the record's date and --max-age make it visible instead).
 #
@@ -47,11 +50,13 @@ ERR=$WORK/findings
 
 # Names of the record items every tree must have.
 REQUIRED="runner-ubuntu runner-macos-arm runner-macos-intel bsd-freebsd
-bsd-netbsd bsd-openbsd pyte pytest pytest-xdist pytest-rerunfailures
+bsd-netbsd bsd-openbsd pyte pytest pytest-xdist pytest-rerunfailures delve
 pkg-freebsd-python pkg-openbsd-python
 pkg-openbsd-autoconf pkg-openbsd-automake pkg-netbsd-python"
 # The Python packages a workflow or script pins with "==".
 PINNED="pyte pytest pytest-xdist pytest-rerunfailures"
+# The programs tests/ci-install.sh builds at a tag, as "record-item:program".
+BUILT="delve:dlv"
 
 # fail FILE MESSAGE: record one finding.
 fail() {
@@ -251,6 +256,22 @@ check_pyte() {
   done
 }
 
+# check_built_pins FILE: every tool the record says the job builds is built at
+# the recorded tag, and is built at all.  A tag is read after its program's
+# name, so `dlv@v1.27.1` is the record's delve.
+check_built_pins() {
+  [ -f "$1" ] || return 0
+  for b_pair in $BUILT; do
+    b_name=${b_pair%%:*}; b_prog=${b_pair#*:}
+    b_want=$(rec "$b_name" 2)
+    grep -oE "${b_prog}@v[0-9.]+" "$1" | while read -r b_tok; do
+      judge "$1" "$b_name" "${b_tok#"$b_prog"@v}" "$b_want"
+    done
+    grep -qE "${b_prog}@v${b_want}([^0-9.]|$)" "$1" \
+      || fail "$1" "no ${b_prog}@v${b_want} (the recorded $b_name)"
+  done
+}
+
 # check_ci_run FILE: no Python minor version is written into the BSD script.
 check_ci_run() {
   if grep -nE '^[^#]*python3\.[0-9]' "$1" > "$WORK/pyhard"; then
@@ -278,6 +299,7 @@ check_tree() {
   check_bsd_jobs "$T/.github/workflows/bsd.yml"
   check_bsd_packages "$T/.github/workflows/bsd.yml"
   check_pyte "$T"/.github/workflows/*.yml "$T/tests/run-tests.sh" "$T/tests/ci-venv.sh"
+  check_built_pins "$T/tests/ci-install.sh"
   check_ci_run "$T/contrib/bsd-test/ci-run.sh"
   [ ! -s "$ERR" ]
 }
@@ -345,7 +367,7 @@ selftest() {
   mkdir -p "$WORK/base/.github" "$WORK/base/tests" "$WORK/base/contrib"
   cp -R "$SRCDIR/.github/workflows" "$WORK/base/.github/workflows"
   cp "$SRCDIR/tests/ci-versions.txt" "$SRCDIR/tests/run-tests.sh" \
-     "$SRCDIR/tests/ci-venv.sh" "$WORK/base/tests/"
+     "$SRCDIR/tests/ci-venv.sh" "$SRCDIR/tests/ci-install.sh" "$WORK/base/tests/"
   cp -R "$SRCDIR/contrib/bsd-test" "$WORK/base/contrib/bsd-test"
   if ! check_tree "$WORK/base"; then
     echo "check-ci-versions: the tree itself is refused:" >&2
@@ -367,6 +389,8 @@ selftest() {
   canary old-pytest tests/ci-venv.sh 's/pytest==9.1.1/pytest==9.0.0/' "pytest 9.0.0 is older"
   canary old-xdist tests/ci-venv.sh 's/pytest-xdist==3.8.0/pytest-xdist==3.7.0/' "pytest-xdist 3.7.0 is older"
   canary old-rerun tests/ci-venv.sh 's/pytest-rerunfailures==16.7/pytest-rerunfailures==16.6/' "pytest-rerunfailures 16.6 is older"
+  canary old-delve tests/ci-install.sh 's|dlv@v1.27.1|dlv@v1.24.0|' "delve 1.24.0 is older"
+  canary no-delve tests/ci-install.sh 's|go install github.com/go-delve/delve/cmd/dlv@v1.27.1|true|' "no dlv@v1.27.1"
   canary hard-python contrib/bsd-test/ci-run.sh 's/PY=\$(find_python)/PY=python3.12/' "hard-coded python minor"
   canary record-item tests/ci-versions.txt '/^pyte|/d' "no line for pyte"
   canary record-fields tests/ci-versions.txt 's/^bsd-netbsd|11.1|-|/bsd-netbsd|11.1|/' "fields, six are needed"
@@ -415,7 +439,7 @@ rc=0
 selftest || rc=1
 if [ "$MODE" = all ]; then
   if check_tree "$SRCDIR"; then
-    echo "check-ci-versions: workflows, ci-run.sh and run-tests.sh match tests/ci-versions.txt"
+    echo "check-ci-versions: workflows, ci-run.sh, ci-install.sh and run-tests.sh match tests/ci-versions.txt"
   else
     show_findings
     rc=1

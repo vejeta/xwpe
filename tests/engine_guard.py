@@ -13,10 +13,11 @@ process of a row, on every backend, gets the same treatment.
 
 What a row gets:
 
-* PATH = the row's own folders (its stand-ins, in its scratch), then the
-  farm's tool folder, then the deny folder.  The machine's PATH folders
-  (~/.local/bin, /usr/local/bin, ~/.cargo/bin, npm and go bins, anything
-  under the real HOME, /usr/bin itself) are never on it.
+* PATH = the row's own folders (its stand-ins, in its scratch or in the tree
+  the suite runs from), then the farm's tool folder, then the deny folder.
+  The machine's PATH folders (~/.local/bin, /usr/local/bin, ~/.cargo/bin, npm
+  and go bins, anything else under the real HOME, /usr/bin itself) are never
+  on it.
 * A program that is neither in the baseline nor declared is not found, or
   it is found as a stub of the deny folder: one stub for every executable
   name the machine's PATH has that the farm does not.  The stub writes a
@@ -150,6 +151,11 @@ API_KEY_NAMES = ("ANTHROPIC_API_KEY", "OPENAI_API_KEY")
 BLOCKER_LOG_NAME = "blocked.log"
 STUB_NAME = "deny-stub"
 STUB_EXIT_CODE = 127
+# The tree this suite runs from.  Its own folders are the row's wherever the
+# tree is checked out: the stand-ins of tests/stubs are files of the tree, not
+# programs of the machine, and a CI runner puts its workspace under the real
+# HOME (/home/runner/work/xwpe/xwpe), where the rule below would drop them.
+SUITE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 class GuardRefused(RuntimeError):
@@ -390,14 +396,18 @@ def farm_path(path_text, machine, farm, extras, scratch):
     folder, the deny folder.
 
     A folder of @path_text is the machine's (and dropped) when it is one of
-    the machine's PATH folders, or when it is under the real HOME and not
-    under one of the @scratch folders (the row's working folder, its HOME).
-    The others are the row's own (its stand-ins) and keep their order."""
+    the machine's PATH folders, or when it is under the real HOME and is
+    neither under one of the @scratch folders (the row's working folder, its
+    HOME) nor under the tree the suite runs from.  The others are the row's
+    own (its stand-ins) and keep their order."""
     real_home = os.path.realpath(os.path.expanduser("~"))
     own, dropped = [], False
     for entry in path_text.split(os.pathsep):
         if not entry or machine.is_machine_folder(entry):
             dropped = dropped or bool(entry)
+            continue
+        if _usable_entry(entry) and _inside(entry, SUITE_ROOT):
+            own.append(entry)
             continue
         if _usable_entry(entry) and _inside(entry, real_home) \
                 and not any(_inside(entry, folder) for folder in scratch):

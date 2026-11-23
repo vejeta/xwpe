@@ -33,6 +33,7 @@ import pytest
 
 pytest.importorskip("pyte")
 
+import gui_owner                           # noqa: E402
 import procinfo                            # noqa: E402
 import wpe_driver                          # noqa: E402
 from mode_premise import special_bits_settable, workdir_in_my_group   # noqa: E402
@@ -371,7 +372,13 @@ def test_a_file_size_limit_is_reported_and_leaves_no_partial_copy(tmp_path, monk
     wd = str(tmp_path / "work")
     os.makedirs(wd)
     _seed(wd, DONT_OVERWRITE, {"src.txt": BIG})
-    with WpeSession(wd, "int main;\n", env_extra={"XWPE_LIB": os.path.dirname(real)}) as s:
+    # No trace file for an editor under a size limit: a CI run appends every
+    # row of a shard to one XWPE_UI_TRACE, which is already past this limit
+    # when the row starts, so the editor's first trace line would kill it
+    # with SIGXFSZ before it painted anything.
+    env = {"XWPE_LIB": os.path.dirname(real)}
+    env.update({var: None for var in gui_owner.TRACE_PASS_THROUGH})
+    with WpeSession(wd, "int main;\n", env_extra=env) as s:
         _copy(s, "src.txt", "out.bin")
         time.sleep(1.0)
         screen = _squash(s)

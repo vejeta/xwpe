@@ -408,7 +408,12 @@ def wait_for(event_fn, what, timeout, poll=DEFAULT_POLL_S, state_fn=None):
     line) instead of sleeping, so it goes on as soon as the event happens
     and, when the event never does, fails with a message naming the event,
     the deadline and the scale, plus state_fn's picture of what was there
-    instead."""
+    instead.
+
+    Ready is true, so an event returns a true value once it happens and a
+    false one (None, 0, "") while it has not: an event whose ready value can
+    be false must return something else that names it (a display's ":0", not
+    the number 0)."""
     scale = wait_scale()
     deadline_s = timeout * scale
     start = time.monotonic()
@@ -2928,8 +2933,13 @@ def run_nested(argv, timeout, input=None, cwd=None, check=False,
 # The display servers, moved here from the graphical conftests
 
 
-def _display_number(fd, chunks):
-    """The display number the server wrote to fd, once its line is whole."""
+def _display_name(fd, chunks):
+    """The display the server named on fd, once its line is whole: ":0" for
+    the display 0.
+
+    The name and not the number, because this is a wait_for event and the
+    number 0 is false: a server that took the display 0 never looked ready
+    and the wait ran to its deadline."""
     if not select.select([fd], [], [], 0)[0]:
         return None
     data = os.read(fd, DISPLAY_LINE_MAX)
@@ -2937,7 +2947,7 @@ def _display_number(fd, chunks):
     text = b"".join(chunks)
     if not data or not text.endswith(b"\n"):
         return None
-    return int(text.strip())
+    return ":%d" % int(text.strip())
 
 
 def start_x_server(owner, request, log_dir, screen=SCREEN):
@@ -2958,12 +2968,12 @@ def start_x_server(owner, request, log_dir, screen=SCREEN):
         os.close(write_fd)
     chunks = []
     try:
-        number = wait_for(lambda: _display_number(read_fd, chunks),
-                          "Xvfb to print its display number", SERVER_START_S,
-                          state_fn=server.log_text)
+        name = wait_for(lambda: _display_name(read_fd, chunks),
+                        "Xvfb to print its display number", SERVER_START_S,
+                        state_fn=server.log_text)
     finally:
         os.close(read_fd)
-    return owner.register_x_display(":%d" % number, server)
+    return owner.register_x_display(name, server)
 
 
 def start_compositor(owner, request, x_display, log_dir, width, height):

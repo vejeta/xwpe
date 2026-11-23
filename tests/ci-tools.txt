@@ -15,6 +15,10 @@
 #   layer      the same, for a tool of a display layer gate (tests/x11/conftest.py,
 #              tests/wayland/conftest.py).  No manifest row names it; the gate
 #              fails the session instead of skipping when the job expects it.
+#   built      installed by the job, but not from a package: the job runs the
+#              command the note names after "run: ", at the version
+#              tests/ci-versions.txt records.  Expected like an apt tool, so a
+#              row that skips for it is a FAIL and not a declared absence.
 #   base       on every Linux host the suite runs on (shell, compiler, git,
 #              the terminfo tools).  Not installed by name, not declared by a
 #              row, not expected.
@@ -34,7 +38,7 @@
 #
 # Debuggers and runtimes the rows start.
 gdb|gdb|apt|17.1-2ubuntu1, main
-dlv|delve|apt|1.24.0-4, universe; /usr/bin/dlv. Older than the 1.27 the rows pass with on sid: the first run shows whether it accepts the runner's Go
+dlv|-|built|1.27.1, built against the image's own Go: the archive's delve 1.24.0-4 (universe) is too old for that Go and refuses to start at all, which failed every [dlv] row of the first sharded run. run: go install github.com/go-delve/delve/cmd/dlv@v1.27.1
 go|golang-go|image|the runner image ships Go; the dlv rows build with it
 scalac|scala|apt|2.11.12-6build1, universe. Scala 2.11 (sid has 2.12): the first run shows whether it runs on the runner's JDK
 scala|scala|apt|the runner of the same package

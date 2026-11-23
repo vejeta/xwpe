@@ -19,6 +19,7 @@ import stat
 
 import pytest
 
+import gui_owner
 import wpe_driver
 from wpe_driver import WpeSession
 
@@ -93,7 +94,12 @@ def test_save_options_into_a_read_only_file_says_why(tmp_path):
 
 def _limited_editor(tmp_path, monkeypatch, kib):
     """The editor started under `ulimit -f <kib>`, still under its own name:
-    a write past the limit then fails (SIGXFSZ is ignored by the owner)."""
+    a write past the limit then fails (SIGXFSZ is ignored by the owner).
+
+    The trace files are kept out of its environment: a CI run appends every
+    row of a shard to one XWPE_UI_TRACE, which is already far past this limit
+    when the row starts, so the editor's first trace line would kill it with
+    SIGXFSZ before it painted anything."""
     real = os.path.abspath(wpe_driver.WPE_BIN)
     name = os.path.basename(real)
     bindir = tmp_path / "limited"
@@ -102,7 +108,9 @@ def _limited_editor(tmp_path, monkeypatch, kib):
     wrapper.write_text("#!/bin/bash\nulimit -f %d\nexec -a %s %s \"$@\"\n" % (kib, name, real))
     wrapper.chmod(wrapper.stat().st_mode | stat.S_IXUSR)
     monkeypatch.setattr(wpe_driver, "WPE_BIN", str(wrapper))
-    return {"XWPE_LIB": os.path.dirname(real)}
+    env = {"XWPE_LIB": os.path.dirname(real)}
+    env.update({var: None for var in gui_owner.TRACE_PASS_THROUGH})
+    return env
 
 
 # @scenario SC-unsaved-text-17

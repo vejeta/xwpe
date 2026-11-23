@@ -1829,6 +1829,25 @@ def test_the_owner_starts_an_x_server_and_a_compositor_it_registers(
     assert env["DISPLAY"] == display.name
 
 
+# @scenario SC-harness-owner-91
+def test_a_server_that_takes_the_display_zero_is_ready(request):
+    """The display handshake reads the display's name, so the display 0 is a
+    ready value and the wait ends at once.  A number is false at 0: a server
+    that took :0 then never looked ready, the wait ran to its deadline, and
+    the first run on a runner (where :0 was free) lost the session display of
+    every graphical job to it."""
+    read_fd, write_fd = os.pipe()
+    request.addfinalizer(lambda: _close_quietly(read_fd))
+    try:
+        os.write(write_fd, b"0\n")
+    finally:
+        os.close(write_fd)
+    chunks = []
+    name = gui_owner.wait_for(lambda: gui_owner._display_name(read_fd, chunks),
+                              "the server to print its display", READY_S)
+    assert name == ":0"
+
+
 # @scenario SC-harness-owner-60
 def test_the_x11_conftest_takes_the_starters_from_the_owner():
     """The X11 suite keeps its names for the moved code, so a row that

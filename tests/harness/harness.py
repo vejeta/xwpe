@@ -245,6 +245,34 @@ def junit_key(test_id):
     return ".".join([module.replace("/", ".")] + classes), name
 
 
+def whole_file_module(test_id):
+    """The junit classname of the file @test_id names, or None when @test_id
+    names a test or one case of one.
+
+    A manifest row may name a whole file (``tests/x.py``, with no ``::test``),
+    which is every row of it.  junit_key has nothing to put in the name slot
+    then and returns the path there, which no testcase carries."""
+    if "::" in test_id or not test_id.endswith(".py"):
+        return None
+    return test_id[:-3].replace("/", ".")
+
+
+def junit_keys(raw, test_id):
+    """The keys of @raw that @test_id names: the one case of a parametrized
+    test, every case of a test, or every case of a whole file (a class of the
+    file included, its classname being the module's plus the class)."""
+    module = whole_file_module(test_id)
+    if module is not None:
+        return [key for key in raw
+                if key[0] == module or key[0].startswith(module + ".")]
+    classname, name = junit_key(test_id)
+    if "[" in name:
+        return [(classname, name)] if (classname, name) in raw else []
+    return [key for key in raw
+            if key[0] == classname
+            and (key[1] == name or key[1].startswith(name + "["))]
+
+
 def automake_results(logdir):
     """{program: 'PASS'|'FAIL'|'SKIP'} from automake ``*.trs`` files."""
     results = {}
@@ -366,27 +394,20 @@ def fold_results(results):
 
 
 def junit_lookup(raw, test_id):
-    """Result for a node id, folding the cases of a parametrized test.
+    """Result for a node id or a whole test file, folded over its cases.
 
     ``tests/x.py::test_a`` matches junit names ``test_a`` and ``test_a[...]``;
-    a node id that already names one case matches that case only.
+    a node id that already names one case matches that case only; ``tests/x.py``
+    matches every case of that file.  The fold is fold_results, so a whole
+    file passes only when every case of it did, fails when any one failed, and
+    is None (MISSING) when none of them ran.
     """
-    classname, name = junit_key(test_id)
-    if "[" in name:
-        return raw.get((classname, name))
-    cases = [v for (c, n), v in raw.items()
-             if c == classname and (n == name or n.startswith(name + "["))]
-    return fold_results(cases)
+    return fold_results([raw[key] for key in junit_keys(raw, test_id)])
 
 
 def junit_skip_reasons(skip_reasons, test_id):
     """The skip messages of a node id's cases, folded like junit_lookup."""
-    classname, name = junit_key(test_id)
-    if "[" in name:
-        reason = skip_reasons.get((classname, name))
-        return [reason] if reason is not None else []
-    return [r for (c, n), r in skip_reasons.items()
-            if c == classname and (n == name or n.startswith(name + "["))]
+    return [skip_reasons[key] for key in junit_keys(skip_reasons, test_id)]
 
 
 def junit_results_of(sources, skip_reasons=None, skip_kinds=None):

@@ -90,8 +90,13 @@ CLIENT_S = 15.0
 FRAME_QUIET_S = 1.0
 
 
-def _display_number(fd, chunks):
-    """The display number the server wrote to fd, once its line is whole."""
+def _display_name(fd, chunks):
+    """The display the server named on fd, once its line is whole: ":0" for
+    the display 0.
+
+    The name and not the number, because this is a wait_for event and the
+    number 0 is false: a server that took the display 0 never looked ready
+    and the wait ran to its deadline."""
     if not select.select([fd], [], [], 0)[0]:
         return None
     data = os.read(fd, 64)
@@ -99,7 +104,7 @@ def _display_number(fd, chunks):
     text = b"".join(chunks)
     if not data or not text.endswith(b"\n"):
         return None
-    return int(text.strip())
+    return ":%d" % int(text.strip())
 
 
 def _start_8_bit_display(owner, tmp_path, request):
@@ -116,12 +121,12 @@ def _start_8_bit_display(owner, tmp_path, request):
         os.close(write_fd)
     chunks = []
     try:
-        number = wait_for(lambda: _display_number(read_fd, chunks),
-                          "the 8-bit Xvfb to print its display number",
-                          SERVER_START_S, state_fn=server.log_text)
+        name = wait_for(lambda: _display_name(read_fd, chunks),
+                        "the 8-bit Xvfb to print its display number",
+                        SERVER_START_S, state_fn=server.log_text)
     finally:
         os.close(read_fd)
-    return owner.register_x_display(":%d" % number, server)
+    return owner.register_x_display(name, server)
 
 
 def _run_client(owner, display, tmp_path, request, argv, what):

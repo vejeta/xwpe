@@ -289,6 +289,33 @@ def test_folders_under_the_real_home_are_dropped_from_the_path(machine, monkeypa
     assert entries[-1] == farm.deny_folder()
 
 
+# @scenario SC-test-real-tools-15
+def test_a_stand_in_of_the_checkout_survives_a_home_above_it(machine, monkeypatch):
+    """The tree's own stand-in folder stays first on the row's PATH when the
+    checkout lies under the real HOME, which is where a CI runner puts its
+    workspace: a checked-in stand-in belongs to the row, not to the machine,
+    and dropping it hands the row the real debugger the stand-in stands in
+    front of."""
+    home = machine.tmp / "realhome"
+    tree = home / "work" / "xwpe"
+    stubs = tree / "tests" / "stubs"
+    stubs.mkdir(parents=True)
+    (home / ".local" / "bin").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(engine_guard, "SUITE_ROOT", str(tree))
+    farm = machine.owner._farm_made()
+    path = engine_guard.farm_path(
+        os.pathsep.join([str(stubs), str(home / ".local" / "bin"),
+                         str(machine.folder)]),
+        machine.owner._machine, farm, (), [str(machine.work)])
+    entries = path.split(os.pathsep)
+    assert entries[0] == str(stubs), \
+        "the checkout's own stand-ins are off the row's PATH: %s" % entries
+    assert str(home / ".local" / "bin") not in entries
+    assert str(machine.folder) not in entries
+    assert entries[-1] == farm.deny_folder()
+
+
 # ---------------------------------------------------------------------------
 # The live gate
 

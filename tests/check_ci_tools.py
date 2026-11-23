@@ -2,17 +2,18 @@
 """check_ci_tools.py -- the Linux job installs what the rows need, and says so.
 
 One record, tests/ci-tools.txt, maps each host tool a row needs to the Ubuntu
-package that provides it and to what kind of tool it is (apt, layer, base,
-image, absent:R, condition).  Three things must agree with it, offline:
+package that provides it and to what kind of tool it is (apt, layer, built,
+base, image, absent:R, condition).  Three things must agree with it, offline:
 
   C1  every tool a manifest row of tests/harness declares in "needs" has a
       line in the record;
   C2  every apt and layer line names a package, and that package is in the
       apt-get list of each job of .github/workflows/linux.yml that expects
-      the tool; a note that starts with "run: " names a command the job also
-      runs (a package alone does not make a locale);
+      the tool; a built line names no package but a command, and each such
+      job runs it.  A note that starts with "run: " names a command the job
+      also runs (a package alone does not make a locale);
   C3  the XWPE_TEST_TOOLS_EXPECTED of each job (its own, else the workflow's)
-      is exactly the apt and layer tools whose package that job installs.
+      is exactly the apt, layer and built tools that job installs.
       The harness reads a declared tool of this list that skips as a failure
       of the image; a display layer gate stops the session on a missing one;
   C4  the build job, every pyte shard and the GUI job install through the one
@@ -53,8 +54,14 @@ SHARD_SCRIPT = os.path.join("tests", "ci-shard.sh")
 SCRIPT_JOBS = ("build", "pyte", "gui")
 MANIFESTS = os.path.join("tests", "harness", "*", "manifest.json")
 EXPECTED_VARIABLE = "XWPE_TEST_TOOLS_EXPECTED"
-KINDS = ("apt", "layer", "base", "image", "absent", "condition")
-INSTALLED_KINDS = ("apt", "layer")
+KINDS = ("apt", "layer", "built", "base", "image", "absent", "condition")
+# The kinds the job installs itself: a row that skips for one of them is a
+# failure of the image, and the job's XWPE_TEST_TOOLS_EXPECTED names it.
+INSTALLED_KINDS = ("apt", "layer", "built")
+# The installed kinds that come from a package of the job's apt-get list; the
+# other one is built by the command its note names.
+PACKAGE_KINDS = ("apt", "layer")
+BUILT_KIND = "built"
 RUN_NOTE = "run: "
 NO_PACKAGE = "-"
 SKIPPED = 77
@@ -155,6 +162,34 @@ def expected_tools(job_text):
     return None
 
 
+def run_command(note):
+    """The command a record note names after RUN_NOTE, or None when it names
+    none."""
+    if not (note.startswith(RUN_NOTE) or (" " + RUN_NOTE) in note):
+        return None
+    return note.split(RUN_NOTE, 1)[1].strip()
+
+
+def installs_here(entry, packages, text):
+    """Does one job install this record entry: the package of an apt or layer
+    tool in the job's apt-get list, the command a built tool's note names in
+    the job's own text (its script included)?"""
+    package, kind, note = entry
+    if kind in PACKAGE_KINDS:
+        return package in packages
+    command = run_command(note)
+    return command is not None and command in text
+
+
+def what_installs(entry):
+    """What installs this record entry, for a finding: its package, or the
+    command that builds it."""
+    package, kind, note = entry
+    if kind == BUILT_KIND:
+        return run_command(note) or package
+    return package
+
+
 def check_tree(root):
     """The findings of every rule over the tree at @root."""
     problems = []
@@ -172,9 +207,12 @@ def check_tree(root):
     top_expected = expected_tools(workflow.split("\njobs:", 1)[0])
     installed = {need for need, (_p, kind, _n) in record.items() if kind in INSTALLED_KINDS}
     for need in sorted(installed):
-        package, _kind, note = record[need]
-        if package == NO_PACKAGE:
+        package, kind, note = record[need]
+        if kind in PACKAGE_KINDS and package == NO_PACKAGE:
             problems.append("%s: an installed tool needs a package in %s" % (need, RECORD))
+        if kind == BUILT_KIND and RUN_NOTE not in note:
+            problems.append("%s: a tool the job builds needs the command that "
+                            "builds it ('%s') in %s" % (need, RUN_NOTE, RECORD))
     seen_in_a_job = set()
     for job in SCRIPT_JOBS:
         if INSTALL_SCRIPT not in jobs.get(job, ""):
@@ -192,23 +230,29 @@ def check_tree(root):
             continue    # a job that installs nothing (the gate) only reads the list
         if uses_script:
             text = text + "\n" + script
-        wanted = {need for need in installed if record[need][0] in packages}
+        wanted = {need for need in installed
+                  if installs_here(record[need], packages, text)}
         seen_in_a_job |= wanted
         for need in sorted(expected - wanted):
+            entry = record.get(need)
             problems.append("job %s: %s is expected but %s is not installed there"
-                            % (job, need, record.get(need, (NO_PACKAGE,))[0]))
+                            % (job, need,
+                               what_installs(entry) if entry else NO_PACKAGE))
         for need in sorted(wanted - expected):
             problems.append("job %s: %s installs %s and %s does not expect %s"
-                            % (job, need, record[need][0], EXPECTED_VARIABLE, need))
+                            % (job, need, what_installs(record[need]),
+                               EXPECTED_VARIABLE, need))
         for need in sorted(wanted):
-            note = record[need][2]
-            if note.startswith(RUN_NOTE) or (" " + RUN_NOTE) in note:
-                command = note.split(RUN_NOTE, 1)[1].strip()
-                if command not in text:
-                    problems.append("job %s: %s needs the command '%s'" % (job, need, command))
+            command = run_command(record[need][2])
+            if command and command not in text:
+                problems.append("job %s: %s needs the command '%s'" % (job, need, command))
     for need in sorted(installed - seen_in_a_job):
-        problems.append("%s: package %s is in no job's apt-get list that sets %s"
-                        % (need, record[need][0], EXPECTED_VARIABLE))
+        if record[need][1] == BUILT_KIND:
+            problems.append("%s: no job that sets %s runs the command that "
+                            "builds it" % (need, EXPECTED_VARIABLE))
+        else:
+            problems.append("%s: package %s is in no job's apt-get list that "
+                            "sets %s" % (need, record[need][0], EXPECTED_VARIABLE))
     problems.extend(shard_findings(root, jobs))
     return problems
 
@@ -276,13 +320,19 @@ def mutate(root, relative, old, new):
 # One planted offence per rule: (name, file, text to change, its replacement,
 # a phrase the findings must contain).
 CANARIES = (
-    ("package-missing", INSTALL_SCRIPT, "  gdb delve scala", "  delve scala",
+    ("package-missing", INSTALL_SCRIPT, "  gdb scala", "  scala",
      "is expected but"),
     ("expected-drift", WORKFLOW, "XWPE_TEST_TOOLS_EXPECTED: >-\n    gdb dlv",
      "XWPE_TEST_TOOLS_EXPECTED: >-\n    dlv", "installs gdb and"),
     ("no-record-line", RECORD, "\ngdb|gdb|apt|", "\nxgdb|gdb|apt|", "has no line for it"),
     ("run-command-gone", INSTALL_SCRIPT, "sudo locale-gen de_DE.UTF-8", "true",
      "needs the command"),
+    ("built-command-gone", INSTALL_SCRIPT,
+     "go install github.com/go-delve/delve/cmd/dlv@v1.27.1",
+     "true", "is expected but go install"),
+    ("built-without-its-command", RECORD,
+     "run: go install github.com/go-delve/delve/cmd/dlv@v1.27.1", "built by hand",
+     "builds needs the command"),
     ("script-not-run", WORKFLOW,
      "        run: sh tests/ci-install.sh\n\n      - name: Set up the pytest venv\n"
      "        run: sh tests/ci-venv.sh\n\n      - name: Run the shard",
