@@ -27,6 +27,7 @@ import shutil
 
 import pytest
 from host_tools import needs
+from mode_premise import folder_mode_is_obeyed
 from wpe_driver import KEY_PGUP, pane_rows, pane_text_with_history, title_row
 from test_ai_changeset import (ORIG, WRITE_REPLY, _ai_build, _auto_run, _revert_all,
                                _trace_text)
@@ -297,6 +298,7 @@ def test_a_file_removed_in_a_folder_nobody_could_read_is_not_all_reverted(tmp_pa
     reverted."""
     sub = tmp_path / "sub"
     _user_file(sub / "x.c")
+    folder_mode_is_obeyed(str(tmp_path), 0)
     sub.chmod(0)
     reply = _run_cmd("chmod 755 sub && rm sub/x.c", tmp=tmp_path)
     try:
