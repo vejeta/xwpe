@@ -86,7 +86,6 @@ GUESS|we_startplan.c|startplan_embedded_file|read-refused|"(not found)" stands f
 PATHFN|we_contain.c|contain_real|0|the folder to resolve
 PATHFN|we_contain.c|contain_folder_next|1|receives a folder of AIContainPathAllow
 PATHFN|we_ai_ws.c|ws_read_file|0|the file to read
-PATHFN|we_ai_ws.c|ws_read_file_len|0|the file to read
 PATHFN|we_ai_ws.c|ws_run_temp_file|1|receives the temporary file's path
 PATHFN|we_ai_ws.c|wpe_ai_window_hook_copy|1|receives the copy's path
 PATHFN|we_ai_ws.c|ws_state_folder_make|2|receives the state folder's path

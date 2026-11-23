@@ -145,7 +145,7 @@ VTERM_SOURCES   = we_vterm.c
 WAYLAND_SOURCES = we_wayland.c we_render_wayland.c we_wlframe.c
 AI_SOURCES      = we_ai.c we_ai_http.c we_ai_ui.c we_ai_diff.c we_ai_ws.c we_ai_path.c we_ai_session.c we_contain.c
 AI_HOST_SOURCES = we_ai_host.c
-AI_TESTS        = test_ai_http test_ai_diff test_ai_path test_ai_scope test_ai_session test_ai_contain
+AI_TESTS        = test_ai_http test_ai_diff test_ai_path test_ai_scope test_ai_session test_ai_contain test_ai_read_waits test_ai_scan_swap
 AI_TLS_CHECK    = test_ai_tls_live
 
 if HAVE_X11
@@ -951,7 +951,7 @@ test_dap_lldb_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # JVM/Scala path: BSP bootstrap (we_bsp.c) + DAP TCP-client transport against a
 # real scala-cli/Bloop.  SKIPs without scala-cli; slow on a cold coursier cache.
-test_dap_scala_SOURCES = tests/test_dap_scala.c we_places.c we_path.c we_bsp.c we_bsp_sync.c we_dap.c we_dap_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c
+test_dap_scala_SOURCES = tests/test_dap_scala.c we_places.c we_path.c we_read.c we_seen.c we_bsp.c we_bsp_sync.c we_dap.c we_dap_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c
 test_dap_scala_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
 test_dap_scala_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
@@ -959,7 +959,7 @@ test_dap_scala_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 # program itself); no scala-cli needed.  The close returns at once and the
 # children's owner (we_child.c) ends the launcher on the fd loop, with no
 # exit descriptor, the same on every system.
-test_bsp_close_SOURCES = tests/test_bsp_close.c we_places.c we_path.c we_bsp.c we_bsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c
+test_bsp_close_SOURCES = tests/test_bsp_close.c we_places.c we_path.c we_read.c we_seen.c we_bsp.c we_bsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c
 test_bsp_close_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
 test_bsp_close_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
@@ -1367,10 +1367,25 @@ AM_TESTS_ENVIRONMENT = NM='$(NM)'; export NM; \
 if WPE_AI
 check_PROGRAMS += $(AI_TESTS)
 TESTS += $(AI_TESTS)
-test_ai_path_SOURCES = tests/test_ai_path.c we_ai_path.c we_seen.c we_places.c we_path.c
+test_ai_path_SOURCES = tests/test_ai_path.c we_ai_path.c we_read.c we_seen.c we_places.c we_path.c
 test_ai_path_CFLAGS = $(TEST_CFLAGS)
-test_ai_scope_SOURCES = tests/test_ai_scope.c we_ai_path.c we_seen.c we_places.c we_path.c
+test_ai_scope_SOURCES = tests/test_ai_scope.c we_ai_path.c we_read.c we_seen.c we_places.c we_path.c
 test_ai_scope_CFLAGS = $(TEST_CFLAGS)
+# A pipe where a cloned folder keeps what the assistant's layer reads (the git
+# config, "commondir", a build server's connection file) does not stop the
+# editor: the reads go through the read owner (we_read.c).
+test_ai_read_waits_SOURCES = tests/test_ai_read_waits.c we_ai_path.c we_places.c we_path.c we_read.c we_seen.c we_bsp.c we_bsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c
+test_ai_read_waits_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
+test_ai_read_waits_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
+# A folder swapped for a link while the scope scan runs is not entered: the
+# linker's --wrap puts a swap around the scan's look at an entry.  Without a
+# linker that has --wrap (Apple's ld) the row is reported as SKIP.
+test_ai_scan_swap_SOURCES = tests/test_ai_scan_swap.c we_ai_path.c we_places.c we_path.c we_read.c we_seen.c
+test_ai_scan_swap_CFLAGS = $(TEST_CFLAGS)
+if HAVE_LD_WRAP
+test_ai_scan_swap_CFLAGS += -DWPE_TEST_LD_WRAP=1
+test_ai_scan_swap_LDFLAGS = -Wl,--wrap=wpe_read_entry_kind
+endif
 # How the assistant's children are held (we_contain.c): the environment each
 # profile gives its child, the PATH and the program resolved in the parent,
 # the limits and the report, and, through the owner of children (we_child.c,
@@ -1480,6 +1495,10 @@ EXTRA_DIST = \
   tests/read-owner.allow \
   tests/test_read_owner.c \
   tests/test_read_waits.py \
+  tests/test_ai_read_waits.c \
+  tests/test_ai_scan_swap.c \
+  tests/test_ai_read_owner.py \
+  tests/test_ai_read_tools.py \
   tests/check-brk-bounds.sh \
   tests/write-owner.allow \
   tests/test_write_owner.c \

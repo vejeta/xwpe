@@ -330,7 +330,8 @@ static int make_objects(void)
   return(-1);
  }
  if (put_link("link_reg", "reg") != 0 || put_link("link_fifo", "fifo_idle") != 0 ||
-     put_link("link_zero", "/dev/zero") != 0 || put_link("loop", "loop") != 0)
+     put_link("link_zero", "/dev/zero") != 0 || put_link("loop", "loop") != 0 ||
+     put_link("link_folder", "folder") != 0)
   return(-1);
  denied_holds = test_premise_file_0200_is_unreadable(dir);
  if (test_put_mode(dir, "denied", "secret\n", 0200) != 0)
@@ -1028,6 +1029,35 @@ static void row_folder_entries(void)
 }
 
 /**
+ * row_folder_entry_is_not_followed - A folder met while walking another is not entered through a link.
+ *
+ * A link to a folder is refused by the form for a folder met in a walk
+ * (WPE_READ_ASK_FOLDER_ENTRY) and named as a link; the form for a folder the
+ * user named follows it, as the user's own folder may be one.
+ */
+static void row_folder_entry_is_not_followed(void)
+{
+ WpeReadAsk entry = WPE_READ_ASK_FOLDER_ENTRY("folder");
+ WpeReadAsk named = WPE_READ_ASK_FOLDER("folder");
+ WpeReadOutcome o;
+ char path[TEST_DIR_PATH_SIZE];
+ DIR *d;
+
+ test_watchdog_case("folder entry link", CELL_SECS);
+ if (test_path_join(path, sizeof path, dir, "link_folder") != 0)
+  return;
+ d = wpe_read_folder(path, &entry, &o);
+ chk_int("a link to a folder is not entered by the walk's form", d == NULL, 1);
+ chk_int("a link to a folder: why", o.why, WPE_READ_IS_A_LINK);
+ if (d != NULL)
+  closedir(d);
+ d = wpe_read_folder(path, &named, &o);
+ chk_int("a link to a folder is followed for a folder the user named", d != NULL, 1);
+ if (d != NULL)
+  closedir(d);
+}
+
+/**
  * row_sentences - Each refusal says one sentence through the words owner.
  *
  * The sentence is we_path.c's; this pins the mapping from the outcome to it.
@@ -1156,6 +1186,7 @@ int main(void)
  row_outcome_facts();
  row_name_ok();
  row_folder_entries();
+ row_folder_entry_is_not_followed();
  row_sentences();
  row_terminal_by_descriptor();
  test_watchdog_disarm();

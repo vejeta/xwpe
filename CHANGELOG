@@ -31,6 +31,21 @@ Bugs fixed in 1.6.x:
   it, and after a refused option file your own options are in force and
   Options > Save writes your own file.  An options file over 1 MiB or a project
   file over 16 MiB is refused whole rather than read cut short and saved short.
+* The assistant no longer waits on a name a cloned folder chose.  A pipe at
+  .git/config, .git/commondir, .bsp/*.json or AGENTS.md used to stop the
+  editor; now it is refused by what it is.  A link at .git/config,
+  .git/commondir or .bsp/*.json is not followed; a link at AGENTS.md or
+  .xwpe-ai.md is followed when it leads to a regular file inside the
+  workspace, and every other refusal (a link out of the workspace, a pipe, a
+  device) is named in the pane with the file and the reason.  A pipe, a
+  socket, a link or a file over 4000000 bytes among the files an unattended
+  run may change is left out of the checkpoint and named in the pane with the
+  reason (it was a hang, or a before image cut short and restored short), and
+  a folder called like a source file is not listed as a file.  A model that
+  reads a file over the tool's limit still gets the first part with the cut
+  marked, and one that names a pipe or a device, for read_file or apply_patch,
+  is told what it is.  The place a model's path leads to is judged once and
+  read as judged, so a link changed in between is not followed.
 * A folder in AIContainPathAllow can be any length and can hold spaces: the
   list is split at the colons only, as the manual says, and a folder or a
   variable name is never cut short to a shorter one.  Before, a folder of

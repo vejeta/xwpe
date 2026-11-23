@@ -17,6 +17,7 @@
 #include "we_bsp.h"
 #include "we_child.h"
 #include "we_startplan.h"        /* the server starts through its start plan */
+#include "we_read.h"             /* the folder's .bsp is read through the read owner */
 #include "we_dap_proto.h"        /* e_dap_reader: shared Content-Length framing */
 #include "we_fdloop.h"           /* wpe_fd_write: the server's input, queued */
 
@@ -455,6 +456,8 @@ static WpeStartPlan *bsp_plan_of(const char *rootdir, const char *file, char **a
 /* The connection file scala-cli writes, read by name before any other. */
 #define BSP_SCALA_CLI_FILE "scala-cli.json"
 #define BSP_JSON_SUFFIX    ".json"
+/* The noun the read owner's sentences use for what is read here. */
+#define BSP_READ_WHAT      "connection file"
 
 /**
  * bsp_connection_file - Which connection file of a project's .bsp is read.
@@ -462,24 +465,29 @@ static WpeStartPlan *bsp_plan_of(const char *rootdir, const char *file, char **a
  *
  * scala-cli's own file by name when it is there; else the first ".json" by
  * name, so the choice never depends on the order the folder lists them in.
+ * What the user gains: a folder that came from a clone cannot stop the
+ * editor by putting a pipe, a device or a folder where a connection file
+ * belongs; only a regular file is a candidate, and none is opened here.
  * Return: 1 when one was found.
  */
 static int bsp_connection_file(const char *dir, char *file, size_t filesz)
 {
  char path[WPE_PATH_SIZE];
+ WpeReadAsk ask = WPE_READ_ASK_FOLDER_CONFIG(BSP_READ_WHAT);
+ WpeReadAsk folder = WPE_READ_ASK_FOLDER(BSP_READ_WHAT);
+ WpeReadOutcome o;
  DIR *d;
  struct dirent *de;
- struct stat st;
  size_t l;
 
  file[0] = '\0';
  snprintf(path, sizeof(path), "%s/%s", dir, BSP_SCALA_CLI_FILE);
- if (stat(path, &st) == 0 && S_ISREG(st.st_mode))
+ if (wpe_read_name_ok(path, &ask, &o) == 0)
  {
   snprintf(file, filesz, "%s", BSP_SCALA_CLI_FILE);
   return 1;
  }
- d = opendir(dir);
+ d = wpe_read_folder(dir, &folder, &o);
  if (!d)
   return 0;
  while ((de = readdir(d)))
@@ -487,11 +495,34 @@ static int bsp_connection_file(const char *dir, char *file, size_t filesz)
   l = strlen(de->d_name);
   if (l <= strlen(BSP_JSON_SUFFIX) || strcmp(de->d_name + l - strlen(BSP_JSON_SUFFIX), BSP_JSON_SUFFIX))
    continue;
+  if (wpe_read_entry_kind(d, de->d_name) != S_IFREG)
+   continue;
   if (!file[0] || strcmp(de->d_name, file) < 0)
    snprintf(file, filesz, "%s", de->d_name);
  }
  closedir(d);
  return file[0] != '\0';
+}
+
+/**
+ * bsp_parse_connection_file - Read one connection file through the read owner and parse it.
+ * @jsonpath: the file; it is read whole to 1 MiB at most and refused over it.
+ * Return: the parsed object (json_object_put it), or NULL when the file is
+ * refused or is not JSON.
+ */
+static struct json_object *bsp_parse_connection_file(const char *jsonpath)
+{
+ WpeReadAsk ask = WPE_READ_ASK_FOLDER_CONFIG(BSP_READ_WHAT);
+ WpeReadOutcome o;
+ struct json_object *root;
+ size_t len;
+ char *text = wpe_read_text(jsonpath, &ask, &len, &o);
+
+ if (!text)
+  return NULL;
+ root = json_tokener_parse(text);
+ free(text);
+ return root;
 }
 
 static char **bsp_read_connection_argv(const char *workdir, char *file, size_t filesz)
@@ -506,7 +537,7 @@ static char **bsp_read_connection_argv(const char *workdir, char *file, size_t f
  if (!bsp_connection_file(path, file, filesz))
   return NULL;
  snprintf(jsonpath, sizeof(jsonpath), "%s/%s", path, file);
- root = json_object_from_file(jsonpath);
+ root = bsp_parse_connection_file(jsonpath);
  if (!root)
   return NULL;
  if (!json_object_object_get_ex(root, "argv", &argv) ||

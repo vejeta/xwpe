@@ -47,8 +47,8 @@ we_xterm.c|r2:wpe_x_dump_ppm|1|keep|a test screen dump
 we_ai.c|r8:ai_mock_reply_file|1|keep|the mock backend's own reply file
 we_ai_path.c|r8:path_follow_link|1|keep|reads a link to judge a path, writes nothing
 we_ai_ui.c|r8:ai_hook_after_accept|1|keep|the hook's own marker file
-we_ai_ui.c|r8:ai_test_swap_after_look|3|keep|the test hook that puts a link where a folder was, unset in every real run
-we_ai_ws.c|r8:ws_git_list|3|keep|the temporary lists of the git command it runs, made by mkstemp in the run's private folder
+we_ai_ui.c|r8:wpe_ai_test_swap_at|3|keep|the test hook that puts a link where a file or folder was, unset in every real run
+we_ai_ws.c|r8:ws_git_list|2|keep|the temporary lists of the git command it runs, made by mkstemp in the run's private folder
 we_ai_ws.c|r8:ws_git_show|2|keep|the temporary copy of a file's content that git prints, made by mkstemp in the run's private folder and removed once read
 we_ai_ws.c|r8:ws_revert_snapshot|1|keep|the removal of a file the run created, which the review listed as new and no before image holds
 we_debug.c|r8:e_d_debugger_pid_forget|1|keep|the debugger's own pid file
@@ -103,9 +103,6 @@ we_fileop.c|r11:wpe_fileop_rename_noreplace|2|keep|a folder's rename the File Ma
 
 # rule 9: a byte loop that is not a copy of the user's file (it reads, or
 # writes something that is not the user's)
-we_ai_ui.c|r9:ai_project_memory|1|keep|reads a file, copies nothing
-we_ai_ui.c|r9:ai_slurp_file|1|keep|reads a file, copies nothing
-we_ai_ws.c|r9:ws_git_list|1|keep|reads the git command's output
 we_debug.c|r9:e_lsp_read_file_text|1|keep|reads a file, copies nothing
 we_main.c|r9:e_read_whole|1|keep|reads the old option file whole, copies nothing
 we_read.c|r9:read_stream_of_bytes|1|keep|fills the memory stream with bytes it already read, copies no file

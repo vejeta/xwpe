@@ -479,6 +479,11 @@ window read it` and claims no more, and a file with a special bit or another
 owner is refused with the reason. A yes for a file with several names is for
 that file: another file that is given its inode number, with as many names,
 asks again.
+A file the checkpoint cannot hold whole as a before image (a pipe, a socket, a
+link, or a file over 4000000 bytes, which is refused and never saved cut short)
+is left out of the checkpoint and named in the pane with the reason
+(`left out of the checkpoint: /work/pipe.c: it is a pipe`); nothing waits on it
+and the run goes on.
 A revert puts the before image back into
 the very same file, with the permission bits the file had before the run's
 first write to it; a file the run only changed by a command keeps the bits it
@@ -733,7 +738,11 @@ a command; nothing ran`.
 `PROJECT INSTRUCTIONS` heading, so a repository's standing rules are followed
 without restating them. The editor's own file wins, so a repository whose
 `AGENTS.md` serves other coding agents can still give this editor its own
-instructions. Where the block goes is set by `AIProjectInstructions`
+instructions. A file that is a link is followed only when it leads to a regular
+file inside the workspace; a link that leaves the workspace, a pipe or a device
+is not read (a repository you cloned chose its name) and the pane names the
+file and the reason, never in silence. The next file of the list is tried, and
+without one the turn carries no instructions. Where the block goes is set by `AIProjectInstructions`
 (`XWPE_AI_PROJECT_INSTRUCTIONS`): under `agent`, the default, the Agent, the
 Multi-file edit and Build & fix carry it, and the chat carries it from the
 turn in which it first uses a tool, for the rest of the session; a plain Ask

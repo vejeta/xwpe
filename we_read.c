@@ -530,6 +530,24 @@ int wpe_read_entry_look(DIR *d, const char *name, WpeSeen *s)
 }
 
 /**
+ * wpe_read_entry_kind - What kind of thing an entry of an open folder is.
+ * @d: the folder; @name: the entry's name.
+ *
+ * Lets a listing offer only what can be read: a folder, a pipe or a socket
+ * called t.c is told from a file without opening it.  A link is reported as
+ * a link.
+ * Return: the S_IFMT bits, 0 when the entry cannot be looked at.
+ */
+mode_t wpe_read_entry_kind(DIR *d, const char *name)
+{
+ WpeSeen s;
+
+ if (wpe_read_entry_look(d, name, &s) != 0)
+  return 0;
+ return wpe_seen_kind(&s);
+}
+
+/**
  * wpe_read_outcome_errno - An outcome for a refusal the system gave.
  * @o: the outcome; @err: the errno.
  */

@@ -320,6 +320,8 @@ const char *wpe_path_reason_of(WpePathWhy why)
   return "nothing is writing to the pipe";
  case WPE_PATH_REASON_NOT_FOLDER:
   return "it is not a folder";
+ case WPE_PATH_REASON_DANGLING:
+  return "it is a link to a missing file";
  }
  return "it cannot be read";
 }

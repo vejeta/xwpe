@@ -14,26 +14,6 @@
 # stale.  "keep" is a permanent row, and the reason says why the name is the
 # editor's own and not one a user, a folder, a model or a server chose.
 
-# the assistant's reads (P2)
-we_ai_path.c|r22a:path_gitdir_of_workspace|1|P2|the folder's .git, read by name
-we_ai_path.c|r22a:path_config_hooks_path|1|P2|the folder's git config, read by name
-we_ai_path.c|r22a:path_git_common_folder|1|P2|the folder's commondir, read by name
-we_ai_path.c|r22c:path_scan_dir|1|P2|a folder the model named, listed by name
-we_ai_path.o|r22k:opendir|1|P2|path_scan_dir
-we_ai_ui.c|r22a:ai_project_memory_open|1|P2|the folder's instructions file
-we_ai_ui.c|r22a:ai_slurp_file|1|P2|a file the model named
-we_ai_ui.c|r22a:ai_read_file_bounded|1|P2|a file the model named
-we_ai_ws.c|r22a:ws_read_file_len|1|P2|a before image of a file the model may change
-we_ai_ws.c|r22a:ws_git_list|1|P2|a list git wrote
-we_ai_ws.c|r22b:ws_mode_of_file|1|P2|a private copy of the owner's open
-we_ai_ws.c|r22c:wpe_ai_scope_files|1|P2|the scope's folders, listed by name
-we_ai_ws.c|r22c:ws_walk_files|1|P2|the scope's folders, walked by name
-we_ai_ws.o|r22k:opendir|1|P2|wpe_ai_scope_files and ws_walk_files
-we_bsp.c|r22c:bsp_connection_file|1|P2|the folder's .bsp, listed by name
-we_bsp.c|r22e:bsp_read_connection_argv|1|P2|json_object_from_file opens the folder's connection file
-we_bsp.o|r22k:json_object_from_file|1|P2|bsp_read_connection_argv
-we_bsp.o|r22k:opendir|1|P2|bsp_connection_file
-
 # the plain callers (P3a)
 we_ai.c|r22a:ai_read_first_line|1|P3a|the user's key file
 we_debug.c|r22a:e_lsp_read_file_text|1|P3a|a file a language server named

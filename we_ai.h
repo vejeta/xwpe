@@ -488,6 +488,11 @@ void e_refresh_editor_bars(struct CNT *cn); /* re-pick editor bars after a chang
 int   wpe_ai_scope_files(struct FNST *f, int with_project, int with_folder,
                          char ***out);
 void  wpe_ai_free_list(char **list, int n);
+/* Test-only hook: with the step's word in XWPE_TEST_FAIL, put a link where the
+   file or folder XWPE_TEST_SWAP_DIR names was.  Does nothing otherwise. */
+void  wpe_ai_test_swap_at(const char *step);
+/* The workspace folder the scope uses, malloc'd. */
+char *wpe_ai_workspace_root(struct FNST *f);
 /* A prompt block naming the files currently open in the editor (working set),
  * the focused one marked.  Writes into buf and returns it ("" if none). */
 char *wpe_ai_open_windows_block(struct FNST *f, char *buf, size_t n);

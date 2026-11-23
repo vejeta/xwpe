@@ -22,6 +22,10 @@
 
 #include "we_ai_path.h"
 #include "we_places.h"
+#include "we_read.h"
+
+/* The noun the read owner's sentences use for a file or folder read here. */
+#define PATH_READ_WHAT WPE_AI_READ_WHAT
 
 /* The walk's state: what is resolved so far, what is left to read, and how
    many links were followed.  `missing` is set from the first component that
@@ -315,6 +319,24 @@ static void path_trim_line_end(char *s)
 }
 
 /**
+ * path_open_git_file - Open a file a cloned folder keeps for git, to read its lines.
+ * @file: the name; it leads into a folder the user opened, so another party chose it.
+ *
+ * What the user gains: a pipe, a device or a link put at ".git", "commondir"
+ * or the git config by a cloned repository is refused by what it is and never
+ * waited for or followed, so reading it cannot stop the editor.  The file is
+ * read whole to 1 MiB at most and refused over it, then handed out as a
+ * stream, so the callers keep their line loops.
+ * Return: the stream (close it with fclose), or NULL when the file is refused.
+ */
+static FILE *path_open_git_file(const char *file)
+{
+ WpeReadAsk ask = WPE_READ_ASK_FOLDER_CONFIG(PATH_READ_WHAT);
+ WpeReadOutcome o;
+ return wpe_read_stream_open(file, &ask, &o);
+}
+
+/**
  * path_gitdir_of_workspace - Where a .git file at the workspace's top sends git.
  * @rroot: the resolved workspace; @out/@sz: receive the resolved git folder.
  *
@@ -327,11 +349,9 @@ static int path_gitdir_of_workspace(const char *rroot, char *out, size_t sz)
 {
  char file[WPE_PATH_RESOLVED_MAX], line[WPE_GITDIR_LINE_MAX], target[WPE_PATH_RESOLVED_MAX];
  const char *named;
- struct stat st;
  FILE *fp;
  if (path_join(file, sizeof file, rroot, PATH_GIT_NAME) < 0) return 0;
- if (lstat(file, &st) != 0 || !S_ISREG(st.st_mode)) return 0;
- fp = fopen(file, "r");
+ fp = path_open_git_file(file);
  if (!fp) return 0;
  line[0] = '\0';
  if (!fgets(line, sizeof line, fp)) line[0] = '\0';
@@ -427,7 +447,7 @@ static int path_config_section(const char *line, char *out, size_t sz)
 static void path_config_hooks_path(const char *file, char *out, size_t sz)
 {
  char line[WPE_GITDIR_LINE_MAX], section[WPE_GITDIR_LINE_MAX] = "", *eq, *key;
- FILE *fp = fopen(file, "r");
+ FILE *fp = path_open_git_file(file);
  if (!fp) return;
  while (fgets(line, sizeof line, fp)) {
   if (path_config_section(line, section, sizeof section)) continue;
@@ -453,7 +473,7 @@ static int path_git_common_folder(const char *gitdir, char *out, size_t sz)
  const char *named;
  FILE *fp;
  if (path_join(file, sizeof file, gitdir, PATH_GIT_COMMONDIR_NAME) < 0) return 0;
- fp = fopen(file, "r");
+ fp = path_open_git_file(file);
  if (!fp) return 0;
  line[0] = '\0';
  if (!fgets(line, sizeof line, fp)) line[0] = '\0';
@@ -689,6 +709,109 @@ int wpe_path_look_write(const char *path, char *real, size_t sz, WpeWriteExpect 
 }
 
 /**
+ * wpe_path_resolve_for_read - The place a path a model named leads to, for the read owner.
+ * @path: the path as the model wrote it, absolute or relative to the working
+ * directory; @real/@sz: receive the resolved place.
+ *
+ * What the user gains: a model that names a link inside the workspace reads
+ * the file the scope check judged, exactly as that check followed it, and the
+ * read owner then opens that place without following a link, so a link put
+ * there afterwards is refused and named instead of followed.
+ * Return: 0 with @real filled, or -1 with errno set (ELOOP for a path that
+ * cannot be followed).
+ */
+int wpe_path_resolve_for_read(const char *path, char *real, size_t sz)
+{
+ char abs[WPE_PATH_RESOLVED_MAX];
+ if (sz) real[0] = '\0';
+ if (path_make_absolute(path, abs, sizeof abs) != 0) return -1;
+ if (wpe_path_resolve(abs, real, sz) != WPE_PATH_RESOLVED) { errno = ELOOP; return -1; }
+ return 0;
+}
+
+/**
+ * wpe_path_read_judged - Read a file whole, judged against a look taken just before.
+ * @path: the file, already resolved; @maxlen: the most bytes taken; @over:
+ * what a longer file gets (WPE_READ_CUT keeps the first @maxlen bytes,
+ * WPE_READ_WHOLE_OR_REFUSE refuses the file); @len: receives the byte count,
+ * or NULL; @o: receives why nothing was read.
+ *
+ * What the user gains: a before image that holds a NUL byte is read in full
+ * and can be put back in full, because the length travels with the text; a
+ * pipe, a socket, a terminal, a folder or a link under the name is refused by
+ * what it is, and never waited for or read.  The name is looked at first and
+ * the file opened is judged against that look, so a file that took the name
+ * in between is not read.  The text is NUL-terminated for callers that treat
+ * it as a string.
+ * Return: the malloc'd bytes, or NULL with @o saying why.
+ */
+char *wpe_path_read_judged(const char *path, size_t maxlen, WpeReadOver over,
+                           size_t *len, WpeReadOutcome *o)
+{
+ WpeSeen named;
+ WpeReadAsk ask;
+ size_t got = 0;
+ char *text;
+ if (len) *len = 0;
+ if (wpe_seen_look_name(path, 0, &named) != 0) {
+  wpe_read_outcome_errno(o, errno);
+  return NULL;
+ }
+ ask = WPE_READ_ASK_JUDGED(PATH_READ_WHAT, maxlen, over, &named);
+ text = wpe_read_text(path, &ask, &got, o);
+ if (text && len) *len = got;
+ return text;
+}
+
+/**
+ * wpe_path_read_inside - Read a file a folder names, following a link only into the workspace.
+ * @root: the workspace folder; @name: the file, as the folder names it
+ * (absolute or relative to the working directory); @maxlen: the most bytes
+ * taken (a longer file is cut); @len: receives the byte count, or NULL; @o:
+ * receives why nothing was read; @how: WPE_PATH_INSIDE_READ, or why a link
+ * was refused (its target lies outside @root, or it leads to a file that is
+ * not there), so a caller can name it instead of treating it as missing.
+ *
+ * What the user gains: an instructions file kept as a link to another file of
+ * the project (AGENTS.md pointing at CLAUDE.md) is read, while a cloned
+ * folder cannot point it at a file of the user's elsewhere, at a pipe or at a
+ * device.  A name that is not a link is read as it is.  A link is followed
+ * once, the whole chain, and the place it leads to must be inside @root and
+ * is then opened without following another link, as a regular file only.
+ * (A folder on the way swapped after the resolve is the walk's concern, not
+ * this function's.)
+ * Return: the malloc'd text, NULL with @o saying why.
+ */
+char *wpe_path_read_inside(const char *root, const char *name, size_t maxlen,
+                           size_t *len, WpeReadOutcome *o, WpePathInside *how)
+{
+ WpeSeen named;
+ char real[WPE_PATH_RESOLVED_MAX], *text;
+ *how = WPE_PATH_INSIDE_READ;
+ if (len) *len = 0;
+ if (wpe_seen_look_name(name, 0, &named) != 0) {
+  wpe_read_outcome_errno(o, errno);
+  return NULL;
+ }
+ if (wpe_seen_kind(&named) != S_IFLNK)
+  return wpe_path_read_judged(name, maxlen, WPE_READ_CUT, len, o);
+ if (wpe_path_resolve_for_read(name, real, sizeof real) != 0) {
+  wpe_read_outcome_errno(o, ELOOP);
+  return NULL;
+ }
+ if (!wpe_path_lies_in(root, real)) {
+  *how = WPE_PATH_INSIDE_OUTSIDE;
+  memset(o, 0, sizeof *o);
+  o->why = WPE_READ_IS_A_LINK;
+  return NULL;
+ }
+ text = wpe_path_read_judged(real, maxlen, WPE_READ_CUT, len, o);
+ if (!text && wpe_read_outcome_missing(o))
+  *how = WPE_PATH_INSIDE_DANGLING;
+ return text;
+}
+
+/**
  * wpe_path_look_name - Look at the reviewed NAME itself, never through a link at its end.
  * @path: the file, as the review names it (absolute or relative to the working
  * directory); @real/@sz: receives the resolved folder and the name; @x: receives
@@ -734,43 +857,50 @@ static void path_scan_dir(wpe_path_scan *sc, const char *dir, int depth);
 
 /**
  * path_scan_entry - Judge one entry of a directory: a link out, a directory to enter, or nothing.
- * @sc: the scan; @path: the entry's full path; @depth: the level of its directory.
+ * @sc: the scan; @path: the entry's full path; @kind: what the entry is, as
+ * the folder's own descriptor said (S_IFMT bits); @depth: the level of its directory.
  *
  * A link is never entered: it is counted when it leads outside the start and
  * left alone either way, which is what keeps a walk from reading beyond the
  * tree through it.
  */
-static void path_scan_entry(wpe_path_scan *sc, const char *path, int depth)
+static void path_scan_entry(wpe_path_scan *sc, const char *path, mode_t kind, int depth)
 {
- struct stat st;
  char real[WPE_PATH_RESOLVED_MAX];
- if (lstat(path, &st) != 0) return;
- if (S_ISLNK(st.st_mode)) {
+ if (kind == S_IFLNK) {
   if (wpe_path_resolve(path, real, sizeof real) != WPE_PATH_RESOLVED ||
       !path_is_under(sc->rstart, real))
    sc->outward++;
   return;
  }
- if (S_ISDIR(st.st_mode) && (sc->max_depth < 0 || depth + 1 < sc->max_depth))
+ if (kind == S_IFDIR && (sc->max_depth < 0 || depth + 1 < sc->max_depth))
   path_scan_dir(sc, path, depth + 1);
 }
 
 /**
  * path_scan_dir - Visit the entries of one directory, within the scan's bound.
  * @sc: the scan; @dir: the directory; @depth: its level below the start.
+ *
+ * The folder is opened by the read owner and each entry is looked at through
+ * the folder, so a folder replaced by a link while the scan runs is not
+ * followed.
  */
 static void path_scan_dir(wpe_path_scan *sc, const char *dir, int depth)
 {
- DIR *d = opendir(dir);
+ WpeReadAsk ask = WPE_READ_ASK_FOLDER_ENTRY(PATH_READ_WHAT);
+ WpeReadOutcome o;
+ DIR *d = wpe_read_folder(dir, &ask, &o);
  struct dirent *de;
  char path[WPE_PATH_RESOLVED_MAX];
+ mode_t kind;
  if (!d) return;
  while ((de = readdir(d)) != NULL) {
   if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
   if (sc->visited >= WPE_SCAN_ENTRY_MAX) { sc->truncated = 1; break; }
   sc->visited++;
   if (snprintf(path, sizeof path, "%s/%s", dir, de->d_name) >= (int)sizeof path) continue;
-  path_scan_entry(sc, path, depth);
+  kind = wpe_read_entry_kind(d, de->d_name);
+  if (kind != 0) path_scan_entry(sc, path, kind, depth);
  }
  closedir(d);
 }

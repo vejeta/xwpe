@@ -16,6 +16,7 @@
 #include "we_lineend.h"
 #include "we_ai.h"
 #include "we_ai_path.h"
+#include "we_read.h"
 
 #include <stdlib.h>
 #include <stdarg.h>
@@ -87,38 +88,42 @@ void wpe_ai_free_list(char **list, int n)
  free(list);
 }
 
-/**
- * ws_read_file_len - Read a file whole, up to @maxlen bytes, and say how long it is.
- * @path: the file; @maxlen: the most bytes taken; @len: receives the count, or NULL.
- *
- * What the user gains: a before image that holds a NUL byte is read in full
- * and can be put back in full, because the length travels with the text.  The
- * buffer is NUL-terminated for the callers that treat it as a string.
- * Return: the malloc'd bytes, or NULL when the file cannot be read.
- */
-static char *ws_read_file_len(const char *path, size_t maxlen, size_t *len_out)
-{
- FILE *fp = fopen(path, "rb");
- char *buf;
- size_t cap = 4096, len = 0;
- int ch;
- if (len_out) *len_out = 0;
- if (!fp) return NULL;
- buf = malloc(cap);
- if (!buf) { fclose(fp); return NULL; }
- while ((ch = fgetc(fp)) != EOF && len < maxlen) {
-  if (len + 2 > cap) { char *nb; cap *= 2; nb = realloc(buf, cap); if (!nb) break; buf = nb; }
-  buf[len++] = (char)ch;
- }
- buf[len] = '\0';
- fclose(fp);
- if (len_out) *len_out = len;
- return buf;
-}
+/* The noun the read owner's sentences use for a file this layer reads. */
+#define WS_READ_WHAT WPE_AI_READ_WHAT
+/* Test-only hook step (see wpe_ai_test_swap_at): between the walk reading a
+   folder's entries and entering the folders it found. */
+#define WS_TEST_SWAP_BEFORE_ENTER "ai-walk-swap-before-enter"
 
+/**
+ * ws_read_file - The first @maxlen bytes of a file, for a caller that only shows or compares them.
+ * @path: the file; @maxlen: the most bytes taken.
+ *
+ * What the user gains: the review compares what a run left at a name, and a
+ * link the run planted there is compared by the file it leads to, as it
+ * always was; the link is followed once, here, and the read owner then opens
+ * the place it led to without following another, so a pipe or a device at
+ * the end is refused and never waited for.
+ * Return: the malloc'd text, NULL when the file cannot be read.
+ */
 static char *ws_read_file(const char *path, size_t maxlen)
 {
- return ws_read_file_len(path, maxlen, NULL);
+ char real[WPE_PATH_SIZE];
+ WpeReadOutcome o;
+ if (wpe_path_resolve_for_read(path, real, sizeof real) != 0) return NULL;
+ return wpe_path_read_judged(real, maxlen, WPE_READ_CUT, NULL, &o);
+}
+
+/**
+ * ws_read_before_image - A file whole, for a copy that will be written back.
+ * @path: the file; @len: receives the count; @o: receives why nothing was read.
+ *
+ * A file over WPE_AI_BEFORE_IMAGE_MAX is refused, never cut: an image cut short
+ * would be restored short.
+ * Return: the malloc'd bytes, NULL with @o saying why.
+ */
+static char *ws_read_before_image(const char *path, size_t *len, WpeReadOutcome *o)
+{
+ return wpe_path_read_judged(path, WPE_AI_BEFORE_IMAGE_MAX, WPE_READ_WHOLE_OR_REFUSE, len, o);
 }
 
 /**
@@ -198,6 +203,24 @@ static void ws_say_failed(FENSTER *f, const char *what, const char *path, const 
 {
  char line[1700];
  snprintf(line, sizeof line, "could not %s %s: %s", what, path, reason);
+ wpe_ai_pane_error(f, line);
+}
+
+/**
+ * ws_say_left_out - Tell the user a file has no before image, and why.
+ * @f: any window of the editor; @path: the file; @o: the read owner's refusal.
+ *
+ * A file the checkpoint could not read whole (a pipe, a socket, a link, a
+ * folder, a file over the bound) is left out of it and named here, so the
+ * user knows a revert will not put that file back.  A file that is not there
+ * yet has nothing to save and is not mentioned.
+ */
+static void ws_say_left_out(FENSTER *f, const char *path, const WpeReadOutcome *o)
+{
+ char reason[WPE_PATH_MSG_MAX], line[WPE_AI_REFUSAL_LINE_MAX];
+ if (wpe_read_outcome_missing(o)) return;
+ (void)wpe_read_reason(reason, sizeof reason, o);
+ snprintf(line, sizeof line, "left out of the checkpoint: %s: %s", path, reason);
  wpe_ai_pane_error(f, line);
 }
 
@@ -285,6 +308,16 @@ static char *ws_root(FENSTER *f)
  return ws_strdup(f->dirct ? f->dirct : ".");
 }
 
+/**
+ * wpe_ai_workspace_root - The workspace folder the assistant's scope uses.
+ * @f: any window of the editor.
+ * Return: the malloc'd folder (the project's when one is open, else the file's).
+ */
+char *wpe_ai_workspace_root(FENSTER *f)
+{
+ return ws_root(f);
+}
+
 /* ===================== scope ============================================= */
 
 static const char *ws_reserved[] = {
@@ -335,6 +368,20 @@ static int ws_source_like(const char *name)
  return 0;
 }
 
+/**
+ * ws_entry_is_listable - May an entry of the scope's folder be offered as a file?
+ * @kind: what wpe_read_entry_kind said.
+ *
+ * What the user gains: a folder that happens to be called d.c is not listed
+ * as a file, so no empty before image is kept for it.  A pipe, a socket, a
+ * device or a link called t.c is listed, so that the checkpoint can leave it
+ * out and name it in the pane with the reason, instead of saying nothing.
+ */
+static int ws_entry_is_listable(mode_t kind)
+{
+ return kind != 0 && kind != S_IFDIR;
+}
+
 int wpe_ai_scope_files(FENSTER *f, int with_project, int with_folder, char ***out)
 {
  ECNT *cn = f->ed;
@@ -362,13 +409,16 @@ int wpe_ai_scope_files(FENSTER *f, int with_project, int with_folder, char ***ou
   free(root);
  }
  if (with_folder && f->dirct) {
-  DIR *d = opendir(f->dirct);
+  WpeReadAsk ask = WPE_READ_ASK_FOLDER(WS_READ_WHAT);
+  WpeReadOutcome ro;
+  DIR *d = wpe_read_folder(f->dirct, &ask, &ro);
   struct dirent *de;
   int added = 0;
   while (d && (de = readdir(d)) && added < 60) {
    char *p;
    size_t L;
    if (de->d_name[0] == '.' || !ws_source_like(de->d_name)) continue;
+   if (!ws_entry_is_listable(wpe_read_entry_kind(d, de->d_name))) continue;
    L = strlen(f->dirct) + strlen(de->d_name) + 2;
    p = malloc(L);
    if (!p) continue;
@@ -543,6 +593,9 @@ static void ws_checkpoint_sub(char *sub, size_t sz, int kind)
    say. */
 static char **ck_met;     static int ck_met_n,    ck_met_cap;
 static char **ck_listed;  static int ck_listed_n, ck_listed_cap;
+/* The sentences for folders the checkpoint's walk could not read ("not
+   watched: <dir>: <reason>"), said once the walk is over. */
+static char **ck_unwatched; static int ck_unwatched_n, ck_unwatched_cap;
 
 int wpe_ai_checkpoint_active(void) { return ck_mode != 0; }
 
@@ -568,6 +621,8 @@ static void ck_clear(void)
  wpe_ai_free_list(ck_ignored, ck_ignored_n);
  wpe_ai_free_list(ck_met, ck_met_n);
  wpe_ai_free_list(ck_listed, ck_listed_n);
+ wpe_ai_free_list(ck_unwatched, ck_unwatched_n);
+ ck_unwatched = NULL; ck_unwatched_n = ck_unwatched_cap = 0;
  wpe_ai_free_list(ck_mode_paths, ck_mode_n);
  wpe_ai_free_list(ck_baks, ck_baks_n);
  ck_mode_paths = NULL; ck_mode_n = ck_mode_cap = 0;
@@ -607,6 +662,42 @@ static int ws_root_unchanged(void)
 
 static void ws_strip_slash(char *d);
 
+/**
+ * ws_note_unwatched - Record a folder the checkpoint's walk could not read.
+ * @dir: the folder; @ro: why the read owner refused it; @record: the
+ * checkpoint's own walk (nothing is recorded for the walk after the run).
+ *
+ * What the user gains: a folder that could not be read at the checkpoint (it
+ * had become a link, or no permission) holds files nobody saw; they must not
+ * be called new when it can be read later, or a revert would remove files that
+ * were there before the run.  The folder is noted as met without being
+ * listed, which makes everything under it "nobody can say", and a sentence
+ * for the pane is kept ("not watched: <dir>: <reason>").
+ */
+static void ws_note_unwatched(const char *dir, const WpeReadOutcome *ro, int record)
+{
+ char reason[WPE_PATH_MSG_MAX], line[WPE_AI_REFUSAL_LINE_MAX];
+ if (!record) return;
+ ws_list_push(&ck_met, &ck_met_n, &ck_met_cap, ws_strdup(dir));
+ (void)wpe_read_reason(reason, sizeof reason, ro);
+ snprintf(line, sizeof line, "not watched: %s: %s", dir, reason);
+ ws_list_push(&ck_unwatched, &ck_unwatched_n, &ck_unwatched_cap, ws_strdup(line));
+}
+
+/**
+ * ws_say_unwatched - Tell the user which folders the checkpoint could not watch.
+ * @f: any window of the editor.
+ *
+ * One pane line per folder, then the list is let go.
+ */
+static void ws_say_unwatched(FENSTER *f)
+{
+ int i;
+ for (i = 0; i < ck_unwatched_n; i++) wpe_ai_pane_error(f, ck_unwatched[i]);
+ wpe_ai_free_list(ck_unwatched, ck_unwatched_n);
+ ck_unwatched = NULL; ck_unwatched_n = ck_unwatched_cap = 0;
+}
+
 /* The most files the snapshot watches for new ones, over every watched
    directory together.  When the walk stops here the pane says so, so a run that
    creates a file beyond the bound is never silently unreviewed. */
@@ -639,38 +730,52 @@ static void ws_strip_slash(char *d);
  * @record: the checkpoint's own walk; each directory met goes into ck_met and,
  * when its entries were read to the end, into ck_listed, so the review can
  * tell a file the run made from one the bound kept out of sight.
+ * @below: 0 for a folder the scope names (a link at its name is followed, as
+ * the user's own folder may be one), 1 for a folder met while walking, which
+ * is opened without following a link, so a folder swapped for a link after
+ * it was listed is not entered.  (A folder on the way swapped after that is
+ * the walk owner's concern.)
  * Return: 1 when the bound stopped the walk, 0 when everything was seen.
  */
 static int ws_walk_files(const char *dir, const char *skip, char ***l, int *n, int *cap,
-                         int record)
+                         int record, int below)
 {
- DIR *d = opendir(dir);
+ WpeReadAsk ask = below ? WPE_READ_ASK_FOLDER_ENTRY(WS_READ_WHAT)
+                        : WPE_READ_ASK_FOLDER(WS_READ_WHAT);
+ WpeReadOutcome ro;
+ DIR *d = wpe_read_folder(dir, &ask, &ro);
  struct dirent *de;
  char **subs = NULL;
  int nsubs = 0, scap = 0, stopped = 0, k;
- if (!d) return 0;
+ if (!d) {
+  if (below && ro.why == WPE_READ_IS_A_LINK)
+   wpe_ai_trace("walk refused a folder that became a link: %s", dir);
+  ws_note_unwatched(dir, &ro, record);
+  return 0;
+ }
  while ((de = readdir(d))) {
   char *p, real[WPE_PATH_SIZE];
   size_t L;
-  struct stat st;
+  mode_t kind;
   if (*n >= WS_WATCH_MAX) { stopped = 1; break; }
   if (de->d_name[0] == '.') continue;
+  kind = wpe_read_entry_kind(d, de->d_name);
+  if (kind == 0) continue;
   L = strlen(dir) + strlen(de->d_name) + 2;
   p = malloc(L);
   if (!p) continue;
   snprintf(p, L, "%s/%s", dir, de->d_name);
-  if (lstat(p, &st) != 0) { free(p); continue; }
-  if (S_ISLNK(st.st_mode)) {
+  if (kind == S_IFLNK) {
    /* one entry, whatever it points at: the run may have made it, and r
       removes the link itself, never what it points at */
    if (!ws_list_has(*l, *n, p)) ws_list_push(l, n, cap, p);
    else free(p);
    continue;
   }
-  if (S_ISDIR(st.st_mode)) {
+  if (kind == S_IFDIR) {
    if (skip && realpath(p, real) && !strcmp(real, skip)) { free(p); continue; }
    ws_list_push(&subs, &nsubs, &scap, p);
-  } else if (S_ISREG(st.st_mode) && !ws_list_has(*l, *n, p)) {
+  } else if (kind == S_IFREG && !ws_list_has(*l, *n, p)) {
    ws_list_push(l, n, cap, p);
   } else free(p);
  }
@@ -679,11 +784,12 @@ static int ws_walk_files(const char *dir, const char *skip, char ***l, int *n, i
   ws_list_push(&ck_met, &ck_met_n, &ck_met_cap, ws_strdup(dir));
   if (!stopped) ws_list_push(&ck_listed, &ck_listed_n, &ck_listed_cap, ws_strdup(dir));
  }
+ if (nsubs > 0) wpe_ai_test_swap_at(WS_TEST_SWAP_BEFORE_ENTER);
  for (k = 0; k < nsubs; k++) {
   if (stopped) {
    /* never read, but met: a file in it is not the run's for that */
    if (record) ws_list_push(&ck_met, &ck_met_n, &ck_met_cap, ws_strdup(subs[k]));
-  } else if (ws_walk_files(subs[k], skip, l, n, cap, record)) stopped = 1;
+  } else if (ws_walk_files(subs[k], skip, l, n, cap, record, 1)) stopped = 1;
  }
  wpe_ai_free_list(subs, nsubs);
  return stopped;
@@ -717,11 +823,13 @@ static int ws_list_watched_files(char ***l, int *n, int record)
  if (record) {
   wpe_ai_free_list(ck_met, ck_met_n);
   wpe_ai_free_list(ck_listed, ck_listed_n);
+  wpe_ai_free_list(ck_unwatched, ck_unwatched_n);
   ck_met = NULL; ck_met_n = ck_met_cap = 0;
   ck_listed = NULL; ck_listed_n = ck_listed_cap = 0;
+  ck_unwatched = NULL; ck_unwatched_n = ck_unwatched_cap = 0;
  }
  for (k = 0; k < ck_dirs_n; k++)
-  if (ws_walk_files(ck_dirs[k], skip, l, n, &cap, record)) stopped = 1;
+  if (ws_walk_files(ck_dirs[k], skip, l, n, &cap, record, 0)) stopped = 1;
  return stopped;
 }
 
@@ -1000,9 +1108,10 @@ static int ws_git_list(const char *git_args, char ***l, int *n)
 {
  char file[WPE_PATH_SIZE], q[WS_QUOTED_PATH_SIZE], qf[WS_QUOTED_PATH_SIZE];
  char cmd[WS_TWO_PATHS_COMMAND_SIZE], *out, *buf;
+ WpeReadAsk ask = WPE_READ_ASK_FOLDER_BOUNDED(WS_READ_WHAT, (size_t)WS_GIT_LIST_MAX);
+ WpeReadOutcome ro;
  int status = 0;
- long len;
- FILE *fp;
+ size_t len = 0;
  *l = NULL; *n = 0;
  if (ws_run_temp_file(WS_GIT_LIST_STEM, file, sizeof file) != 0) return -1;
  if (ws_quote_whole(q, sizeof q, ck_dir) != 0 || ws_quote_whole(qf, sizeof qf, file) != 0 ||
@@ -1013,17 +1122,10 @@ static int ws_git_list(const char *git_args, char ***l, int *n)
  }
  out = wpe_ai_run_capture_git_status(cmd, &status);
  free(out);
- fp = status == 0 ? fopen(file, "rb") : NULL;
- if (!fp) { unlink(file); return -1; }
- fseek(fp, 0, SEEK_END);
- len = ftell(fp);
- rewind(fp);
- buf = (len >= 0 && len <= WS_GIT_LIST_MAX) ? malloc((size_t)len + 1) : NULL;
- if (buf && fread(buf, 1, (size_t)len, fp) != (size_t)len) { free(buf); buf = NULL; }
- fclose(fp);
+ buf = status == 0 ? wpe_read_text(file, &ask, &len, &ro) : NULL;
  unlink(file);
  if (!buf) return -1;
- ws_parse_nul_list(buf, (size_t)len, l, n);
+ ws_parse_nul_list(buf, len, l, n);
  free(buf);
  return 0;
 }
@@ -1207,9 +1309,10 @@ int wpe_ai_checkpoint_create(FENSTER *f, char **scope, int nscope)
   if (have_dir) {
    for (i = 0; i < nscope; i++) {
     size_t tlen = 0;
-    char *text = ws_read_file_len(scope[i], 4000000, &tlen), dst[WS_LEAF_MAX];
+    WpeReadOutcome ro;
+    char *text = ws_read_before_image(scope[i], &tlen, &ro), dst[WS_LEAF_MAX];
     WpeWriteOutcome wo;
-    if (!text) continue;
+    if (!text) { ws_say_left_out(f, scope[i], &ro); continue; }
     readable++;
     snprintf(dst, sizeof dst, "%d", ck_n);
     if (ws_write_state_bytes(ck_leaf, dst, text, tlen, &wo) == 0) {
@@ -1230,6 +1333,7 @@ int wpe_ai_checkpoint_create(FENSTER *f, char **scope, int nscope)
   wpe_ai_free_list(ck_before, ck_before_n);
   if (ws_list_watched_files(&ck_before, &ck_before_n, 1))
    ws_say_watch_bound(f, ck_before_n);
+  ws_say_unwatched(f);
   /* A checkpoint with no before image in it can put nothing back, so it is not
      taken: leaving it active would open a review that offers a revert over
      files it could only restore nothing from, and the review's word is what
@@ -1263,26 +1367,26 @@ int wpe_ai_checkpoint_create(FENSTER *f, char **scope, int nscope)
  * @real: the file, already resolved; @mode: receives the bits.
  * Return: 0, or -1 when it cannot be read or is not a regular file.
  *
- * The name is looked at first, without following a link, so a device is never
- * opened.  The file is then opened without following a link and without
- * waiting, and the bits come from the look at that descriptor, never from a
- * name looked up separately, which is the mode of a link when a link took
- * the place.  Nothing is held between the look at the name and the open, so
- * the descriptor's look is judged against the name's: a file that took the
- * name in between, even one with the same number, is not the file seen and
- * its bits are not recorded.
+ * The read owner opens the file: the name is looked at first without
+ * following a link, so a device is never opened, and the file is then opened
+ * without following a link and without waiting.  The bits come from the
+ * descriptor, never from a name looked up separately, which is the mode of a
+ * link when a link took the place.  The descriptor is judged against the
+ * look at the name: a file that took the name in between, even one with the
+ * same number, is not the file seen and its bits are not recorded.
  */
 static int ws_mode_of_file(const char *real, mode_t *mode)
 {
- WpeSeen named, opened;
+ WpeSeen named;
+ WpeReadAsk ask;
+ WpeReadOutcome o;
  int fd;
- if (wpe_seen_look_name(real, 0, &named) != 0 || wpe_seen_kind(&named) != S_IFREG) return -1;
- fd = open(real, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC);
+ if (wpe_seen_look_name(real, 0, &named) != 0) return -1;
+ ask = WPE_READ_ASK_JUDGED(WS_READ_WHAT, WPE_AI_BEFORE_IMAGE_MAX, WPE_READ_CUT, &named);
+ fd = wpe_read_open(real, &ask, &o);
  if (fd < 0) return -1;
- if (wpe_seen_look_fd(fd, &opened) != 0 || wpe_seen_kind(&opened) != S_IFREG ||
-     wpe_seen_judge(&named, &opened) != WPE_SEEN_SAME) { close(fd); return -1; }
  close(fd);
- *mode = wpe_seen_mode(&opened) & WS_MODE_BITS;
+ *mode = o.mode & WS_MODE_BITS;
  return 0;
 }
 
@@ -2346,8 +2450,6 @@ static int ws_revert_failed(FENSTER *f, const char *what, const char *path, cons
 #define WS_OUTSIDE_WORKSPACE "it is outside the workspace"
 #define WS_NOT_RUN_CREATED   "the run did not create it"
 #define WS_NAME_TOO_LONG     "its name is too long to hand to the shell whole"
-/* The most bytes of one file a before image holds. */
-#define WS_BEFORE_IMAGE_MAX  4000000
 /* The longest sentence the write owner says about a revert. */
 #define WS_REVERT_SENTENCE_MAX WPE_WRITE_SENTENCE_MAX
 
@@ -2388,6 +2490,7 @@ static int ws_git_show(const char *rel, char **buf, size_t *len, char *reason, s
 {
  char file[WPE_PATH_SIZE + 24], q[1100], spec[1300], qs[2700], qf[1300];
  char cmd[4200], *out;
+ WpeReadOutcome ro;
  int status = 0;
  *buf = NULL; *len = 0;
  if (ws_run_temp_file(WS_GIT_SHOW_STEM, file, sizeof file) != 0) {
@@ -2405,7 +2508,7 @@ static int ws_git_show(const char *rel, char **buf, size_t *len, char *reason, s
  }
  out = wpe_ai_run_capture_git_status(cmd, &status);
  if (status != 0) ws_output_reason(out, status, reason, rsz);
- else *buf = ws_read_file_len(file, WS_BEFORE_IMAGE_MAX, len);
+ else *buf = ws_read_before_image(file, len, &ro);
  free(out);
  unlink(file);
  if (status == 0 && !*buf) snprintf(reason, rsz, "%s", "git's copy could not be read");
@@ -2643,6 +2746,7 @@ static int ws_revert_git(FENSTER *f, const char *path, int is_new)
 static int ws_revert_snapshot(FENSTER *f, const char *path, int is_new)
 {
  char snap[WPE_PATH_SIZE], *text;
+ WpeReadOutcome ro;
  size_t len;
  int i, rc;
  if (ws_revert_root_refused(f, is_new ? "remove" : "restore", path) != 0) return -1;
@@ -2655,7 +2759,7 @@ static int ws_revert_snapshot(FENSTER *f, const char *path, int is_new)
  for (i = 0; i < ck_n; i++) if (!strcmp(ck_files[i], path)) break;
  if (i == ck_n) return ws_revert_failed(f, "restore", path, WS_NO_BEFORE_IMAGE);
  if (ws_snapshot_path(snap, sizeof snap, i) != 0) return ws_revert_failed(f, "restore", path, WS_NO_BEFORE_IMAGE);
- text = ws_read_file_len(snap, WS_BEFORE_IMAGE_MAX, &len);
+ text = ws_read_before_image(snap, &len, &ro);
  if (!text) return ws_revert_failed(f, "restore", path, WS_NO_BEFORE_IMAGE);
  rc = ws_restore_before_image(f, path, text, len);
  free(text);

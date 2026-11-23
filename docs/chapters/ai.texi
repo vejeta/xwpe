@@ -1007,7 +1007,12 @@ run creates in any directory of the workspace is listed and can be removed;
 in a workspace too large to walk whole the pane says how many files it
 watches and that a file created beyond them is unseen, and a file the
 checkpoint never reached is never called new, even when the run deletes
-others and brings it into view.  Afterwards it writes
+others and brings it into view.  A file that cannot be held whole as a before
+image (a pipe, a socket, a link, or a file over 4000000 bytes, which is
+refused and never saved cut short) is left out of the checkpoint and named in
+the pane with the reason, for example @samp{left out of the checkpoint:
+/work/pipe.c: it is a pipe}, so you know a revert will not put that file back;
+nothing waits on it and the run goes on.  Afterwards it writes
 the @dfn{changeset} into the @samp{Messages} window, one line per changed hunk in
 the compiler's @code{file:line:} format -- so you step through the AI's changes
 with the very same @kbd{Alt-T} (Next) and @kbd{Alt-V} (Previous) keys you use for
@@ -1155,7 +1160,11 @@ the prompt under a @samp{PROJECT INSTRUCTIONS} heading, so a repo's standing
 rules (the build command, code style, ``do not touch @file{vendor/}'') are
 followed without restating them.  The editor's own file wins, so a repository
 whose @file{AGENTS.md} serves other coding agents can still give this editor
-its own instructions.  Where the block goes is set by
+its own instructions.  A file that is a link is followed only when it leads to
+a regular file inside the workspace; a link that leaves the workspace, a pipe or
+a device is not read (a repository you cloned chose its name) and the pane names
+the file and the reason, never in silence.  The next file of the list is tried,
+and without one the turn carries no instructions.  Where the block goes is set by
 @code{AIProjectInstructions}: under @code{agent}, the default, the Agent, the
 Multi-file edit and Build & fix carry it, and the chat carries it from the turn
 in which it first uses a tool, for the rest of the session; a plain Ask does

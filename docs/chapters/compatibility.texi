@@ -824,7 +824,12 @@ project).  An option file or project file over its limit is refused whole,
 because a file read cut short would be saved short.  After a refused option
 file your own options are in force, and Options > Save writes your own
 file.  A header that an @code{#include} names and that cannot be read counts
-as changed, so F9 builds and the compiler reports it.  The reason: a name
+as changed, so F9 builds and the compiler reports it.  The assistant's reads
+keep to the same rule: the git files, the @file{.bsp} connection files and the
+@file{AGENTS.md} of a folder you opened are refused when they are a pipe or a
+device, or a link (an @file{AGENTS.md} link to a file inside the workspace is
+followed, and a refusal of it is named in the pane), and a file the assistant is about to change that cannot be
+held whole is left out of the checkpoint and named.  The reason: a name
 that a repository or a source file chose must never make the editor wait or
 take your keys.
 

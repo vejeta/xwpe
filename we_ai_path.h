@@ -9,6 +9,17 @@
 
 #include "we_path.h"
 #include "we_write.h"   /* WpeWriteExpect, the look a write is held to */
+#include "we_read.h"    /* WpeReadOutcome, WpeReadOver: the read owner's words */
+
+/* The noun the read owner's sentences use for a file the assistant reads, and
+   the room for one such sentence: a path, the words around it and a reason. */
+#define WPE_AI_READ_WHAT "file"
+#define WPE_AI_REFUSAL_LINE_MAX (WPE_PATH_SIZE + 2 * WPE_PATH_MSG_MAX)
+
+/* The most bytes of one file a before image holds, and of the old text a write
+   box or a patch takes: both write the result back, so a longer file is refused
+   whole, never cut. */
+#define WPE_AI_BEFORE_IMAGE_MAX 4000000
 
 /* Room for a resolved path; a path that does not fit is "outside". */
 #define WPE_PATH_RESOLVED_MAX WPE_PATH_SIZE
@@ -52,6 +63,17 @@ int wpe_path_lands_outside(const char *root, const char *path, char *real, size_
 int wpe_path_is_protected(const char *rroot, const char *rpath);
 int wpe_path_lies_in(const char *dir, const char *rpath);
 int wpe_path_look_write(const char *path, char *real, size_t sz, WpeWriteExpect *x);
+int wpe_path_resolve_for_read(const char *path, char *real, size_t sz);
+/* What wpe_path_read_inside did with a name: read it, or refused a link. */
+typedef enum {
+ WPE_PATH_INSIDE_READ,       /* read, or refused for a reason the outcome holds */
+ WPE_PATH_INSIDE_OUTSIDE,    /* a link whose target lies outside the workspace */
+ WPE_PATH_INSIDE_DANGLING    /* a link whose target is not there */
+} WpePathInside;
+char *wpe_path_read_inside(const char *root, const char *name, size_t maxlen,
+                           size_t *len, WpeReadOutcome *o, WpePathInside *how);
+char *wpe_path_read_judged(const char *path, size_t maxlen, WpeReadOver over,
+                           size_t *len, WpeReadOutcome *o);
 int wpe_path_look_name(const char *path, char *real, size_t sz, WpeWriteExpect *x);
 int wpe_path_count_outward_links(const char *start, int max_depth, int *truncated);
 

@@ -109,6 +109,6 @@ we_fl_unix.c|WpePrintFile/remove|1|keep|the print's copy of the file
 we_fl_unix.c|e_man_give_up/remove|1|keep|the man page's copy
 we_fl_unix.c|e_ed_man/remove|2|keep|the man page's copy
 we_xterm.c|e_x_system/remove|1|keep|the script file of the command's own terminal
-we_ai_ws.c|ws_git_list/remove|3|keep|the temporary list git answers through, in the run's private folder
+we_ai_ws.c|ws_git_list/remove|2|keep|the temporary list git answers through, in the run's private folder
 we_ai_ws.c|ws_revert_snapshot/remove|1|keep|the assistant's workspace revert: the removal of a file the run created
 we_ai_ws.c|ws_git_show/remove|2|keep|the temporary copy of a file's content that git prints, in the run's private folder, removed once read

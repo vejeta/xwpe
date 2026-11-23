@@ -77,6 +77,17 @@ typedef struct {
 #define WPE_READ_ASK_PROJECT(what) \
  ((WpeReadAsk){ (what), WPE_READ_NAMED, WPE_READ_KIND_FILE, WPE_READ_PROJECT_MAX, \
                 WPE_READ_WHOLE_OR_REFUSE, NULL, AT_FDCWD })
+/* A folder to list: a link at its name is followed (the user's own folder may
+   be one).  The folder face ignores the kinds and the bound of a file; they
+   carry the same values as the other forms only so the record is complete. */
+#define WPE_READ_ASK_FOLDER(what) \
+ ((WpeReadAsk){ (what), WPE_READ_NAMED, WPE_READ_KIND_FILE, WPE_READ_CONFIG_MAX, \
+                WPE_READ_WHOLE_OR_REFUSE, NULL, AT_FDCWD })
+/* A folder met while walking another: a link at its name is refused, never
+   entered (the same note on the kinds and the bound). */
+#define WPE_READ_ASK_FOLDER_ENTRY(what) \
+ ((WpeReadAsk){ (what), WPE_READ_NAMED_NOFOLLOW, WPE_READ_KIND_FILE, WPE_READ_CONFIG_MAX, \
+                WPE_READ_WHOLE_OR_REFUSE, NULL, AT_FDCWD })
 /* A reader with constant memory (a line at a time): the file is not held. */
 #define WPE_READ_ASK_SCAN(what) \
  ((WpeReadAsk){ (what), WPE_READ_NAMED, WPE_READ_KIND_FILE, WPE_READ_UNBOUNDED, \
@@ -88,6 +99,11 @@ typedef struct {
 /* A name a model or a server chose, judged against the look the caller took. */
 #define WPE_READ_ASK_JUDGED(what, max, over, seen) \
  ((WpeReadAsk){ (what), WPE_READ_NAMED_NOFOLLOW, WPE_READ_KIND_FILE, (max), (over), (seen), AT_FDCWD })
+/* A file the editor or a folder the user opened named, no look taken first, a
+   link at the name refused: refused whole over the bound (a list git wrote) ... */
+#define WPE_READ_ASK_FOLDER_BOUNDED(what, max) \
+ ((WpeReadAsk){ (what), WPE_READ_NAMED_NOFOLLOW, WPE_READ_KIND_FILE, (max), \
+                WPE_READ_WHOLE_OR_REFUSE, NULL, AT_FDCWD })
 /* The same form, read below a folder the caller holds open. */
 #define WPE_READ_ASK_AT(form, dirfd) wpe_read_ask_at((form), (dirfd))
 /* A project judged at its first read, read again against that look. */
@@ -164,6 +180,10 @@ WPE_READ_RESULT DIR *wpe_read_folder(const char *path, const WpeReadAsk *ask, Wp
    entry's name, never of a joined path.  A link is reported as a link.
    Returns 0 or -1. */
 WPE_READ_RESULT int wpe_read_entry_look(DIR *d, const char *name, WpeSeen *s);
+
+/* The kind of an entry (S_IFMT bits: S_IFREG, S_IFDIR, S_IFLNK, S_IFIFO ...),
+   asked the same way, 0 when it cannot be looked at. */
+mode_t wpe_read_entry_kind(DIR *d, const char *name);
 
 /* A refusal that came from the system and not from the owner's judgement
    (a getcwd that failed, an errno a caller already holds): the outcome a

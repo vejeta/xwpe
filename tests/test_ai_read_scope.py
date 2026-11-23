@@ -194,14 +194,16 @@ def _answer_boxes(s, server, answers, poll=RUN_POLL_S):
 
 
 def _agent_run(tree, replies, policy, answers, extra_lines=(), filename="t.c",
-               goal="inspect", then=None):
+               goal="inspect", then=None, env_extra=None):
     """One agent run (Alt-G g) against the capturing server.  Returns the
     server, the boxes seen, the final screen and the trace.  `then(s, server)`
-    may drive more of the same session before it closes."""
+    may drive more of the same session before it closes; `env_extra` adds to
+    the editor's environment (a test hook)."""
     server = Server(replies)
     try:
         _config(tree, server, policy, extra_lines)
-        with WpeSession(str(tree.ws), SEED, env_extra=_env(tree), filename=filename) as s:
+        with WpeSession(str(tree.ws), SEED, env_extra=_env(tree, env_extra),
+                        filename=filename) as s:
             s.key(ALT.AI, delay=0.6); s.key("g", delay=0.6)
             s.key(goal, delay=0.1); s.key("\r", delay=1.0)
             boxes = _answer_boxes(s, server, list(answers))

@@ -15,5 +15,7 @@ tests/test_ai_changeset_bounds.py test_a_workspace_beyond_the_watch_bound_is_sai
 tests/test_ai_changeset.py test_ai_changeset_revert_reports_a_file_it_could_not_restore the asserted path follows the needle "could not restore" on the rows below it, which are in the rows read whenever the needle is
 tests/test_ai_changeset.py test_ai_changeset_revert_reports_a_git_restore_the_workspace_refused the asserted path follows the needle "could not restore" on the rows below it, which are in the rows read whenever the needle is
 tests/test_ai_changeset.py test_ai_changeset_revert_reports_a_created_file_it_could_not_remove the asserted path follows the needle "could not remove" on the rows below it, which are in the rows read whenever the needle is
+tests/test_ai_project_memory.py _ask_capture the needles are the caller's list, each row passes the phrases it asserts
+tests/test_ai_read_owner.py _left_out_run the needles are the caller's list, each row passes the phrases it asserts
 tests/test_ai_session.py test_ai_session_save_failure_is_said_in_the_pane the asserted path is the state folder named in the sentence the needles start, read from the rows below the needle
 tests/test_ai_contain_credentials.py test_an_engine_in_a_dropped_workspace_folder_is_named_in_the_pane the asserted path is the folder named in the sentence the needle starts, on the rows below it

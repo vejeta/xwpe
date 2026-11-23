@@ -17,6 +17,7 @@
 #include "we_lineend.h"
 #include "we_ai.h"
 #include "we_ai_path.h"
+#include "we_read.h"
 #include "we_ai_host.h"
 #include "we_contain.h"
 
@@ -481,6 +482,7 @@ static void ai_chat_set_pending(ai_chat_session *s, const char *seed)
 
 /* read-only tool helpers (defined in the Agent section) + the turn starter */
 static char *ai_read_file_bounded(FENSTER *f, const char *path);
+static char *ai_tool_error_alloc(const char *reason);
 /* A tool's command runs on the loop like a web tool's page: the step answers
    AI_TOOL_WAITS and the task named by ai_page_owner goes on when it is done. */
 static void  ai_page_owner(struct ai_async_op *op,
@@ -3397,22 +3399,78 @@ static int ai_project_instructions_wanted(enum ai_prompt_mode mode, int session_
  return session_used_tool;
 }
 
+/* The noun the read owner's sentences use for the instructions file. */
+#define AI_PROJECT_READ_WHAT "instructions file"
+/* Why a link at the instructions file is refused when it leaves the workspace
+   (the words of WS_OUTSIDE_WORKSPACE in we_ai_ws.c). */
+#define AI_PROJECT_OUTSIDE_REASON "it leads outside the workspace"
+
+/* The last refusal said in the pane, so the same one is not repeated on every
+   turn that builds the prompt.  It lasts for the session: a refusal that
+   comes back after a different one is said again, the same one is not. */
+static char ai_project_last_refusal[WPE_AI_REFUSAL_LINE_MAX];
+
 /**
- * ai_project_memory_open - Open the instructions file that applies, noting its name and size.
- * @info: receives the file's name and real length.
- * Return: the open file, or NULL when neither file exists.
+ * ai_project_memory_say_refusal - Name an instructions file that could not be read.
+ * @f: the window the pane belongs to; @name: the file; @o: the read owner's
+ * refusal; @how: what wpe_path_read_inside found (a link out of the
+ * workspace, a link to a missing file, or neither).
+ *
+ * A file that is not there, and is not a link, is no refusal and is not
+ * mentioned.  Anything else (a pipe, a device, a folder, a link out of the
+ * workspace, a link to a missing file, no permission) is said once, with the
+ * file and the reason, so the user knows why the standing rules were not
+ * folded in.
  */
-static FILE *ai_project_memory_open(struct ai_project_memory_info *info)
+static void ai_project_memory_say_refusal(FENSTER *f, const char *name,
+                                          const WpeReadOutcome *o, WpePathInside how)
 {
- size_t i;
- struct stat st;
+ char line[WPE_AI_REFUSAL_LINE_MAX];
+ if (how == WPE_PATH_INSIDE_READ && wpe_read_outcome_missing(o)) return;
+ if (how == WPE_PATH_INSIDE_OUTSIDE)
+  (void)wpe_path_say_refused_because(line, sizeof line, AI_PROJECT_READ_WHAT, name,
+                                     AI_PROJECT_OUTSIDE_REASON);
+ else if (how == WPE_PATH_INSIDE_DANGLING)
+  (void)wpe_path_say_refused_because(line, sizeof line, AI_PROJECT_READ_WHAT, name,
+                                     wpe_path_reason_of(WPE_PATH_REASON_DANGLING));
+ else
+  (void)wpe_read_say(line, sizeof line, AI_PROJECT_READ_WHAT, name, o);
+ if (!strcmp(line, ai_project_last_refusal)) return;
+ snprintf(ai_project_last_refusal, sizeof ai_project_last_refusal, "%s", line);
+ wpe_ai_pane_error(f, line);
+}
+
+/**
+ * ai_project_memory_read - Read the instructions file that applies, noting its name and size.
+ * @info: receives the file's name, the bytes taken and its real length;
+ * @bound: the most bytes taken.
+ *
+ * What the user gains: a repository that was cloned cannot stop the editor
+ * by putting a pipe or a device where AGENTS.md belongs, and cannot point it
+ * at a file of yours elsewhere.  A link is followed only to a regular file
+ * inside the workspace; every other refusal is named in the pane with the
+ * reason, never dropped in silence, and the next file name in the list is
+ * tried.
+ * Return: the malloc'd bytes, NUL-terminated, or NULL when no file of the
+ * list can be read.
+ */
+static char *ai_project_memory_read(FENSTER *f, struct ai_project_memory_info *info, size_t bound)
+{
+ size_t i, len;
+ char *root = wpe_ai_workspace_root(f);
+ if (!root) return NULL;
  for (i = 0; i < sizeof ai_project_file_names / sizeof ai_project_file_names[0]; i++) {
-  FILE *fp = fopen(ai_project_file_names[i], "rb");
-  if (!fp) continue;
+  WpeReadOutcome o;
+  WpePathInside how;
+  char *text = wpe_path_read_inside(root, ai_project_file_names[i], bound, &len, &o, &how);
+  if (!text) { ai_project_memory_say_refusal(f, ai_project_file_names[i], &o, how); continue; }
   info->name = ai_project_file_names[i];
-  if (fstat(fileno(fp), &st) == 0) info->total = (size_t)st.st_size;
-  return fp;
+  info->loaded = len;
+  info->total = o.size > 0 ? (size_t)o.size : 0;
+  free(root);
+  return text;
  }
+ free(root);
  return NULL;
 }
 
@@ -3430,19 +3488,12 @@ static FILE *ai_project_memory_open(struct ai_project_memory_info *info)
  * assistant follows where it acts on the repository, without the user
  * restating them each turn.
  */
-static char *ai_project_memory(struct ai_project_memory_info *info)
+static char *ai_project_memory(FENSTER *f, struct ai_project_memory_info *info)
 {
- FILE *fp;
  char *out;
- size_t bound = (size_t)e_ai_project_max;
  info->name = NULL; info->loaded = 0; info->total = 0;
- fp = ai_project_memory_open(info);
- if (!fp) return NULL;
- out = malloc(bound + 1);
- if (!out) { fclose(fp); return NULL; }
- info->loaded = fread(out, 1, bound, fp);
- fclose(fp);
- out[info->loaded] = '\0';
+ out = ai_project_memory_read(f, info, (size_t)e_ai_project_max);
+ if (!out) return NULL;
  if (info->total < info->loaded) info->total = info->loaded;
  wpe_ai_trace("project memory %s bytes=%zu", info->name, info->loaded);
  return out;
@@ -3543,7 +3594,7 @@ static size_t ai_append_project_memory(char *sys, size_t cap, size_t len, FENSTE
  char *mem, *block;
  struct ai_project_memory_info info;
  if (!ai_chat_wants_project_memory()) return len;
- mem = ai_project_memory(&info);
+ mem = ai_project_memory(f, &info);
  if (!mem) return len;
  block = ai_project_block_alloc(&info, mem);
  free(mem);
@@ -6508,20 +6559,23 @@ static int ai_diff_box_show(FENSTER *f, char **rt, int *ra, int nrows,
  return ret;
 }
 
-/* Read a whole file, or NULL if it does not exist / is too big -- used to show
-   what an agent write_file would replace. */
+/**
+ * ai_slurp_file - Read a whole file the model named, for the old text of a write or a patch.
+ * @path: the file, as the model named it.
+ *
+ * What the user gains: a model that names a pipe, a device or a file over
+ * WPE_AI_BEFORE_IMAGE_MAX cannot make the editor wait or fill its memory; the
+ * owner refuses it by what it is.  The write box shows the old text of a file
+ * it could not read as empty.  A link is followed once, to the place the
+ * caller resolved, which is opened without following another.
+ * Return: the malloc'd text, or NULL when the file is missing or refused.
+ */
 static char *ai_slurp_file(const char *path)
 {
- FILE *fp = fopen(path, "rb");
- long n;
- char *b;
- if (!fp) return NULL;
- fseek(fp, 0, SEEK_END); n = ftell(fp); fseek(fp, 0, SEEK_SET);
- if (n < 0 || n > 4000000) { fclose(fp); return NULL; }
- b = malloc((size_t)n + 1);
- if (b) { size_t r = fread(b, 1, (size_t)n, fp); b[r] = '\0'; }
- fclose(fp);
- return b;
+ char real[WPE_PATH_SIZE];
+ WpeReadOutcome o;
+ if (wpe_path_resolve_for_read(path, real, sizeof real) != 0) return NULL;
+ return wpe_path_read_judged(real, WPE_AI_BEFORE_IMAGE_MAX, WPE_READ_WHOLE_OR_REFUSE, NULL, &o);
 }
 
 /**
@@ -7387,7 +7441,7 @@ static void ai_ml_add_project_memory(struct ai_mlist *m, FENSTER *f)
  char *body, *block;
  struct ai_project_memory_info info;
  if (!ai_ml_wants_project_memory()) return;
- body = ai_project_memory(&info);
+ body = ai_project_memory(f, &info);
  if (!body) return;
  block = ai_project_block_alloc(&info, body);
  free(body);
@@ -10818,24 +10872,95 @@ int e_ai_ui_key(FENSTER *f)
 
 /* What the model reads for a read_file of a path that is not there. */
 #define AI_TOOL_NO_FILE_RESULT "(file not found)"
-/* The first size of a read's buffer; it doubles when it fills.  A byte is
-   stored only when the byte and the NUL after it both fit. */
-#define AI_READ_FIRST_CAP 4096
-#define AI_READ_TAIL_ROOM 2
+/* What the model reads when the place a read was judged for is no longer the
+   place the name leads to. */
+#define AI_TOOL_READ_MOVED_RESULT "TOOL ERROR: the file's place changed while it was being judged; nothing was read"
+
+/* Test-only hook, read like the write owner's XWPE_TEST_FAIL ones and without
+   effect when unset: with the hook's word in XWPE_TEST_FAIL, the file or
+   folder named by XWPE_TEST_SWAP_DIR is replaced by a link to
+   XWPE_TEST_SWAP_TO at the step the word names, as a program racing the
+   editor would do: after the place was looked at and before it is judged
+   (ai-swap-after-look), or after a read was judged and before it is made
+   (ai-read-swap-after-gate). */
+#define AI_TEST_FAIL_ENV        "XWPE_TEST_FAIL"
+#define AI_TEST_SWAP_AFTER_LOOK "ai-swap-after-look"
+#define AI_TEST_SWAP_AFTER_READ_GATE "ai-read-swap-after-gate"
+#define AI_TEST_SWAP_DIR_ENV    "XWPE_TEST_SWAP_DIR"
+#define AI_TEST_SWAP_TO_ENV     "XWPE_TEST_SWAP_TO"
+#define AI_TEST_SWAP_ASIDE      ".orig"
 
 /**
- * ai_buf_grow - Double a growing buffer.
- * @buf: the buffer, replaced on success; @cap: its size, doubled on success.
- * Return: 1 when there is room, 0 when the memory was refused and the old
- * buffer stands as it was.
+ * wpe_ai_test_swap_at - Put a link where a file or folder was, when the test asks at this step.
+ * @step: the hook's word for the step the editor is at.
+ *
+ * Does nothing unless XWPE_TEST_FAIL carries @step and the two swap
+ * variables are set.
  */
-static int ai_buf_grow(char **buf, size_t *cap)
+void wpe_ai_test_swap_at(const char *step)
 {
- char *nb = realloc(*buf, *cap * 2);
- if (!nb) return 0;
- *buf = nb;
- *cap *= 2;
- return 1;
+ const char *hook = getenv(AI_TEST_FAIL_ENV);
+ const char *dir = getenv(AI_TEST_SWAP_DIR_ENV);
+ const char *to = getenv(AI_TEST_SWAP_TO_ENV);
+ char aside[WPE_PATH_RESOLVED_MAX];
+ if (!hook || !strstr(hook, step) || !dir || !to) return;
+ if (snprintf(aside, sizeof aside, "%s%s", dir, AI_TEST_SWAP_ASIDE) >= (int)sizeof aside) return;
+ if (rename(dir, aside) != 0) return;
+ if (symlink(to, dir) != 0) rename(aside, dir);
+}
+
+/**
+ * ai_read_refusal_result - What the model reads when a file could not be read.
+ * @path: the file; @o: the read owner's refusal; @missing: what the model
+ * reads when the file is not there.
+ *
+ * A missing file is a result, not an error, so the run goes on.  Any other
+ * refusal (a pipe, a device, a folder, a link, no permission) is a tool error
+ * with the owner's sentence, so the model asks for another file instead of
+ * retrying this one.
+ * Return: the malloc'd result, NULL out of memory.
+ */
+static char *ai_read_refusal_result(const char *path, const WpeReadOutcome *o, const char *missing)
+{
+ char sentence[WPE_AI_REFUSAL_LINE_MAX];
+ if (wpe_read_outcome_missing(o)) return strdup(missing);
+ (void)wpe_read_say(sentence, sizeof sentence, WPE_AI_READ_WHAT, path, o);
+ return ai_tool_error_alloc(sentence);
+}
+
+/**
+ * ai_read_place - Resolve a path a model named, once, for the gate and for the read.
+ * @path: the path as the model wrote it; @real/@sz: receive the resolved place.
+ * Return: @real when the path could be followed, else @path (the gate then
+ * judges the name as written and the read answers "not found").
+ *
+ * What the user gets: the scope check and the read are about the same place.
+ * A name resolved twice can answer twice differently, a link retargeted
+ * between the two would read a place nobody judged; a place resolved once
+ * and judged as it is cannot.  (A folder on the way swapped after the
+ * resolve is accepted until the walk owner lands: see ai_read_place_unmoved.)
+ */
+static const char *ai_read_place(const char *path, char *real, size_t sz)
+{
+ if (wpe_path_resolve_for_read(path, real, sz) != 0) return path;
+ return real;
+}
+
+/**
+ * ai_read_place_unmoved - Does the judge still rule on exactly this place?
+ * @f: the window the pane belongs to; @real: the resolved place.
+ * Return: 1 when the judge's own resolve of @real led nowhere else (no link
+ * was put on its way since), 0 otherwise.
+ *
+ * The window between this check and the read that follows it is accepted
+ * until the walk owner lands (the read then goes below the folder it holds);
+ * the check closes the window the gate leaves, not that one.
+ */
+static int ai_read_place_unmoved(FENSTER *f, const char *real)
+{
+ char landed[WPE_PATH_RESOLVED_MAX];
+ (void)wpe_ai_scope_judge(f, real, WPE_SCOPE_READ, landed, sizeof landed);
+ return landed[0] == '\0';
 }
 
 /**
@@ -10848,26 +10973,25 @@ static int ai_buf_grow(char **buf, size_t *cap)
  * an error, so the run goes on.
  * A file outside the workspace goes through the scope gate first
  * (ai_scope_read_gate), at every dial.
+ * The name is resolved once and the gate, the check that the place did not
+ * move and the read all use that place; the window between that check and the
+ * read is accepted until the walk owner lands (design: the read then goes
+ * below a folder it holds).
  * Return: the malloc'd result, or NULL out of memory.
  */
 static char *ai_read_file_bounded(FENSTER *f, const char *path)
 {
- FILE *fp;
- char *out;
- size_t cap = AI_READ_FIRST_CAP, len = 0;
- int ch;
- if (!ai_scope_read_gate(f, AI_TOOL_READ_FILE, path, &out)) return out;
- fp = fopen(path, "rb");
- if (!fp) return strdup(AI_TOOL_NO_FILE_RESULT);
- out = malloc(cap);
- if (!out) { fclose(fp); return NULL; }
- while ((ch = fgetc(fp)) != EOF && len < WPE_AI_TOOL_OUT_MAX) {
-  if (len + AI_READ_TAIL_ROOM > cap && !ai_buf_grow(&out, &cap)) break;
-  out[len++] = (char)ch;
- }
- out[len] = '\0';
- fclose(fp);
- if (ch != EOF) return wpe_ai_tool_result_mark_cut(out, len);   /* more bytes followed */
+ char *out, real[WPE_PATH_SIZE];
+ WpeReadOutcome o;
+ size_t len;
+ const char *place = ai_read_place(path, real, sizeof real);
+ if (!ai_scope_read_gate(f, AI_TOOL_READ_FILE, place, &out)) return out;
+ wpe_ai_test_swap_at(AI_TEST_SWAP_AFTER_READ_GATE);
+ if (place == path) return strdup(AI_TOOL_NO_FILE_RESULT);
+ if (!ai_read_place_unmoved(f, real)) return strdup(AI_TOOL_READ_MOVED_RESULT);
+ out = wpe_path_read_judged(real, WPE_AI_TOOL_OUT_MAX, WPE_READ_CUT, &len, &o);
+ if (!out) return ai_read_refusal_result(real, &o, AI_TOOL_NO_FILE_RESULT);
+ if (o.cut) return wpe_ai_tool_result_mark_cut(out, len);   /* more bytes followed */
  return out;
 }
 
@@ -12200,34 +12324,16 @@ static void ai_agent_ensure_checkpoint(ai_async_op *op)
  ai_say_checkpoint_state(op->f);
 }
 
-/* Test-only hook, read like the write owner's XWPE_TEST_FAIL ones and without
-   effect when unset: with this word in XWPE_TEST_FAIL, the folder named by
-   XWPE_TEST_SWAP_DIR is replaced by a link to XWPE_TEST_SWAP_TO right after
-   the place was looked at and before it is judged, as a program racing the
-   editor would do. */
-#define AI_TEST_FAIL_ENV        "XWPE_TEST_FAIL"
-#define AI_TEST_SWAP_AFTER_LOOK "ai-swap-after-look"
-#define AI_TEST_SWAP_DIR_ENV    "XWPE_TEST_SWAP_DIR"
-#define AI_TEST_SWAP_TO_ENV     "XWPE_TEST_SWAP_TO"
-#define AI_TEST_SWAP_ASIDE      ".orig"
-
 /**
  * ai_test_swap_after_look - Put a link where a folder was, between the look and the judge.
  *
  * Lets a test prove that the judge rules on the place the look resolved and
  * that a link put on its way is refused, not followed.  Does nothing unless
- * the test hook is set.
+ * the test hook is set (see wpe_ai_test_swap_at).
  */
 static void ai_test_swap_after_look(void)
 {
- const char *hook = getenv(AI_TEST_FAIL_ENV);
- const char *dir = getenv(AI_TEST_SWAP_DIR_ENV);
- const char *to = getenv(AI_TEST_SWAP_TO_ENV);
- char aside[WPE_PATH_RESOLVED_MAX];
- if (!hook || !strstr(hook, AI_TEST_SWAP_AFTER_LOOK) || !dir || !to) return;
- if (snprintf(aside, sizeof aside, "%s%s", dir, AI_TEST_SWAP_ASIDE) >= (int)sizeof aside) return;
- if (rename(dir, aside) != 0) return;
- if (symlink(to, dir) != 0) rename(aside, dir);
+ wpe_ai_test_swap_at(AI_TEST_SWAP_AFTER_LOOK);
 }
 
 /**
@@ -13725,10 +13831,15 @@ static char *ai_agent_tool_write_file(ai_async_op *op, const char *path, const c
  */
 static char *ai_agent_apply_patch(ai_async_op *op, const char *path, const char *firstnl)
 {
- char *old, *newc = NULL, *result, perr[AI_PATCH_ERR_MAX];
- if (!ai_scope_read_gate(op->f, AI_TOOL_APPLY_PATCH, path, &result)) return result;
- old = ai_slurp_file(path);
- if (!old) return strdup(AI_PATCH_NO_FILE_RESULT);
+ char *old, *newc = NULL, *result, perr[AI_PATCH_ERR_MAX], real[WPE_PATH_SIZE];
+ WpeReadOutcome o;
+ const char *place = ai_read_place(path, real, sizeof real);
+ if (!ai_scope_read_gate(op->f, AI_TOOL_APPLY_PATCH, place, &result)) return result;
+ wpe_ai_test_swap_at(AI_TEST_SWAP_AFTER_READ_GATE);
+ if (place == path) return strdup(AI_PATCH_NO_FILE_RESULT);
+ if (!ai_read_place_unmoved(op->f, real)) return strdup(AI_TOOL_READ_MOVED_RESULT);
+ old = wpe_path_read_judged(real, WPE_AI_BEFORE_IMAGE_MAX, WPE_READ_WHOLE_OR_REFUSE, NULL, &o);
+ if (!old) return ai_read_refusal_result(real, &o, AI_PATCH_NO_FILE_RESULT);
  if (!firstnl) result = strdup(AI_PATCH_NO_BLOCKS_RESULT);
  else if (!ai_apply_search_replace(old, firstnl + 1, &newc, perr, sizeof perr)) result = ai_tool_error_alloc(perr);
  else result = ai_agent_commit_write(op, AI_TOOL_APPLY_PATCH, path, newc);

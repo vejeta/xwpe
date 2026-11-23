@@ -133,7 +133,8 @@ typedef enum {
  WPE_PATH_REASON_OTHER,       /* another file took the name */
  WPE_PATH_REASON_CHANGED,     /* not proven to be the file that was looked at */
  WPE_PATH_REASON_NO_WRITER,   /* a pipe nobody is writing to */
- WPE_PATH_REASON_NOT_FOLDER   /* a folder was asked for and something else is there */
+ WPE_PATH_REASON_NOT_FOLDER,  /* a folder was asked for and something else is there */
+ WPE_PATH_REASON_DANGLING     /* a link holds the name and what it leads to is not there */
 } WpePathWhy;
 
 /* "not found" for ENOENT, the system's own words for any other errno.  The
