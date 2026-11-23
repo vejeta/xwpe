@@ -9,6 +9,11 @@ Clicks are injected as SGR mouse reports (press ESC [ < 0 ; col ; row M,
 release ... m, 1-based coordinates).  Whether Ok was applied is read from the
 AI trace: Ok writes an "options backend=..." line, Cancel writes nothing.
 
+The last row writes the reports of a click in one go, as a fast hand and a
+slow terminal deliver them: curses then folds each press and release it read
+together into one CLICKED, two pairs into a DOUBLE_CLICKED and three into a
+TRIPLE_CLICKED, and every one of those is still the click the user made.
+
 Driven on the AI settings dialog (Options > AI), 64x21 cells.
 """
 import os
@@ -17,7 +22,7 @@ import subprocess
 import pytest
 
 from build_config import requires
-from wpe_driver import WpeSession, ALT, WPE_BIN
+from wpe_driver import WpeSession, ALT, WPE_BIN, checkbox_mark, wait_screen
 
 pytestmark = requires("enable-ai")
 
@@ -36,6 +41,14 @@ CANCEL_LABEL = "Cancel"
 # corners come out as l (top-left), k (top-right), m (bottom-left).
 CORNER_TL, CORNER_TR, CORNER_BL = "l", "k", "m"
 MAX_TABS = 20                # more Tab presses than the dialog has widgets
+# The Backend radio the folded click is aimed at, and the mark it must gain.
+# XWPE_AI_BACKEND=mock is a backend the radio does not list, so the group
+# opens with no row marked and a "(*)" on it is the click's own doing.
+RADIO_LABEL = "Claude CLI"
+RADIO_MARKED = "(*)"
+# How many cells the radio's mark and the space behind it take, counted back
+# from its caption: "( ) Claude CLI", so the "(" of the glyph.
+RADIO_GLYPH_BACK = 4
 
 
 def _open_ai_settings(tmp_path, trace):
@@ -50,6 +63,17 @@ def _click(s, col, row):
     """Press and release button 1 on the 0-based cell (col, row)."""
     s.key("\033[<0;%d;%dM" % (col + 1, row + 1), delay=0.2)
     s.key("\033[<0;%d;%dm" % (col + 1, row + 1), delay=0.5)
+
+
+def _click_folded(s, col, row, pairs):
+    """@pairs clicks on the 0-based cell (col, row), written as ONE write.
+
+    The reports then reach the editor in one read, which is what curses needs
+    to fold them: it answers two reports with one BUTTON1_CLICKED, four with
+    BUTTON1_DOUBLE_CLICKED and six with BUTTON1_TRIPLE_CLICKED, so the click
+    arrives as a single event that names no press and no release of its own."""
+    one = "\033[<0;%d;%dM\033[<0;%d;%dm" % (col + 1, row + 1, col + 1, row + 1)
+    s.key(one * pairs, delay=0.5)
 
 
 def _is_open(s):
@@ -210,3 +234,28 @@ def test_enter_on_focused_cancel_cancels(tmp_path):
     assert not still_open, \
         "Enter on the focused Cancel button did not close the dialog:\n" + "\n".join(rows)
     assert not _options_applied(trace), "Enter on Cancel applied the options like Ok"
+
+
+@pytest.mark.parametrize("pairs", [1, 2, 3])
+def test_a_click_read_as_one_report_selects_the_radio(tmp_path, pairs):
+    """One, two or three clicks whose reports reach the editor in a single
+    read all select the radio they land on.
+
+    Curses folds each press and release it read together into one event, and
+    two or three of those into a double or a triple click.  The terminal's
+    button decoder named only the pressed and the plain clicked button, so a
+    folded pair arrived naming no button at all: the dialog reads such a
+    report as a wheel step, and the radio stayed "( )" however fast it was
+    clicked."""
+    trace = tmp_path / "ai.trace"
+    with _open_ai_settings(tmp_path, trace) as s:
+        row, col = _label_pos(s, RADIO_LABEL)
+        assert checkbox_mark(s, RADIO_LABEL) != RADIO_MARKED, \
+            "the Backend radio is marked before the click:\n" + "\n".join(s.display())
+        _click_folded(s, col - RADIO_GLYPH_BACK, row, pairs)
+        marked = wait_screen(s, RADIO_MARKED + " " + RADIO_LABEL, 8)
+        rows = s.display()
+    assert marked, \
+        "%d press+release pair%s in one write left the Backend radio " \
+        "unmarked:\n%s" % (pairs, "" if pairs == 1 else "s", "\n".join(rows))
+

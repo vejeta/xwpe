@@ -70,6 +70,15 @@ static void e_t_truecolor_detect(void);
 #define INPUT_POLL_MS     50   /* ncurses getch() wait between input polls */
 #define INPUT_NO_WAIT_MS  0    /* getch() returns at once; poll() waits */
 #define MOUSE_CELL_SUBDIV 8    /* g[] reports mouse pos in 1/8-cell units */
+/* The time ncurses is given to fold a press and its release into one
+   BUTTON*_CLICKED.  It must not be 0: at 0 ncurses folds nothing, and when
+   both reports reach it in the same read it keeps the release until a later
+   report arrives.  The editor is then left with a press that has no release,
+   goes on saying the button is down, and every while(e_mshit()) loop waits
+   for a release that was read already.  One millisecond folds that pair into
+   the click the decoder answers already, and is far below the gap of a click
+   a hand makes, which stays the press and release it is. */
+#define MOUSE_INTERVAL_MS 1
 
 /* xterm private mode 2004, bracketed paste: the terminal wraps pasted text in
    ESC[200~ ... ESC[201~ so the editor can insert it literally.  Switched on
@@ -990,7 +999,7 @@ int e_t_initscr()
  set_escdelay(25);
 #if MOUSE
  mousemask(ALL_MOUSE_EVENTS | REPORT_MOUSE_POSITION, NULL);
- mouseinterval(0);
+ mouseinterval(MOUSE_INTERVAL_MS);
 #endif
  e_t_release_string_publish();   /* before the first mode goes on */
  e_t_private_modes_on();
@@ -2996,11 +3005,28 @@ int fk_t_locate(int x, int y)
  return(y);
 }
 
+/**
+ * e_t_mouse_decode_button - Which button a mouse report names.
+ * @bstate: the ncurses button state of the report.
+ *
+ * A click the terminal and curses folded together still names the button it
+ * was made with: with MOUSE_INTERVAL_MS curses answers a press and a release
+ * it read in one go with one BUTTON*_CLICKED, two of those pairs with
+ * BUTTON*_DOUBLE_CLICKED and three with BUTTON*_TRIPLE_CLICKED, and the three
+ * are one and the same click to the user.  Naming no button for the folded
+ * pair leaves the dialog engine a report that carries nothing, which it reads
+ * as a wheel step, so a fast double click on a radio would do nothing at all.
+ * Return: the button bitmask (1 left, 2 middle, 4 right), or -1 when the
+ * report names no button.
+ */
 static int e_t_mouse_decode_button(mmask_t bstate)
 {
- if (bstate & (BUTTON1_PRESSED|BUTTON1_CLICKED)) return 1;
- if (bstate & (BUTTON2_PRESSED|BUTTON2_CLICKED)) return 2;
- if (bstate & (BUTTON3_PRESSED|BUTTON3_CLICKED)) return 4;
+ if (bstate & (BUTTON1_PRESSED|BUTTON1_CLICKED
+               |BUTTON1_DOUBLE_CLICKED|BUTTON1_TRIPLE_CLICKED)) return 1;
+ if (bstate & (BUTTON2_PRESSED|BUTTON2_CLICKED
+               |BUTTON2_DOUBLE_CLICKED|BUTTON2_TRIPLE_CLICKED)) return 2;
+ if (bstate & (BUTTON3_PRESSED|BUTTON3_CLICKED
+               |BUTTON3_DOUBLE_CLICKED|BUTTON3_TRIPLE_CLICKED)) return 4;
  return -1;
 }
 
@@ -3019,13 +3045,13 @@ static int e_t_mouse_is_released(mmask_t bstate)
    A fast click can arrive as a single synthesized BUTTON*_CLICKED (or
    _DOUBLE_/_TRIPLE_) bstate with no matching _RELEASED to follow -- this
    happens whenever the terminal/ncurses pair coalesces press+release (e.g.
-   macOS Terminal / iTerm; ncurses still synthesizes _CLICKED for same-poll
-   press+release sequences even with mouseinterval(0) in some terminfo
-   combinations).  Without an explicit release, the bit accumulated here would
-   stay set and any while(e_mshit()) drag-tracking loop (submenu, scroll
-   thumb, FM resize, ...) would spin forever.  Mark a pending synthetic
-   release; fk_t_mouse consumes it on the next no-event poll, so dispatch
-   still observes the click but the spin-loop exits one tick later. */
+   macOS Terminal / iTerm, and ncurses for a press and a release it read
+   together, which is what MOUSE_INTERVAL_MS asks it to do).  Without an
+   explicit release, the bit accumulated here would stay set and any
+   while(e_mshit()) drag-tracking loop (submenu, scroll thumb, FM resize,
+   ...) would spin forever.  Mark a pending synthetic release; fk_t_mouse
+   consumes it on the next no-event poll, so dispatch still observes the
+   click but the spin-loop exits one tick later. */
 static int e_t_mouse_apply_event(MEVENT *mev)
 {
  extern struct mouse e_mouse;
