@@ -27,16 +27,19 @@ Run: WPE_BIN=$PWD/wpe tests/.venv/bin/python -m pytest -q tests/test_row_readers
 """
 import glob
 import os
-import time
 
 import pytest
 
-from wpe_driver import WpeSession
+from wpe_driver import WpeSession, wait_until
 
 CTRL_O = "\x0f"
 ENTER = "\r"
 BEAUTIFY_DIALOG_S = 0.8
+# How long the Beautify run takes on an idle machine: the delay of the key that
+# starts it, and the ceiling of the wait for the state it leaves behind.  The
+# owner of the wait stretches the ceiling, the row never does.
 BEAUTIFY_RUN_S = 1.0
+BEAUTIFY_BOX = "Beautify"       # the title of the box Run > Beautify opens
 ASAN_OPTIONS = ("allow_user_segv_handler=0:detect_leaks=0:abort_on_error=1"
                 ":log_path=%s/asan")
 MAX_COLUMN = 120          # MaxColumn's default: the rows of a window are as wide
@@ -73,6 +76,31 @@ def _sanitizer_reports(workdir):
     return glob.glob(os.path.join(workdir, "asan*"))
 
 
+def _screen(session):
+    """The screen as it stands.  A wait polls this, so it reads with no drain
+    of its own: the wait drains between two of its reads."""
+    return "\n".join(session.display(drain=0))
+
+
+def _written_at(session):
+    """When the editor's file was last written, on the file's own clock: the
+    state on disk a wait for a save looks at."""
+    return os.stat(session.path).st_mtime_ns
+
+
+def _beautify_over(session):
+    """True once the Beautify box has closed, so the run is over, or once the
+    editor has ended.  A sanitizer report ends the editor a moment after the
+    key that starts the run, and that moment is what the row waits for: one
+    read right after the key sees an editor still on its way out."""
+    return not session.alive() or BEAUTIFY_BOX not in _screen(session)
+
+
+def _save_written(session, before):
+    """True once the save has written the file, or once the editor has ended."""
+    return not session.alive() or _written_at(session) > before
+
+
 def _beautify(session):
     """Run > Beautify over the whole text, as the user does."""
     session.key(CTRL_O, "b", delay=BEAUTIFY_DIALOG_S)
@@ -81,13 +109,17 @@ def _beautify(session):
 
 def _saved_after(session):
     """The file's bytes once the editor has saved it, None when it is gone.
-    A sanitizer report ends the editor a moment after the key, so the row
-    gives it that moment before it asks."""
-    time.sleep(BEAUTIFY_RUN_S)
+    A sanitizer report ends the editor a moment after a key, so the row waits
+    for the editor to end or for the state each key leaves behind: the
+    Beautify box closed, then the file written by the save."""
+    wait_until(session, lambda: _beautify_over(session), BEAUTIFY_RUN_S,
+               what="the Beautify box to close or the editor to end")
     if not session.alive():
         return None
+    before = _written_at(session)
     session.save()
-    time.sleep(BEAUTIFY_RUN_S)
+    wait_until(session, lambda: _save_written(session, before), BEAUTIFY_RUN_S,
+               what="the save to write the file or the editor to end")
     if not session.alive():
         return None
     return session.disk().decode()
@@ -176,8 +208,12 @@ def test_syntax_rule_with_a_continue_column_past_the_rows(tmp_path, column):
     env = _options_for(workdir)
     env["HOME"] = home
     with WpeSession(workdir, FORTRAN_SEED, filename="t.f", env_extra=env) as s:
-        time.sleep(BEAUTIFY_RUN_S)
-        shown = "\n".join(s.display(drain=0))
+        # Wait for the state the row asserts, not for a delay of its own: a
+        # sanitizer report ends the editor a moment after it paints the file,
+        # so the wait ends on the editor's end or on the opened row.
+        wait_until(s, lambda: not s.alive() or "A=1" in _screen(s),
+                   BEAUTIFY_RUN_S, what="the file to open or the editor to end")
+        shown = _screen(s)
         assert not _sanitizer_reports(workdir), \
             "continue column %d: the sanitizer reported a read outside " \
             "the text: %s" % (column, _sanitizer_reports(workdir))
