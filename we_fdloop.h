@@ -96,12 +96,35 @@ int  wpe_fd_end_wait(wpe_wait_pred pred, long deadline_ms);
 
 int  wpe_fd_write(int fd, const void *buf, size_t n, const char *what,
                   const char *ends);
-int  wpe_fd_write_flush(int fd);
+int  wpe_fd_write_flush(int fd);   /* the result is the caller's: nobody is told */
 long wpe_fd_write_pending(int fd);
 int  wpe_fd_close(int fd);   /* the one way a child's input is closed */
 int  wpe_fd_close_when_written(int fd);   /* ... once its queue is out */
 int  wpe_fd_write_stalled(int fd);
 void wpe_fd_write_say_set(void (*say)(const char *line));
+
+/* A queue the loop had to drop.  @how is WPE_FD_WRITE_CLOSED (the child
+   closed its input) or WPE_FD_WRITE_REFUSED (any other error, or the number
+   was closed behind the loop).  Called once, from the loop, after the walk
+   of the writers and before any reader is served.  @fd is still the
+   owner's to close, with wpe_fd_close; when @how is WPE_FD_WRITE_REFUSED the
+   number may already be closed.  The function may close descriptors,
+   write, register, or start a child.  A failure at the call (wpe_fd_write
+   or wpe_fd_write_flush answering REFUSED or CLOSED) is the return value's
+   and is not told here.  wpe_fd_close and wpe_fd_close_when_written forget
+   the owner: a descriptor handed to the loop to close has none, and
+   wpe_fd_write_failed_set refuses one. */
+typedef void (*wpe_fd_write_failed_fn)(int fd, int how, void *data);
+int  wpe_fd_write_failed_set(int fd, wpe_fd_write_failed_fn tell, void *data);
+void wpe_fd_write_failed_forget(int fd);
+
+/* The one call the loop owes: set once, then asked for with wpe_loop_owe().
+   The loop runs it once at the end of its current or next pass, at the
+   top of the loop, never inside the caller, and does not sleep while it
+   is owed.  wpe_loop_owed_set answers -1 when another function is set. */
+typedef void (*wpe_loop_owed_fn)(void);
+int  wpe_loop_owed_set(wpe_loop_owed_fn fn);
+void wpe_loop_owe(void);
 
 /* The editor's side (we_hfkt.c): watch an fd and say so on the bottom row
    when the loop cannot; wait for a key whether or not the keyboard is

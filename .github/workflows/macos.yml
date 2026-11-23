@@ -99,6 +99,10 @@ jobs:
           # Stretch every wait by 3x, as the pyte suite below and the Debian
           # autopkgtest do, instead of weakening the assertions.
           XWPE_TEST_WAIT_SCALE: "3"
+          # The fd loop's closed-peer rows print what this system's poll()
+          # and write() say of a closed pipe, socketpair and TCP peer; the
+          # step after this one shows the lines.  No assertion reads them.
+          XWPE_TEST_REPORT: "1"
           # What this job configured.  A library the runner image loses (here
           # openssl) fails tests/check-build-config.sh by name, instead of
           # turning a capability into "not built here" and a green run.  This
@@ -122,6 +126,15 @@ jobs:
           test_fileop test_write_owner test_childfds test_childfds_loop
           test_rowfind test_rowfind_copy test_rowfind_macsim tests/check-platform.sh"
           || { cat test-suite.log; exit 1; }
+
+      - name: Print the session-end measurement (closed pipe, socketpair and TCP peer)
+        # The REPORT lines test_fdloop wrote for XWPE_TEST_REPORT above: for
+        # each kind of descriptor and state, the revents poll() gave, the
+        # errno one more write gave, the pipe's fill and what the loop told
+        # the owner.  Shown even when a test failed, so one run reports both.
+        if: always()
+        timeout-minutes: 2
+        run: grep -h '^REPORT session-end' test_fdloop.log || echo "no REPORT lines in test_fdloop.log"
 
       - name: make check (the tests that need a toolchain)
         # LSP/DAP server tests SKIP when their server is absent. But GitHub's

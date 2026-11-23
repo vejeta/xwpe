@@ -29,6 +29,8 @@
 #define WPE_TIMER_MAX 16
 /* poll()'s "no bound": wait until an fd wakes. */
 #define WPE_POLL_FOREVER (-1)
+/* poll()'s "do not sleep": answer with what is ready now. */
+#define WPE_POLL_NOW 0
 
 typedef struct {
  int id;                 /* WPE_TIMER_NONE while the slot is free         */
@@ -123,6 +125,26 @@ typedef struct {
 
 static wpe_fd_writer writer_table[WPE_FD_WRITERS_MAX];
 static void (*wpe_fd_write_say_hook)(const char *line);
+
+/* Who is told when a descriptor's queue fails on the loop.  The entry lives
+   from wpe_fd_write_failed_set to wpe_fd_close.  A failure marks it
+   (failed, how) during the walk of the writers and the loop tells it after
+   the walk, once, taking the entry out before the call. */
+typedef struct {
+ int used;
+ int fd;
+ int failed;                    /* its queue failed; told after the walk       */
+ int how;                       /* WPE_FD_WRITE_CLOSED or WPE_FD_WRITE_REFUSED */
+ wpe_fd_write_failed_fn tell;
+ void *data;
+} wpe_fd_write_owner;
+
+static wpe_fd_write_owner write_owner_table[WPE_FD_WRITERS_MAX];
+
+/* The one call the loop owes (see wpe_loop_owed_set) and whether it is
+   asked for now. */
+static wpe_loop_owed_fn loop_owed_fn = NULL;
+static int loop_owed_flag = 0;
 
 /* Callbacks, timers and stall lines the loop has run, ever: a wait compares
    it before and after a poll to tell work done from a wake that only a
@@ -709,9 +731,206 @@ static int wpe_fd_write_once(int fd, const char *buf, size_t n, size_t *taken)
 }
 
 /**
- * wpe_fd_writer_finish - @w has nothing more to write: give its slot back,
- * and close its descriptor when its owner handed the close to the loop.
+ * wpe_fd_write_owner_find - The entry of the one who is told when @fd's
+ * queue fails.
+ * Return: the entry, or NULL.
+ */
+static wpe_fd_write_owner *wpe_fd_write_owner_find(int fd)
+{
+ int i;
+
+ for (i = 0; i < WPE_FD_WRITERS_MAX; i++)
+  if (write_owner_table[i].used && write_owner_table[i].fd == fd)
+   return &write_owner_table[i];
+ return NULL;
+}
+
+/**
+ * wpe_fd_write_failed_set - Name who is told when @fd's queue fails on the
+ * loop.
+ * @fd: a child's input, written with wpe_fd_write; @tell: what the loop
+ * calls, once, after the walk of the writers (see wpe_fd_write_failed_fn);
+ * @data: handed to @tell.
+ *
+ * For a client that owes its user an end when the child stops reading its
+ * input while bytes wait: a queued request that fails on the loop is then
+ * told at once, not after its deadline.  A second call for the same
+ * descriptor replaces the first.  A descriptor handed to
+ * wpe_fd_close_when_written has no such owner: the loop closes it and its
+ * failure reaches nobody.
+ * Return: 0, or -1 when @fd is negative, @tell is NULL, every entry is taken
+ * or @fd's queue is to be closed by the loop.
+ */
+int wpe_fd_write_failed_set(int fd, wpe_fd_write_failed_fn tell, void *data)
+{
+ wpe_fd_write_owner *o;
+ const wpe_fd_writer *w;
+ int i;
+
+ if (fd < 0 || !tell)
+  return -1;
+ w = wpe_fd_writer_find(fd);
+ if (w && w->close_when_empty)
+  return -1;
+ o = wpe_fd_write_owner_find(fd);
+ for (i = 0; !o && i < WPE_FD_WRITERS_MAX; i++)
+  if (!write_owner_table[i].used)
+   o = &write_owner_table[i];
+ if (!o)
+  return -1;
+ o->used = 1;
+ o->fd = fd;
+ o->failed = 0;
+ o->how = WPE_FD_WRITE_REFUSED;
+ o->tell = tell;
+ o->data = data;
+ return 0;
+}
+
+/**
+ * wpe_fd_write_failed_forget - Nobody is told of @fd's queue any more.
+ * @fd: the descriptor; none named, or one with no owner, is ignored.
+ *
+ * An end that was marked and not yet told is never told: the owner closed
+ * the descriptor (or handed it to the loop) first.
+ */
+void wpe_fd_write_failed_forget(int fd)
+{
+ wpe_fd_write_owner *o = wpe_fd_write_owner_find(fd);
+
+ if (o)
+  memset(o, 0, sizeof *o);
+}
+
+/**
+ * wpe_fd_write_owner_mark - Note that @fd's queue failed on the loop.
+ * @how: WPE_FD_WRITE_CLOSED or WPE_FD_WRITE_REFUSED.
+ *
+ * Nothing is called here: the walk of the writers is still running, and the
+ * owner is told after it (wpe_fd_tell_failures).  A descriptor with no owner
+ * is left alone.
+ */
+static void wpe_fd_write_owner_mark(int fd, int how)
+{
+ wpe_fd_write_owner *o = wpe_fd_write_owner_find(fd);
+
+ if (!o)
+  return;
+ o->failed = 1;
+ o->how = how;
+}
+
+/**
+ * wpe_fd_write_owner_take_failed - Take out the first entry whose queue
+ * failed.
+ * @out: receives a copy of it; the entry itself is freed, so a failure is
+ * told once and a number reused afterwards starts with no owner.
+ * Return: 1 when one was taken, 0 when none is left.
+ */
+static int wpe_fd_write_owner_take_failed(wpe_fd_write_owner *out)
+{
+ int i;
+
+ for (i = 0; i < WPE_FD_WRITERS_MAX; i++)
+ {
+  if (!write_owner_table[i].used || !write_owner_table[i].failed)
+   continue;
+  *out = write_owner_table[i];
+  memset(&write_owner_table[i], 0, sizeof write_owner_table[i]);
+  return 1;
+ }
+ return 0;
+}
+
+/**
+ * wpe_fd_tell_failures - Tell each owner whose queue failed in this pass.
+ *
+ * Run after the walk of the writers and before any reader is served, so what
+ * an owner does (close its descriptors, open others that reuse a number,
+ * write, start a child) never meets the walk's own view of the table.  Each
+ * call sits between the loop's two hooks like any other callback, and counts
+ * as the loop's work.  The user gets the end of a session the moment its
+ * input is lost, not when its deadline comes.
+ */
+static void wpe_fd_tell_failures(void)
+{
+ wpe_fd_write_owner o;
+
+ while (wpe_fd_write_owner_take_failed(&o))
+ {
+  wpe_loop_work++;
+  wpe_loop_before();
+  o.tell(o.fd, o.how, o.data);
+  wpe_loop_after();
+ }
+}
+
+/**
+ * wpe_loop_owed_set - Name the one call the loop owes.
+ * @fn: what wpe_loop_owe() asks the loop to run.
+ *
+ * Set once, by the owner of the sessions' ends.  The same function again is
+ * accepted.
+ * Return: 0, or -1 when @fn is NULL or another call is already named.
+ */
+int wpe_loop_owed_set(wpe_loop_owed_fn fn)
+{
+ if (!fn)
+  return -1;
+ if (loop_owed_fn && loop_owed_fn != fn)
+  return -1;
+ loop_owed_fn = fn;
+ return 0;
+}
+
+/**
+ * wpe_loop_owe - Ask the loop to run the owed call once, at the end of its
+ * current or next pass.
+ *
+ * Never inside the caller, so what an end tells its host does not run under
+ * the engine that signalled it.  The loop does not sleep while the call is
+ * owed, and a wait counts it as something that can make its condition hold.
+ */
+void wpe_loop_owe(void)
+{
+ loop_owed_flag = 1;
+}
+
+/** wpe_loop_owed_pending - Is the call owed and named? */
+static int wpe_loop_owed_pending(void)
+{
+ return loop_owed_fn && loop_owed_flag;
+}
+
+/**
+ * wpe_loop_owed_run - Run the owed call if it is asked for.
+ *
+ * The flag goes down before the call, so a wpe_loop_owe() made inside it is
+ * served by the next pass, once.  The call counts as the loop's work and
+ * runs between the two hooks.
+ * Return: 1 when it ran, else 0.
+ */
+static int wpe_loop_owed_run(void)
+{
+ if (!wpe_loop_owed_pending())
+  return 0;
+ loop_owed_flag = 0;
+ wpe_loop_work++;
+ wpe_loop_before();
+ loop_owed_fn();
+ wpe_loop_after();
+ return 1;
+}
+
+/**
+ * wpe_fd_writer_finish - @w has nothing more to write, or its queue failed:
+ * give its slot back, and close its descriptor when its owner handed the
+ * close to the loop.
  * @w: the queue, emptied or failed.
+ *
+ * The close goes through wpe_fd_close, the file's one close, so the owner
+ * entry of the number goes with it and a number reused later never reaches
+ * the old owner.
  */
 static void wpe_fd_writer_finish(wpe_fd_writer *w)
 {
@@ -720,15 +939,54 @@ static void wpe_fd_writer_finish(wpe_fd_writer *w)
  wpe_fd_writer_free(w);
  if (!close_it)
   return;
- wpe_fd_del(fd);
- close(fd);
+ wpe_fd_close(fd);
+}
+
+/**
+ * wpe_fd_writer_fail_on_loop - @w's queue failed inside the loop: the queue
+ * goes and the owner is marked, to be told after the walk.
+ * @how: WPE_FD_WRITE_CLOSED or WPE_FD_WRITE_REFUSED.
+ *
+ * The one place a queue is dropped for a failure the loop found.
+ */
+static void wpe_fd_writer_fail_on_loop(wpe_fd_writer *w, int how)
+{
+ wpe_fd_write_owner_mark(w->fd, how);
+ wpe_fd_writer_finish(w);
+}
+
+/**
+ * wpe_fd_writer_fail_at_call - @w's queue failed inside a call that returns
+ * the result: the queue goes, the owner entry stays, nobody is called.
+ *
+ * The caller reads the result; telling the owner as well would tell it twice,
+ * under the caller's own frame.
+ */
+static void wpe_fd_writer_fail_at_call(wpe_fd_writer *w)
+{
+ wpe_fd_writer_finish(w);
+}
+
+/**
+ * wpe_fd_writer_lost_number - @w's descriptor was closed without
+ * wpe_fd_close: the queue goes and the owner is marked REFUSED.
+ *
+ * Never a close: the number is not the loop's any more, and may belong to
+ * another descriptor already.
+ */
+static void wpe_fd_writer_lost_number(wpe_fd_writer *w)
+{
+ wpe_fd_write_owner_mark(w->fd, WPE_FD_WRITE_REFUSED);
+ wpe_fd_writer_free(w);
 }
 
 /**
  * wpe_fd_writer_flush - Write what @w's descriptor takes now.
  * Return: WPE_FD_WRITE_SENT once nothing waits (@w is then free),
  * WPE_FD_WRITE_QUEUED while bytes wait, or WPE_FD_WRITE_CLOSED /
- * WPE_FD_WRITE_REFUSED when the descriptor failed (the queue is dropped).
+ * WPE_FD_WRITE_REFUSED when the descriptor failed.  A failed queue is left
+ * to the caller, who drops it (wpe_fd_writer_fail_on_loop or
+ * wpe_fd_writer_fail_at_call).
  */
 static int wpe_fd_writer_flush(wpe_fd_writer *w)
 {
@@ -737,10 +995,7 @@ static int wpe_fd_writer_flush(wpe_fd_writer *w)
                            &taken);
 
  if (r != WPE_FD_WRITE_SENT)
- {
-  wpe_fd_writer_finish(w);
   return r;
- }
  if (taken > 0)
  {
   w->off += taken;
@@ -837,17 +1092,23 @@ int wpe_fd_write(int fd, const void *buf, size_t n, const char *what,
 /**
  * wpe_fd_write_flush - Write now what @fd's child takes of its queue.
  *
- * For a wait that polls a child itself until its answer comes (the language
- * server's handshake), so the request it waits on leaves the queue.
+ * For a caller that wants the queue to leave at once and reads the result
+ * itself.  A queue that fails here is dropped and the failure is returned;
+ * the owner of the descriptor (wpe_fd_write_failed_set) is not called, since
+ * the caller has the answer and a second telling would run under its frame.
  * Return: as wpe_fd_writer_flush; WPE_FD_WRITE_SENT when nothing waits.
  */
 int wpe_fd_write_flush(int fd)
 {
  wpe_fd_writer *w = wpe_fd_writer_find(fd);
+ int r;
 
  if (!w)
   return WPE_FD_WRITE_SENT;
- return wpe_fd_writer_flush(w);
+ r = wpe_fd_writer_flush(w);
+ if (r == WPE_FD_WRITE_CLOSED || r == WPE_FD_WRITE_REFUSED)
+  wpe_fd_writer_fail_at_call(w);
+ return r;
 }
 
 /**
@@ -889,6 +1150,7 @@ int wpe_fd_close(int fd)
 {
  if (fd < 0)
   return 0;
+ wpe_fd_write_failed_forget(fd);
  wpe_fd_writer_forget(fd);
  wpe_fd_del(fd);
  return close(fd);
@@ -906,7 +1168,9 @@ int wpe_fd_close(int fd)
  * wait for that.  A child that ends first takes the queue with it (the write
  * says EPIPE) and the descriptor is closed then.  The caller hands the
  * descriptor over: it never names @fd again, since the number may belong to
- * another descriptor once the loop has closed it.
+ * another descriptor once the loop has closed it.  For the same reason it has
+ * no owner for a failed queue (wpe_fd_write_failed_set): the loop closes it
+ * and tells nobody.
  * Return: 0 when it was closed now (nothing waited), 1 when the loop closes it.
  */
 int wpe_fd_close_when_written(int fd)
@@ -915,6 +1179,7 @@ int wpe_fd_close_when_written(int fd)
 
  if (fd < 0)
   return 0;
+ wpe_fd_write_failed_forget(fd);
  w = wpe_fd_writer_find(fd);
  if (!w || !wpe_fd_writer_waiting(w))
  {
@@ -977,11 +1242,35 @@ static int wpe_fd_collect_writers(struct pollfd *pfd, int n, int *wmap)
 }
 
 /**
+ * wpe_fd_flush_one - Write one queue poll() found writable.
+ * @w: the queue; @revents: what poll() reported for its descriptor.
+ *
+ * A descriptor closed behind the loop (POLLNVAL) loses its queue and its
+ * owner is marked REFUSED.  Else the queue is written, and a failure drops
+ * it and marks its owner.  Nothing is told here: the walk is still running.
+ */
+static void wpe_fd_flush_one(wpe_fd_writer *w, short revents)
+{
+ int r;
+
+ if (revents & POLLNVAL)            /* closed without wpe_fd_close */
+ {
+  wpe_fd_writer_lost_number(w);
+  return;
+ }
+ r = wpe_fd_writer_flush(w);
+ if (r == WPE_FD_WRITE_CLOSED || r == WPE_FD_WRITE_REFUSED)
+  wpe_fd_writer_fail_on_loop(w, r);
+}
+
+/**
  * wpe_fd_flush_ready - Write the queues poll() found writable.
  * @pfd: the writers' part of the set; @wmap: their slots; @n: how many.
  *
  * A hang-up or an error is written to as well: the write says EPIPE and the
  * queue goes, while the child's read side reports its end as it always has.
+ * A queue that failed is told to its owner after the whole walk, so what the
+ * owner does meets no slot or number this walk still holds.
  * Each flush counts as the loop's work, so a wait that a flush woke asks its
  * condition again instead of taking it for a key.
  */
@@ -996,13 +1285,9 @@ static void wpe_fd_flush_ready(const struct pollfd *pfd, const int *wmap, int n)
   if (!pfd[i].revents || !w->used || w->fd != pfd[i].fd)
    continue;
   wpe_loop_work++;
-  if (pfd[i].revents & POLLNVAL)   /* closed without wpe_fd_close */
-  {
-   wpe_fd_writer_forget(w->fd);
-   continue;
-  }
-  wpe_fd_writer_flush(w);
+  wpe_fd_flush_one(w, pfd[i].revents);
  }
+ wpe_fd_tell_failures();
 }
 
 /**
@@ -1054,13 +1339,16 @@ static int wpe_timer_bound_wait(int timeout_ms)
  * @timeout_ms: the caller's bound, or WPE_POLL_FOREVER.
  *
  * An editor sleeping until a key still wakes in time to say which child
- * stopped reading its input.
+ * stopped reading its input.  It does not sleep at all while the owed call
+ * is asked for: an end that is told is told now, not at the next key.
  */
 static int wpe_fd_poll_bound(int timeout_ms)
 {
  int bound = wpe_timer_bound_wait(timeout_ms);
  int stall = wpe_fd_writers_ms_to_stall();
 
+ if (wpe_loop_owed_pending())
+  return WPE_POLL_NOW;
  if (stall == WPE_POLL_FOREVER)
   return bound;
  if (bound == WPE_POLL_FOREVER || stall < bound)
@@ -1272,9 +1560,11 @@ static void wpe_fd_run_ready(const int *map, int n)
  * Bytes queued for a child are written first, when its descriptor can take
  * them, so a callback that answers the child sends behind them; a child
  * that has taken none of them for WPE_FD_WRITE_STALL_MS is named last.
- * Return: the number of ready fds plus the timers that ran and the stall
- * lines said, 0 when the wait ended with nothing to do, -1 when poll()
- * failed (a signal: call again).
+ * A call the loop owes (wpe_loop_owe) runs after the timers, once, and the
+ * loop does not sleep while it is owed.
+ * Return: the number of ready fds plus the timers that ran, the owed call
+ * and the stall lines said, 0 when the wait ended with nothing to do, -1
+ * when poll() failed (a signal: call again).
  */
 int wpe_fd_poll(int timeout_ms)
 {
@@ -1285,7 +1575,7 @@ int wpe_fd_poll(int timeout_ms)
 
  n = wpe_fd_collect(pfd, map);
  nw = wpe_fd_collect_writers(pfd, n, wmap);
- if (n + nw == 0 && !wpe_timer_pending())
+ if (n + nw == 0 && !wpe_timer_pending() && !wpe_loop_owed_pending())
   return 0;
  ready = poll(pfd, n + nw, wpe_fd_poll_bound(timeout_ms));
  if (ready < 0)
@@ -1297,6 +1587,7 @@ int wpe_fd_poll(int timeout_ms)
   wpe_fd_run_ready(map, n);
  }
  ready += wpe_timer_run_due();
+ ready += wpe_loop_owed_run();
  return ready + wpe_fd_writers_say_due();
 }
 
@@ -1359,12 +1650,15 @@ const char *wpe_fd_waiting_for(void)
  * A wait whose loop watches no descriptor and holds no timer could only
  * sleep: nothing could make its condition hold, so it ends at once and the
  * user is not kept waiting until a deadline for an answer that cannot come.
+ * A call the loop owes is a source: it runs on the next pass and may make the
+ * condition hold.
  */
 static int wpe_loop_has_sources(void)
 {
  int i;
 
- if (wpe_timer_pending() || wpe_fd_writers_waiting())
+ if (wpe_timer_pending() || wpe_fd_writers_waiting() ||
+     wpe_loop_owed_pending())
   return 1;
  for (i = 0; i < WPE_FD_MAX; i++)
  {

@@ -1,0 +1,22 @@
+{
+ "capability": "session-end",
+ "scenarios": [
+  {"id": "SC-session-end-01", "requirement": "A queue that fails on the loop tells its owner once, with CLOSED, after the queue is gone and between the loop's two hooks", "layer": "c-unit", "test": "test_fdloop", "status": "new"},
+  {"id": "SC-session-end-02", "requirement": "An owner told once is not told again when its number is reused by a new pipe whose queue fails", "layer": "c-unit", "test": "test_fdloop", "status": "new"},
+  {"id": "SC-session-end-03", "requirement": "A write refused at the call is the return value's: the owner of the descriptor is not told", "layer": "c-unit", "test": "test_fdloop", "status": "new"},
+  {"id": "SC-session-end-04", "requirement": "A flush that fails returns the result, drops the queue, keeps the owner and tells nobody", "layer": "c-unit", "test": "test_fdloop", "status": "new"},
+  {"id": "SC-session-end-05", "requirement": "Closing a descriptor forgets its owner, so a reused number never reaches the old owner", "layer": "c-unit", "test": "test_fdloop", "status": "new"},
+  {"id": "SC-session-end-06", "requirement": "An owner is told after the walk of the writers: it may close another writer and reuse its number without meeting the walk", "layer": "c-unit", "test": "test_fdloop", "status": "new"},
+  {"id": "SC-session-end-07", "requirement": "An owner is told before any reader is served: a reader closed or reopened on a reused number is not served with the old readiness", "layer": "c-unit", "test": "test_fdloop", "status": "new"},
+  {"id": "SC-session-end-08", "requirement": "A number closed behind the loop tells its owner REFUSED and the loop closes nothing", "layer": "c-unit", "test": "test_fdloop", "status": "new"},
+  {"id": "SC-session-end-09", "requirement": "A queue to a socket whose peer closed tells its owner once with CLOSED or REFUSED, whatever errno the system gives", "layer": "c-unit", "test": "test_fdloop", "status": "new"},
+  {"id": "SC-session-end-10", "requirement": "With nothing else to wait for, an owed call makes the loop run it once and return at once", "layer": "c-unit", "test": "test_fdloop", "status": "new"},
+  {"id": "SC-session-end-11", "requirement": "A wait counts the owed call as a source and asks its condition again after it", "layer": "c-unit", "test": "test_fdloop", "status": "new"},
+  {"id": "SC-session-end-12", "requirement": "The loop does not sleep while a call is owed", "layer": "c-unit", "test": "test_fdloop", "status": "new"},
+  {"id": "SC-session-end-13", "requirement": "An owe made inside the owed call is served by the next pass, once", "layer": "c-unit", "test": "test_fdloop", "status": "new"},
+  {"id": "SC-session-end-14", "requirement": "The owed call is named once: a second, different call is refused", "layer": "c-unit", "test": "test_fdloop", "status": "new"},
+  {"id": "SC-session-end-15", "requirement": "A queue the loop closes for its owner forgets the owner with the close", "layer": "c-unit", "test": "test_fdloop", "status": "new"},
+  {"id": "SC-session-end-16", "requirement": "A failure owner is refused where it cannot be kept: a descriptor the loop closes, a negative number, no function, a full table", "layer": "c-unit", "test": "test_fdloop", "status": "new"},
+  {"id": "SC-session-end-17", "requirement": "A queue handed to the loop to close has no owner when its number is lost", "layer": "c-unit", "test": "test_fdloop", "status": "new"}
+ ]
+}

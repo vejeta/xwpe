@@ -807,7 +807,7 @@ test_child_state_CFLAGS = $(TEST_CFLAGS)
 
 # The test includes we_fdloop.c itself (the id counter is private to it), so
 # the file is not listed here again: it would be defined twice.
-test_fdloop_SOURCES = tests/test_fdloop.c
+test_fdloop_SOURCES = tests/test_fdloop.c tests/test_loop_until.h
 test_fdloop_CFLAGS = $(TEST_CFLAGS)
 
 # Debugger prompt window unit test: we_debprompt.c only, no editor, always runs.
@@ -1117,7 +1117,10 @@ TESTS += tests/check-chain-outcome.sh
 # tests/check-session-end.sh fails when the debug adapter's or the build
 # server's send function fills its slot first, writes the slot another way,
 # or hands the slot to another function (tests/session-end.allow holds the
-# functions each clause excuses, none for this one).
+# functions each clause excuses, none for this one).  It also fails when a
+# failed queue leaves the fd loop by any way but its one path, when an owner
+# is told inside the walk of the writers, or when the owed hook is named
+# outside its owner and its one user (read with $(NM) from the objects).
 TESTS += tests/check-session-end.sh
 
 # One owner of how long a path the editor holds may be (we_path.h) and of a
@@ -1462,6 +1465,7 @@ EXTRA_DIST = \
   tests/seen_premise.py \
   tests/check-with-deadline.sh \
   tests/test_watchdog.h \
+  tests/test_loop_until.h \
   tests/child_state.h \
   tests/test_child_state.c \
   tests/check-child-state.sh \

@@ -23,11 +23,15 @@
 #include <signal.h>
 #include <stdlib.h>
 #include <sys/socket.h>
+#include <sys/utsname.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 /* The loop's source is compiled into this test, not linked, so the id wrap
  * test can put the private id counter next to INT_MAX instead of making two
  * billion calls to reach it.  Its tables are static: so is its table size. */
 #include "we_fdloop.c"
 #include "test_watchdog.h"
+#include "test_loop_until.h"
 
 static int cb_calls = 0;
 static int reaped_fd = -1;
@@ -1347,6 +1351,1034 @@ static int test_close_when_written_sends_every_byte_then_end_of_file(void)
  return 0;
 }
 
+/* ==== a queue the loop drops is told to its owner (rows F-1 .. F-8c) ====
+ *
+ * Each row is red on the loop before the owner existed or under the named
+ * mutation of its comment, and waits only through test_loop_until: the bound
+ * is how long a red run takes, a green run ends when its predicate holds. */
+
+#define FAIL_BOUND_MS     2000
+#define FAIL_TEXT         "cmd\n"
+#define FAIL_PASSES       3
+#define FAIL_ROWS_GUARD_S 60
+#define CAPACITY_MAX      (32L * 1024L * 1024L)
+#define REPORT_WRITE_TRIES 2   /* one more byte may still be taken: try twice */
+#define F4_TEXT_MAX       64
+#define REPORT_NO_HOW     (-999)
+#define REPORT_NAME_MAX   32
+#define PAIR_KINDS        3
+
+/* What an owner saw when the loop told it. */
+typedef struct {
+ int calls;
+ int fd;
+ int how;
+ long pending_at_call;     /* bytes still queued for fd when it was told   */
+ int hook_depth_at_call;   /* loop hooks open when it was told             */
+} told_t;
+
+static int hook_depth = 0, hooks_before = 0, hooks_after = 0;
+
+static void hook_before(void) { hook_depth++; hooks_before++; }
+static void hook_after(void) { hook_depth--; hooks_after++; }
+
+static void install_counting_hooks(void)
+{
+ hook_depth = hooks_before = hooks_after = 0;
+ wpe_loop_hooks_set(hook_before, hook_after);
+}
+
+static void remove_counting_hooks(void)
+{
+ wpe_loop_hooks_set(NULL, NULL);
+}
+
+/* The owner every row but F-4 and F-5 registers: it only writes down what
+   it was told. */
+static void on_failed(int fd, int how, void *data)
+{
+ told_t *t = data;
+
+ t->calls++;
+ t->fd = fd;
+ t->how = how;
+ t->pending_at_call = wpe_fd_write_pending(fd);
+ t->hook_depth_at_call = hook_depth;
+}
+
+static int told_once(void *ctx)
+{
+ return ((told_t *)ctx)->calls >= 1;
+}
+
+/* Give @number to the descriptor @fd, as an open of the same number would. */
+static int claim_number(int number, int fd)
+{
+ if (fd != number)
+ {
+  if (dup2(fd, number) != number)
+   return -1;
+  close(fd);
+ }
+ return number;
+}
+
+/* The lowest number the reader of a test pipe may take: above every number
+   a row reuses, so a number freed and claimed again never lands on it. */
+#define PIPE_SPARE_MIN 100
+
+/* A new pipe whose write end has the number @number, which is free: what an
+   open that follows a close of the number gets.  The reader is moved above
+   PIPE_SPARE_MIN first, since pipe() may itself return @number for it.
+   Return: @number, or -1; @reader is the read end. */
+static int pipe_on_number(int number, int *reader)
+{
+ int zp[2], high;
+
+ if (pipe(zp) != 0)
+  return -1;
+ high = fcntl(zp[0], F_DUPFD, PIPE_SPARE_MIN);
+ if (high < 0)
+ {
+  close(zp[0]);
+  close(zp[1]);
+  return -1;
+ }
+ close(zp[0]);
+ *reader = high;
+ return claim_number(number, zp[1]);
+}
+
+/* A pipe, full, with FAIL_TEXT queued behind the fill.  Return: the fill,
+   or -1. */
+static long open_queued_pipe(int p[2])
+{
+ long fill = full_pipe(p);
+
+ if (fill <= 0)
+  return -1;
+ if (wpe_fd_write(p[1], FAIL_TEXT, strlen(FAIL_TEXT), WRITE_WHAT, WRITE_ENDS) !=
+     WPE_FD_WRITE_QUEUED)
+  return -1;
+ return fill;
+}
+
+/* A queued pipe whose owner is @t.  Return: 0, or -1. */
+static int open_owned_pipe(int p[2], told_t *t)
+{
+ if (open_queued_pipe(p) <= 0)
+  return -1;
+ return wpe_fd_write_failed_set(p[1], on_failed, t);
+}
+
+/* A pipe on @number, as the open that follows a close of the number gets it:
+   full, FAIL_TEXT queued, its reader already closed, no owner.  Return: 0,
+   or -1. */
+static int open_reused_pipe_that_fails(int number)
+{
+ int reader;
+
+ if (pipe_on_number(number, &reader) != number)
+  return -1;
+ set_nonblocking(reader);
+ set_nonblocking(number);
+ if (fill_until_full(number) <= 0)
+  return -1;
+ if (wpe_fd_write(number, FAIL_TEXT, strlen(FAIL_TEXT), WRITE_WHAT, WRITE_ENDS) !=
+     WPE_FD_WRITE_QUEUED)
+  return -1;
+ close(reader);
+ return 0;
+}
+
+/* Has the queue of the descriptor @ctx points to left the loop? */
+static int queue_gone(void *ctx)
+{
+ return wpe_fd_write_pending(*(int *)ctx) == 0;
+}
+
+/* Is the descriptor @ctx points to closed? */
+static int descriptor_closed(void *ctx)
+{
+ return fcntl(*(int *)ctx, F_GETFD) < 0;
+}
+
+/* Numbers no descriptor of the test holds, for entries that only fill the
+   owner table. */
+#define OWNER_FAKE_BASE 900
+
+/* -- what each system makes of a closed peer, for the report -- */
+
+enum { PAIR_PIPE, PAIR_SOCKETPAIR, PAIR_TCP };
+
+static const char *pair_name(int kind)
+{
+ if (kind == PAIR_PIPE)
+  return "pipe";
+ if (kind == PAIR_SOCKETPAIR)
+  return "socketpair";
+ return "tcp-loopback";
+}
+
+static int report_wanted(void)
+{
+ const char *e = getenv("XWPE_TEST_REPORT");
+
+ return e && *e && strcmp(e, "0") != 0;
+}
+
+/* The bytes @fd takes until it answers EAGAIN, with no F_GETPIPE_SZ: a pipe
+   is written one byte at a time, the same count on every system.  A socket
+   holds megabytes, so it takes whole chunks first and the last bytes one at
+   a time, which gives the same edge in a few thousand writes.
+   Return: the count, or -1 when it takes more than CAPACITY_MAX. */
+static long fill_to_capacity(int fd, int chunked)
+{
+ char chunk[WRITE_FILL_CHUNK];
+ long n = 0;
+ ssize_t w;
+
+ memset(chunk, 'f', sizeof chunk);
+ while (chunked && (w = write(fd, chunk, sizeof chunk)) == (ssize_t)sizeof chunk)
+ {
+  n += w;
+  if (n > CAPACITY_MAX)
+   return -1;
+ }
+ if (chunked && w > 0)
+  n += w;
+ while ((w = write(fd, "f", 1)) == 1)
+ {
+  if (++n > CAPACITY_MAX)
+   return -1;
+ }
+ return n;
+}
+
+/* A connected pair of TCP sockets on the loopback, @ours and @peer, both
+   non-blocking.  Return: 0, or -1 when the system has no loopback. */
+static int make_tcp_pair(int *ours, int *peer)
+{
+ struct sockaddr_in addr;
+ socklen_t len = sizeof addr;
+ int listener = socket(AF_INET, SOCK_STREAM, 0), c, a;
+
+ if (listener < 0)
+  return -1;
+ memset(&addr, 0, sizeof addr);
+ addr.sin_family = AF_INET;
+ addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+ if (bind(listener, (struct sockaddr *)&addr, sizeof addr) != 0 ||
+     listen(listener, 1) != 0 ||
+     getsockname(listener, (struct sockaddr *)&addr, &len) != 0)
+ {
+  close(listener);
+  return -1;
+ }
+ c = socket(AF_INET, SOCK_STREAM, 0);
+ if (c < 0 || connect(c, (struct sockaddr *)&addr, sizeof addr) != 0)
+ {
+  if (c >= 0)
+   close(c);
+  close(listener);
+  return -1;
+ }
+ a = accept(listener, NULL, NULL);
+ close(listener);
+ if (a < 0)
+ {
+  close(c);
+  return -1;
+ }
+ set_nonblocking(c);
+ set_nonblocking(a);
+ *ours = c;
+ *peer = a;
+ return 0;
+}
+
+/* A connected pair of @kind, both non-blocking: @ours is what a client
+   writes to, @peer is the child's end.  @full: @ours is filled until it
+   takes no more (the child never read), @fill is the count.
+   Return: 0, or -1. */
+static int make_pair(int kind, int full, int *ours, int *peer, long *fill)
+{
+ int p[2];
+
+ *fill = 0;
+ if (kind == PAIR_PIPE)
+ {
+  if (pipe(p) != 0)
+   return -1;
+  *ours = p[1];
+  *peer = p[0];
+ }
+ else if (kind == PAIR_SOCKETPAIR)
+ {
+  if (socketpair(AF_UNIX, SOCK_STREAM, 0, p) != 0)
+   return -1;
+  *ours = p[0];
+  *peer = p[1];
+ }
+ else if (make_tcp_pair(ours, peer) != 0)
+  return -1;
+ set_nonblocking(*ours);
+ set_nonblocking(*peer);
+ if (full)
+ {
+  *fill = fill_to_capacity(*ours, kind != PAIR_PIPE);
+  if (*fill <= 0)
+   return -1;
+ }
+ return 0;
+}
+
+static const char *errno_name(int e)
+{
+ if (e == 0)
+  return "none";
+ if (e == EPIPE)
+  return "EPIPE";
+ if (e == ECONNRESET)
+  return "ECONNRESET";
+ if (e == EAGAIN)
+  return "EAGAIN";
+ if (e == ENOTCONN)
+  return "ENOTCONN";
+ return "other";
+}
+
+/* Print one measured line (XWPE_TEST_REPORT=1): what poll() says of the
+   write end @fd now and what one more byte written to it says. */
+static void report_case(const char *row, int kind, const char *label,
+                        long fill, int fd, int how)
+{
+ struct utsname u;
+ struct pollfd pf;
+ int err = 0, tries;
+ char howtext[REPORT_NAME_MAX];
+
+ pf.fd = fd;
+ pf.events = POLLOUT;
+ pf.revents = 0;
+ poll(&pf, 1, 0);
+ for (tries = 0; tries < REPORT_WRITE_TRIES; tries++)
+ {
+  errno = 0;
+  err = write(fd, "x", 1) < 0 ? errno : 0;
+  if (err)
+   break;
+ }
+ if (how == REPORT_NO_HOW)
+  snprintf(howtext, sizeof howtext, "-");
+ else
+  snprintf(howtext, sizeof howtext, "%d", how);
+ if (uname(&u) != 0)
+  snprintf(u.sysname, sizeof u.sysname, "unknown");
+ printf("REPORT session-end row=%s sys=%s kind=%s case=%s pipe_fill=%ld "
+        "revents=0x%x write_errno=%d(%s) how=%s\n", row, u.sysname,
+        pair_name(kind), label, fill, (unsigned)pf.revents, err,
+        errno_name(err), howtext);
+}
+
+/* The state without a queue: the peer closed, nothing waits. */
+static void report_peer_closed(const char *row, int kind)
+{
+ int ours, peer;
+ long fill;
+
+ if (make_pair(kind, 0, &ours, &peer, &fill) != 0)
+ {
+  printf("REPORT session-end row=%s kind=%s unavailable\n", row, pair_name(kind));
+  return;
+ }
+ close(peer);
+ report_case(row, kind, kind == PAIR_PIPE ? "reader-closed" : "peer-closed",
+             fill, ours, REPORT_NO_HOW);
+ close(ours);
+}
+
+/* The state with the child's input full and a message queued behind it: the
+   peer closes and the loop is run until its owner is told, or the bound.
+   Return: what the owner was told, REPORT_NO_HOW when nobody was. */
+static int run_full_pair(int kind, told_t *t, long *fill_out)
+{
+ int ours, peer;
+ long fill;
+
+ *fill_out = 0;
+ memset(t, 0, sizeof *t);
+ if (make_pair(kind, 1, &ours, &peer, &fill) != 0)
+  return REPORT_NO_HOW;
+ *fill_out = fill;
+ memset(t, 0, sizeof *t);
+ if (wpe_fd_write(ours, FAIL_TEXT, strlen(FAIL_TEXT), WRITE_WHAT, WRITE_ENDS) !=
+     WPE_FD_WRITE_QUEUED ||
+     wpe_fd_write_failed_set(ours, on_failed, t) != 0)
+ {
+  wpe_fd_close(ours);
+  close(peer);
+  return REPORT_NO_HOW;
+ }
+ close(peer);
+ test_loop_until(told_once, t, FAIL_BOUND_MS);
+ test_loop_passes(FAIL_PASSES);
+ wpe_fd_close(ours);
+ return t->calls ? t->how : REPORT_NO_HOW;
+}
+
+/* A pair of @kind in the state a closed peer leaves, run through the loop:
+   the full one, with its owner told or not.  Prints the measured lines when
+   XWPE_TEST_REPORT=1 asks.  The row asserts on @t, never on a line.
+   Return: 0, or -1 when the system could not make the pair. */
+static int run_kind(const char *row, int kind, told_t *t)
+{
+ long fill, twin_fill;
+ int twin_ours, twin_peer;
+ int how = run_full_pair(kind, t, &fill);
+
+ if (report_wanted())
+ {
+  report_peer_closed(row, kind);
+  if (make_pair(kind, 1, &twin_ours, &twin_peer, &twin_fill) == 0)
+  {
+   close(twin_peer);
+   report_case(row, kind, kind == PAIR_PIPE ? "reader-closed-full" :
+               "peer-closed-unread", twin_fill, twin_ours, how);
+   close(twin_ours);
+  }
+  else
+   printf("REPORT session-end row=%s kind=%s unavailable\n", row, pair_name(kind));
+ }
+ return fill > 0 ? 0 : -1;
+}
+
+/* Measure @kind for @row and print the lines, only when XWPE_TEST_REPORT=1
+   asks: a row calls this at its end and asserts nothing on it. */
+static void report_kind_when_asked(const char *row, int kind)
+{
+ told_t measured;
+
+ if (report_wanted())
+  run_kind(row, kind, &measured);
+}
+
+/* F-1.  A queue that fails on the loop tells its owner once, with CLOSED,
+   after the queue is gone and between the loop's two hooks.
+   Breaks when: the loop drops the writer's result, so the failed queue is
+   never told (the loop before the owner existed). */
+/* @scenario SC-session-end-01 */
+static int test_failed_queue_is_told_to_its_owner_once(void)
+{
+ int p[2];
+ told_t t;
+ int told;
+
+ memset(&t, 0, sizeof t);
+ if (open_owned_pipe(p, &t) != 0) return 1;
+ install_counting_hooks();
+ close(p[0]);                         /* the child closed its input */
+ told = test_loop_until(told_once, &t, FAIL_BOUND_MS);
+ test_loop_passes(FAIL_PASSES);
+ remove_counting_hooks();
+ wpe_fd_close(p[1]);
+ if (!told || t.calls != 1)
+ { printf("FAIL: F-1: the owner was told %d times, not once\n", t.calls); return 1; }
+ if (t.fd != p[1])
+ { printf("FAIL: F-1: told about descriptor %d, not %d\n", t.fd, p[1]); return 1; }
+ if (t.how != WPE_FD_WRITE_CLOSED)
+ { printf("FAIL: F-1: told %d, not CLOSED\n", t.how); return 1; }
+ if (t.pending_at_call != 0)
+ { printf("FAIL: F-1: %ld bytes still queued when it was told\n", t.pending_at_call); return 1; }
+ if (t.hook_depth_at_call != 1 || hooks_before != 1 || hooks_after != 1)
+ { printf("FAIL: F-1: the call was not made inside the loop's two hooks "
+          "(depth %d, before %d, after %d)\n", t.hook_depth_at_call, hooks_before, hooks_after); return 1; }
+ report_kind_when_asked("F-1", PAIR_PIPE);
+ return 0;
+}
+
+/* F-1b.  An owner told once is no owner any more: its descriptor closed
+   behind the loop and its number taken by a new pipe whose queue fails, the
+   old owner is not told a second time.
+   Breaks when: the entry of a told owner stays in the table. */
+/* @scenario SC-session-end-02 */
+static int test_an_owner_told_once_is_not_told_for_its_number_again(void)
+{
+ int p[2], number;
+ told_t t;
+
+ memset(&t, 0, sizeof t);
+ if (open_owned_pipe(p, &t) != 0) return 1;
+ number = p[1];
+ close(p[0]);
+ if (!test_loop_until(told_once, &t, FAIL_BOUND_MS))
+ { printf("FAIL: F-1b: the owner was never told\n"); wpe_fd_close(number); return 1; }
+ close(number);                       /* not through wpe_fd_close */
+ if (open_reused_pipe_that_fails(number) != 0) return 1;
+ if (!test_loop_until(queue_gone, &number, FAIL_BOUND_MS))
+ { printf("FAIL: F-1b: the reused number's queue never failed\n"); wpe_fd_close(number); return 1; }
+ test_loop_passes(FAIL_PASSES);
+ wpe_fd_close(number);
+ if (t.calls != 1)
+ { printf("FAIL: F-1b: the owner was told %d times, not once\n", t.calls); return 1; }
+ return 0;
+}
+
+/* F-2a.  A write refused at the call is the return value's: nobody is
+   called.  A second pipe that fails on the loop makes the loop tell its
+   owners, so an owner marked by the write would be told in that pass.
+   Breaks when: wpe_fd_write marks the owner of a queue it drops. */
+/* @scenario SC-session-end-03 */
+static int test_a_write_refused_at_the_call_tells_nobody(void)
+{
+ int a[2], b[2], r;
+ told_t ta, tb;
+
+ memset(&ta, 0, sizeof ta);
+ memset(&tb, 0, sizeof tb);
+ if (pipe(a) != 0) return 1;
+ set_nonblocking(a[0]);
+ set_nonblocking(a[1]);
+ if (wpe_fd_write_failed_set(a[1], on_failed, &ta) != 0) return 1;
+ if (open_owned_pipe(b, &tb) != 0) return 1;
+ close(a[0]);
+ r = wpe_fd_write(a[1], FAIL_TEXT, strlen(FAIL_TEXT), WRITE_WHAT, WRITE_ENDS);
+ close(b[0]);
+ test_loop_until(told_once, &tb, FAIL_BOUND_MS);
+ test_loop_passes(FAIL_PASSES);
+ wpe_fd_close(a[1]);
+ wpe_fd_close(b[1]);
+ if (r != WPE_FD_WRITE_CLOSED)
+ { printf("FAIL: F-2a: the write to a closed input said %d\n", r); return 1; }
+ if (tb.calls != 1)
+ { printf("FAIL: F-2a: the second pipe's owner was told %d times\n", tb.calls); return 1; }
+ if (ta.calls != 0)
+ { printf("FAIL: F-2a: a write refused at the call also told its owner (%d)\n", ta.calls); return 1; }
+ return 0;
+}
+
+/* F-2b.  A flush that fails returns the result, drops the queue, keeps the
+   owner and calls nobody, in that call or in the passes after it.
+   Breaks when: wpe_fd_write_flush marks the owner as the loop does. */
+/* @scenario SC-session-end-04 */
+static int test_a_failing_flush_returns_the_result_and_tells_nobody(void)
+{
+ int a[2], b[2], r;
+ told_t ta, tb;
+ const wpe_fd_write_owner *o;
+ int owner_kept;
+
+ memset(&ta, 0, sizeof ta);
+ memset(&tb, 0, sizeof tb);
+ if (open_owned_pipe(a, &ta) != 0) return 1;
+ if (open_owned_pipe(b, &tb) != 0) return 1;
+ close(a[0]);
+ r = wpe_fd_write_flush(a[1]);
+ o = wpe_fd_write_owner_find(a[1]);
+ owner_kept = o != NULL && !o->failed;
+ close(b[0]);
+ test_loop_until(told_once, &tb, FAIL_BOUND_MS);
+ test_loop_passes(FAIL_PASSES);
+ if (r != WPE_FD_WRITE_CLOSED)
+ { printf("FAIL: F-2b: the flush said %d, not CLOSED\n", r); wpe_fd_close(a[1]); wpe_fd_close(b[1]); return 1; }
+ if (wpe_fd_write_pending(a[1]) != 0)
+ { printf("FAIL: F-2b: the failed queue was kept\n"); wpe_fd_close(a[1]); wpe_fd_close(b[1]); return 1; }
+ if (!owner_kept)
+ { printf("FAIL: F-2b: the owner entry was dropped or marked\n"); wpe_fd_close(a[1]); wpe_fd_close(b[1]); return 1; }
+ wpe_fd_close(a[1]);
+ wpe_fd_close(b[1]);
+ if (ta.calls != 0 || tb.calls != 1)
+ { printf("FAIL: F-2b: told %d and %d times, not 0 and 1\n", ta.calls, tb.calls); return 1; }
+ return 0;
+}
+
+/* F-3.  wpe_fd_close forgets the owner: the number, reused by a new pipe
+   whose queue fails, does not reach it.
+   Breaks when: wpe_fd_close does not forget the owner. */
+/* @scenario SC-session-end-05 */
+static int test_close_forgets_the_owner_so_a_reused_number_reaches_nobody(void)
+{
+ int p[2], number;
+ told_t t;
+
+ memset(&t, 0, sizeof t);
+ if (open_owned_pipe(p, &t) != 0) return 1;
+ number = p[1];
+ wpe_fd_close(number);
+ close(p[0]);
+ if (open_reused_pipe_that_fails(number) != 0) return 1;
+ if (!test_loop_until(queue_gone, &number, FAIL_BOUND_MS))
+ { printf("FAIL: F-3: the reused number's queue never failed\n"); wpe_fd_close(number); return 1; }
+ test_loop_passes(FAIL_PASSES);
+ wpe_fd_close(number);
+ if (t.calls != 0)
+ { printf("FAIL: F-3: a closed descriptor's owner was told about its number's next user (%d)\n", t.calls); return 1; }
+ return 0;
+}
+
+/* F-4.  Two queues fail in one pass.  The first owner is told after the
+   walk (the second queue is dropped already), closes the second writer's
+   descriptor and opens a pipe that takes its number and queues bytes on it.
+   The second owner is never told, the new queue is intact and the next pass
+   writes it.  Run under ASan.
+   Breaks when: wpe_fd_flush_one calls the owner itself, inside the walk. */
+/* @scenario SC-session-end-06 */
+typedef struct {
+ told_t x, y;
+ int y_fd;
+ long y_pending_at_x;      /* bytes queued for y when x was told          */
+ int z_reader;
+ long z_fill;
+} f4_t;
+
+static void on_x_failed(int fd, int how, void *data)
+{
+ f4_t *s = data;
+
+ on_failed(fd, how, &s->x);
+ s->y_pending_at_x = wpe_fd_write_pending(s->y_fd);
+ wpe_fd_close(s->y_fd);
+ if (pipe_on_number(s->y_fd, &s->z_reader) != s->y_fd)
+  return;
+ set_nonblocking(s->z_reader);
+ set_nonblocking(s->y_fd);
+ s->z_fill = fill_until_full(s->y_fd);
+ wpe_fd_write(s->y_fd, FAIL_TEXT, strlen(FAIL_TEXT), WRITE_WHAT, WRITE_ENDS);
+}
+
+static int z_written(void *ctx)
+{
+ f4_t *s = ctx;
+
+ return s->z_reader > 0 && wpe_fd_write_pending(s->y_fd) == 0;
+}
+
+static int test_an_owner_told_after_the_walk_may_close_another_writer(void)
+{
+ int xp[2], yp[2];
+ f4_t s;
+ char got[F4_TEXT_MAX];
+
+ memset(&s, 0, sizeof s);
+ s.z_reader = -1;
+ if (open_queued_pipe(xp) <= 0 || open_queued_pipe(yp) <= 0) return 1;
+ s.y_fd = yp[1];
+ if (wpe_fd_write_failed_set(xp[1], on_x_failed, &s) != 0) return 1;
+ if (wpe_fd_write_failed_set(yp[1], on_failed, &s.y) != 0) return 1;
+ close(xp[0]);
+ close(yp[0]);
+ test_loop_until(told_once, &s.x, FAIL_BOUND_MS);
+ test_loop_passes(FAIL_PASSES);
+ if (s.x.calls != 1)
+ { printf("FAIL: F-4: the first owner was told %d times\n", s.x.calls); return 1; }
+ if (s.y_pending_at_x != 0)
+ { printf("FAIL: F-4: the first owner was told inside the walk (%ld bytes still queued for the second)\n", s.y_pending_at_x); return 1; }
+ if (s.y.calls != 0)
+ { printf("FAIL: F-4: an owner whose descriptor was closed was told (%d)\n", s.y.calls); return 1; }
+ if (s.z_reader < 0 || s.z_fill <= 0)
+ { printf("FAIL: F-4: the new pipe was not made\n"); return 1; }
+ if (wpe_fd_write_pending(s.y_fd) != (long)strlen(FAIL_TEXT))
+ { printf("FAIL: F-4: the new queue holds %ld bytes\n", wpe_fd_write_pending(s.y_fd)); return 1; }
+ if (drain_bytes(s.z_reader, s.z_fill) != 0) return 1;
+ test_loop_until(z_written, &s, FAIL_BOUND_MS);
+ read_now(s.z_reader, got, sizeof got);
+ wpe_fd_close(xp[1]);
+ wpe_fd_close(s.y_fd);
+ close(s.z_reader);
+ if (strcmp(got, FAIL_TEXT))
+ { printf("FAIL: F-4: the new queue's bytes read \"%s\"\n", got); return 1; }
+ return 0;
+}
+
+/* F-4b.  In one pass a reader is readable and a queue fails.  The queue's
+   owner is told before any reader is served: it closes the reader, opens a
+   pipe whose read end takes the reader's number and watches it.  Neither
+   the closed reader nor the new one is served with the readiness poll()
+   reported for the old descriptor.
+   Breaks when: owners are told after the readers are served. */
+/* @scenario SC-session-end-07 */
+typedef struct {
+ told_t q;
+ int reader_fd;            /* the watched reader; its number is reused    */
+ int new_writer;           /* write end of the pipe on the reused number  */
+ int old_served;           /* the closed reader's callback ran            */
+ int new_served;           /* the new reader's callback ran               */
+} f4b_t;
+
+static void on_old_reader(int fd, void *data)
+{
+ char c;
+
+ ((f4b_t *)data)->old_served++;
+ read_now(fd, &c, 1);
+}
+
+static void on_new_reader(int fd, void *data)
+{
+ (void)fd;
+ ((f4b_t *)data)->new_served++;
+}
+
+/* A new pipe whose read end has the number @number, which is free.
+   Return: @number, or -1; @writer is the write end. */
+static int reader_on_number(int number, int *writer)
+{
+ int zp[2], high;
+
+ if (pipe(zp) != 0)
+  return -1;
+ high = fcntl(zp[1], F_DUPFD, PIPE_SPARE_MIN);
+ close(zp[1]);
+ if (high < 0)
+ {
+  close(zp[0]);
+  return -1;
+ }
+ *writer = high;
+ return claim_number(number, zp[0]);
+}
+
+static void on_q_failed_closes_reader(int fd, int how, void *data)
+{
+ f4b_t *s = data;
+ int number = s->reader_fd;
+
+ on_failed(fd, how, &s->q);
+ wpe_fd_close(number);
+ if (reader_on_number(number, &s->new_writer) != number)
+  return;
+ set_nonblocking(number);
+ wpe_fd_add(number, POLLIN, on_new_reader, s);
+}
+
+static int test_an_owner_is_told_before_any_reader_is_served(void)
+{
+ int q[2], r[2];
+ f4b_t s;
+
+ memset(&s, 0, sizeof s);
+ s.new_writer = -1;
+ if (pipe(r) != 0) return 1;
+ set_nonblocking(r[0]);
+ s.reader_fd = r[0];
+ if (write(r[1], "r", 1) != 1) return 1;
+ if (open_queued_pipe(q) <= 0) return 1;
+ if (wpe_fd_write_failed_set(q[1], on_q_failed_closes_reader, &s) != 0) return 1;
+ wpe_fd_add(r[0], POLLIN, on_old_reader, &s);
+ close(q[0]);
+ test_loop_until(told_once, &s.q, FAIL_BOUND_MS);
+ test_loop_passes(FAIL_PASSES);
+ wpe_fd_close(q[1]);
+ wpe_fd_close(s.reader_fd);
+ close(r[1]);
+ if (s.new_writer >= 0)
+  close(s.new_writer);
+ if (s.q.calls != 1)
+ { printf("FAIL: F-4b: the queue's owner was told %d times\n", s.q.calls); return 1; }
+ if (s.old_served != 0)
+ { printf("FAIL: F-4b: a reader was served before the owner was told (%d)\n", s.old_served); return 1; }
+ if (s.new_served != 0)
+ { printf("FAIL: F-4b: a reader opened on a reused number was served with the old one's readiness (%d)\n", s.new_served); return 1; }
+ return 0;
+}
+
+/* F-5.  A number closed behind the loop (POLLNVAL) tells its owner with
+   REFUSED and is not closed by the loop: a descriptor the owner opens on the
+   number inside its call is still open afterwards.
+   Breaks when: wpe_fd_writer_lost_number does not mark the owner (the
+   queue was forgotten without a word).  The "never closes" half cannot go
+   red by itself: the fitness script (clause C6, the one close) guards it. */
+/* @scenario SC-session-end-08 */
+typedef struct {
+ told_t told;
+ int opened;
+} f5_t;
+
+static void on_lost_number(int fd, int how, void *data)
+{
+ f5_t *s = data;
+ int reader;
+
+ on_failed(fd, how, &s->told);
+ if (pipe_on_number(fd, &reader) == fd)
+ {
+  s->opened = 1;
+  close(reader);
+ }
+}
+
+static int f5_told(void *ctx)
+{
+ return ((f5_t *)ctx)->told.calls >= 1;
+}
+
+static int test_a_number_closed_behind_the_loop_tells_its_owner(void)
+{
+ int p[2], number;
+ f5_t s;
+
+ memset(&s, 0, sizeof s);
+ if (open_queued_pipe(p) <= 0) return 1;
+ number = p[1];
+ if (wpe_fd_write_failed_set(number, on_lost_number, &s) != 0) return 1;
+ close(number);                       /* closed without wpe_fd_close */
+ test_loop_until(f5_told, &s, FAIL_BOUND_MS);
+ test_loop_passes(FAIL_PASSES);
+ close(p[0]);
+ if (s.told.calls != 1)
+ { printf("FAIL: F-5: a closed number told its owner %d times\n", s.told.calls); return 1; }
+ if (s.told.how != WPE_FD_WRITE_REFUSED)
+ { printf("FAIL: F-5: told %d, not REFUSED\n", s.told.how); return 1; }
+ if (!s.opened || fcntl(number, F_GETFD) < 0)
+ { printf("FAIL: F-5: the loop closed a number that was no longer its own\n"); return 1; }
+ wpe_fd_close(number);
+ return 0;
+}
+
+/* F-6.  The same as F-1 over a socketpair whose peer closed, whatever errno
+   the system gives: the owner is told once with CLOSED or REFUSED.  The TCP
+   loopback is measured and reported, never asserted (XWPE_TEST_REPORT=1).
+   Breaks when: the loop drops the writer's result, as for F-1. */
+/* @scenario SC-session-end-09 */
+static int test_a_failed_socket_queue_tells_its_owner_once(void)
+{
+ told_t t;
+
+ if (run_kind("F-6", PAIR_SOCKETPAIR, &t) != 0)
+ { printf("FAIL: F-6: no socketpair in this state\n"); return 1; }
+ if (t.calls != 1)
+ { printf("FAIL: F-6: the owner was told %d times, not once\n", t.calls); return 1; }
+ if (t.how != WPE_FD_WRITE_CLOSED && t.how != WPE_FD_WRITE_REFUSED)
+ { printf("FAIL: F-6: told %d, neither CLOSED nor REFUSED\n", t.how); return 1; }
+ if (t.pending_at_call != 0)
+ { printf("FAIL: F-6: %ld bytes still queued when it was told\n", t.pending_at_call); return 1; }
+ report_kind_when_asked("F-6", PAIR_TCP);
+ return 0;
+}
+
+/* -- the owed call (F-7a .. F-7e) -- */
+
+#define OWED_WAIT_MS 1000
+
+static int owed_calls = 0, owed_again = 0, owed_timer_fired = 0;
+
+static void owed_count(void)
+{
+ owed_calls++;
+ if (owed_again && owed_calls == 1)
+  wpe_loop_owe();
+}
+
+static void owed_other(void) { }
+static void owed_timer(void *data) { (void)data; owed_timer_fired++; }
+static int owed_ran(void) { return owed_calls >= 1; }
+
+/* The loop owes at most one call and nobody else has named it. */
+static void owed_reset(int again)
+{
+ loop_owed_fn = NULL;
+ loop_owed_flag = 0;
+ owed_calls = 0;
+ owed_again = again;
+ owed_timer_fired = 0;
+}
+
+/* F-7a.  With no descriptor and no timer, an owed call makes poll(-1) run it
+   and return at once; asked once, it runs once.
+   Breaks when: the early return of wpe_fd_poll ignores the owed call. */
+/* @scenario SC-session-end-10 */
+static int test_an_owed_call_runs_with_nothing_else_to_wait_for(void)
+{
+ int first, second;
+
+ owed_reset(0);
+ if (wpe_loop_owed_set(owed_count) != 0) return 1;
+ wpe_loop_owe();
+ first = wpe_fd_poll(OWED_WAIT_MS);
+ second = wpe_fd_poll(OWED_WAIT_MS);
+ if (owed_calls != 1)
+ { printf("FAIL: F-7a: the owed call ran %d times\n", owed_calls); return 1; }
+ if (first <= 0)
+ { printf("FAIL: F-7a: the pass that ran it counted no work (%d)\n", first); return 1; }
+ if (second != 0)
+ { printf("FAIL: F-7a: nothing is owed and the next pass said %d\n", second); return 1; }
+ return 0;
+}
+
+/* F-7b.  A wait whose only source is the owed call runs it and asks its
+   condition again.
+   Breaks when: wpe_loop_has_sources ignores the owed call. */
+/* @scenario SC-session-end-11 */
+static int test_a_wait_counts_the_owed_call_as_a_source(void)
+{
+ int r;
+
+ owed_reset(0);
+ if (wpe_loop_owed_set(owed_count) != 0) return 1;
+ wpe_loop_owe();
+ r = wpe_fd_wait_for(owed_ran, OWED_WAIT_MS, "the owed call");
+ if (r != WPE_WAIT_DONE)
+ { printf("FAIL: F-7b: the wait said %d, not DONE\n", r); return 1; }
+ return 0;
+}
+
+/* F-7c.  With a descriptor watched and a timer far off, an unbounded poll
+   does not sleep while the call is owed: it returns before the timer.
+   Breaks when: wpe_fd_poll_bound is not shortened while the call is owed. */
+/* @scenario SC-session-end-12 */
+static int test_the_loop_does_not_sleep_while_a_call_is_owed(void)
+{
+ int p[2], id;
+
+ owed_reset(0);
+ if (pipe(p) != 0) return 1;
+ wpe_fd_add(p[0], POLLIN, on_socket_watched, NULL);
+ id = wpe_timer_add(NEVER_MS, 0, owed_timer, NULL);
+ if (wpe_loop_owed_set(owed_count) != 0) return 1;
+ wpe_loop_owe();
+ wpe_fd_poll(WPE_POLL_FOREVER);   /* only the owed call or the timer ends it */
+ wpe_timer_del(id);
+ wpe_fd_del(p[0]);
+ close(p[0]);
+ close(p[1]);
+ if (owed_calls != 1)
+ { printf("FAIL: F-7c: the owed call ran %d times\n", owed_calls); return 1; }
+ if (owed_timer_fired != 0)
+ { printf("FAIL: F-7c: the poll slept until the timer instead of running the owed call\n"); return 1; }
+ return 0;
+}
+
+/* F-7d.  A wpe_loop_owe() made inside the call is served by the next pass,
+   once.
+   Breaks when: the flag is cleared after the call, so the inner request is
+   lost. */
+/* @scenario SC-session-end-13 */
+static int test_an_owe_made_inside_the_call_runs_on_the_next_pass_once(void)
+{
+ int calls_after_first, calls_after_second;
+
+ owed_reset(1);
+ if (wpe_loop_owed_set(owed_count) != 0) return 1;
+ wpe_loop_owe();
+ wpe_fd_poll(OWED_WAIT_MS);
+ calls_after_first = owed_calls;
+ wpe_fd_poll(OWED_WAIT_MS);
+ calls_after_second = owed_calls;
+ wpe_fd_poll(OWED_WAIT_MS);
+ if (calls_after_first != 1 || calls_after_second != 2 || owed_calls != 2)
+ { printf("FAIL: F-7d: the call ran %d, %d and %d times over three passes, not 1, 2 and 2\n",
+          calls_after_first, calls_after_second, owed_calls); return 1; }
+ return 0;
+}
+
+/* F-7e.  Naming a second owed call answers -1; the same one again, 0; no
+   call, -1.
+   Breaks when: naming the owed call always answers 0. */
+/* @scenario SC-session-end-14 */
+static int test_the_owed_call_is_named_once(void)
+{
+ owed_reset(0);
+ if (wpe_loop_owed_set(NULL) != -1)
+ { printf("FAIL: F-7e: a NULL call was accepted\n"); return 1; }
+ if (wpe_loop_owed_set(owed_count) != 0)
+ { printf("FAIL: F-7e: the first call was refused\n"); return 1; }
+ if (wpe_loop_owed_set(owed_count) != 0)
+ { printf("FAIL: F-7e: the same call again was refused\n"); return 1; }
+ if (wpe_loop_owed_set(owed_other) != -1)
+ { printf("FAIL: F-7e: a second call was accepted\n"); return 1; }
+ owed_reset(0);
+ return 0;
+}
+
+/* -- a descriptor the loop closes for its owner (F-8, F-8b, F-8c) -- */
+
+/* F-8.  A queue whose close was handed to the loop fails: the loop closes it
+   through wpe_fd_close, so an owner entry that survived is forgotten with
+   it and the number's next user is told to nobody.  The close request is set
+   on the queue directly, past the two guards of the public call, so this
+   row holds the loop's own close.
+   Breaks when: wpe_fd_writer_finish closes with a plain close(fd).  Only
+   the owner's forget at that close holds this state, which no public call
+   reaches. */
+/* @scenario SC-session-end-15 */
+static int test_a_queue_the_loop_closes_forgets_its_owner(void)
+{
+ int p[2], number;
+ told_t t;
+ wpe_fd_writer *w;
+
+ memset(&t, 0, sizeof t);
+ if (open_owned_pipe(p, &t) != 0) return 1;
+ number = p[1];
+ w = wpe_fd_writer_find(number);
+ if (!w) return 1;
+ w->close_when_empty = 1;
+ close(p[0]);
+ test_loop_until(descriptor_closed, &number, FAIL_BOUND_MS);
+ test_loop_passes(FAIL_PASSES);
+ if (!descriptor_closed(&number))
+ { printf("FAIL: F-8: the loop did not close the failed queue's descriptor\n"); wpe_fd_close(number); return 1; }
+ if (t.calls != 0)
+ { printf("FAIL: F-8: a descriptor the loop closed told its owner (%d)\n", t.calls); return 1; }
+ return 0;
+}
+
+/* F-8b.  An owner is refused for a descriptor whose close was handed to the
+   loop, for a negative number, for no function, and when every entry is
+   taken.
+   Breaks when: wpe_fd_write_failed_set no longer refuses a descriptor the
+   loop closes. */
+/* @scenario SC-session-end-16 */
+static int test_the_failure_owner_is_refused_where_it_cannot_be_kept(void)
+{
+ int p[2], i, r;
+ told_t t;
+
+ memset(&t, 0, sizeof t);
+ if (open_queued_pipe(p) <= 0) return 1;
+ if (wpe_fd_close_when_written(p[1]) != 1)
+ { printf("FAIL: F-8b: the close was not handed to the loop\n"); return 1; }
+ if (wpe_fd_write_failed_set(p[1], on_failed, &t) != -1)
+ { printf("FAIL: F-8b: an owner was kept for a descriptor the loop closes\n"); return 1; }
+ close(p[0]);
+ test_loop_until(descriptor_closed, &p[1], FAIL_BOUND_MS);
+ if (wpe_fd_write_failed_set(-1, on_failed, &t) != -1 ||
+     wpe_fd_write_failed_set(p[1], NULL, &t) != -1)
+ { printf("FAIL: F-8b: a negative number or no function was accepted\n"); return 1; }
+ for (i = 0; i < WPE_FD_WRITERS_MAX; i++)
+  if (wpe_fd_write_failed_set(OWNER_FAKE_BASE + i, on_failed, &t) != 0)
+  { printf("FAIL: F-8b: entry %d of %d was refused\n", i, WPE_FD_WRITERS_MAX); return 1; }
+ r = wpe_fd_write_failed_set(OWNER_FAKE_BASE + WPE_FD_WRITERS_MAX, on_failed, &t);
+ for (i = 0; i < WPE_FD_WRITERS_MAX; i++)
+  wpe_fd_write_failed_forget(OWNER_FAKE_BASE + i);
+ if (r != -1)
+ { printf("FAIL: F-8b: an owner past the table's size was accepted\n"); return 1; }
+ return 0;
+}
+
+/* F-8c.  A queue whose close was handed to the loop, and whose number is
+   closed behind the loop, tells nobody: it has no owner.
+   Breaks when: wpe_fd_close_when_written does not forget the owner. */
+/* @scenario SC-session-end-17 */
+static int test_a_queue_the_loop_closes_has_no_owner_when_its_number_is_lost(void)
+{
+ int p[2], number;
+ told_t t;
+
+ memset(&t, 0, sizeof t);
+ if (open_owned_pipe(p, &t) != 0) return 1;
+ number = p[1];
+ if (wpe_fd_close_when_written(number) != 1) return 1;
+ close(number);
+ if (!test_loop_until(queue_gone, &number, FAIL_BOUND_MS))
+ { printf("FAIL: F-8c: the queue of a lost number was never dropped\n"); close(p[0]); return 1; }
+ test_loop_passes(FAIL_PASSES);
+ close(p[0]);
+ if (t.calls != 0)
+ { printf("FAIL: F-8c: a queue handed to the loop told its owner (%d)\n", t.calls); return 1; }
+ return 0;
+}
+
 int main(void)
 {
  int rc = 0;
@@ -1391,6 +2423,24 @@ int main(void)
  rc |= test_epipe_drops_the_queue_and_reports_closed();
  rc |= test_del_keeps_the_queue_and_close_forgets_it();
  rc |= test_close_when_written_sends_every_byte_then_end_of_file();
+ test_watchdog_case("test_fdloop: a queue the loop drops is told", FAIL_ROWS_GUARD_S);
+ rc |= test_failed_queue_is_told_to_its_owner_once();
+ rc |= test_an_owner_told_once_is_not_told_for_its_number_again();
+ rc |= test_a_write_refused_at_the_call_tells_nobody();
+ rc |= test_a_failing_flush_returns_the_result_and_tells_nobody();
+ rc |= test_close_forgets_the_owner_so_a_reused_number_reaches_nobody();
+ rc |= test_an_owner_told_after_the_walk_may_close_another_writer();
+ rc |= test_an_owner_is_told_before_any_reader_is_served();
+ rc |= test_a_number_closed_behind_the_loop_tells_its_owner();
+ rc |= test_a_failed_socket_queue_tells_its_owner_once();
+ rc |= test_an_owed_call_runs_with_nothing_else_to_wait_for();
+ rc |= test_a_wait_counts_the_owed_call_as_a_source();
+ rc |= test_the_loop_does_not_sleep_while_a_call_is_owed();
+ rc |= test_an_owe_made_inside_the_call_runs_on_the_next_pass_once();
+ rc |= test_the_owed_call_is_named_once();
+ rc |= test_a_queue_the_loop_closes_forgets_its_owner();
+ rc |= test_the_failure_owner_is_refused_where_it_cannot_be_kept();
+ rc |= test_a_queue_the_loop_closes_has_no_owner_when_its_number_is_lost();
  if (rc == 0) printf("test_fdloop: OK\n");
  return rc;
 }

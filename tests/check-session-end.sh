@@ -15,6 +15,49 @@
 # callers onto the owner; each is added to the table below, with its own
 # canaries):
 #
+#  C6 loop.  In we_fdloop.c the way a failed queue leaves the loop has one
+#     path each:
+#     (a) wpe_fd_writer_flush is called only by wpe_fd_flush_one and
+#         wpe_fd_write_flush, as the whole statement  r = wpe_fd_writer_flush(w);
+#         and its result is read: wpe_fd_flush_one passes it to
+#         wpe_fd_writer_fail_on_loop(w, r) on a later statement,
+#         wpe_fd_write_flush to wpe_fd_writer_fail_at_call(w) and returns it
+#         (return r;).  Neither holds a (void) cast;
+#     (b) wpe_fd_writer_free is called only by wpe_fd_writer_finish,
+#         wpe_fd_writer_forget, wpe_fd_write and wpe_fd_writer_lost_number;
+#         free( is called only by wpe_fd_writer_free, and memset( only by
+#         the functions that clear a slot today (wpe_fd_writer_free,
+#         wpe_fd_writer_take, wpe_fd_write_failed_forget,
+#         wpe_fd_write_owner_take_failed), so no helper drops a queue by
+#         itself;
+#     (c) wpe_fd_writer_finish is called once by wpe_fd_writer_flush, and by
+#         wpe_fd_writer_fail_on_loop and wpe_fd_writer_fail_at_call;
+#     (d) wpe_fd_writer_forget is called only by wpe_fd_close;
+#     (e) close( is called only by wpe_fd_close; wpe_fd_close and
+#         wpe_fd_close_when_written each call wpe_fd_write_failed_forget;
+#         wpe_fd_write_failed_set names close_when_empty (it refuses a
+#         descriptor the loop closes);
+#     (f) an owner's tell is read (a call, a copy to a pointer, a macro at
+#         file scope) only by wpe_fd_tell_failures, and assigned only by
+#         wpe_fd_write_failed_set; wpe_fd_tell_failures is called only by
+#         wpe_fd_flush_ready, on a statement after its last call of
+#         wpe_fd_flush_one: nothing is told inside the walk;
+#     (g) wpe_loop_owe is called by no function of this file (an exported
+#         wrapper would let a host ask for the owed call), and
+#         loop_owed_flag is raised only by wpe_loop_owe.
+#     A function the clause names that is not in the file fails (the scan is
+#     blind).
+#
+#  C8 owed hook.  wpe_loop_owe and wpe_loop_owed_set are named by no product
+#     source but we_fdloop.c, we_fdloop.h and we_sessend.c (source half), and
+#     no object but we_sessend.o imports them (object half, read with $(NM)
+#     through tests/objsyms.sh).  The object half sees its own canaries or
+#     reports a problem, never a pass: we_fdloop.o imports poll and defines
+#     both names, and we_sessend.o, when it is among the objects, imports
+#     wpe_loop_owe.  With no usable nm or no object list it prints SKIP and
+#     exits 77 after the source halves have run, never 0 with a half unrun
+#     (a compiler that does not run is a broken harness: exit 2).
+#
 #  C5 order.  In each function of the C5 table (a client's send function),
 #     (a) the client's fill function is called exactly once, and on a
 #         statement after the last call of the send (a call split over
@@ -32,34 +75,50 @@
 #
 # Comments and string literals are blanked first (tests/blank-c.awk).
 #
+# A #define whose body holds a ";", a brace or a call is refused in every
+# scanned file (we_dap.c, we_bsp.c, we_fdloop.c): the scan reads statements
+# and cannot expand a macro, so a macro with code would hide a forbidden call
+# from every clause.  Continuation lines are followed; sizeof is not a call.
+#
 # --selftest runs only the canaries: a clean fixture that must pass, and a
 # fixture per bypass that must be named by the clause, so that a scan gone
 # blind fails.  Without it the script scans the sources and then runs the
 # canaries.  --allow names the allow file (tests/session-end.allow: one
 # line per excused function, Cn|file|function|reason|revisit; no clause of
 # this pass reads one yet, so a line in it is refused until a clause does).
-# --nm is accepted for the clauses that read object files, which land later.
+# --nm names the nm the clauses that read object files use (default: $NM,
+# set by make check, else nm).  The objects to read are the arguments, or
+# $ONE_OWNER_OBJECTS (the editor's objects, set by make check).
 #
-# Exit: 0 clean, 1 offenders or a blind scanner.
+# Environment (set by `make check`): NM, ONE_OWNER_OBJECTS, CC, srcdir.
+# Exit: 0 clean, 1 offenders or a blind scanner, 77 a half that needs nm, a
+# compiler or an object list could not run.
 
 SRCDIR=${srcdir:-.}
 BAD=1
+SKIP=77
 ALLOW=
-NM=
+NMTOOL=${NM:-nm}
+OBJECTS=
 SELFTEST_ONLY=
 HERE=$(cd "$(dirname "$0")" && pwd)
+. "$HERE/objsyms.sh"
+# The one owner of the compiler call (tests/compiler.sh).
+. "$HERE/compiler.sh"
 
 while [ $# -gt 0 ]; do
   case $1 in
     --srcdir) shift; SRCDIR=$1 ;;
     --allow) shift; ALLOW=$1 ;;
-    --nm) shift; NM=$1 ;;
+    --nm) shift; NMTOOL=$1 ;;
     --selftest) SELFTEST_ONLY=1 ;;
-    *) echo "check-session-end: unknown argument $1" >&2; exit $BAD ;;
+    -*) echo "check-session-end: unknown argument $1" >&2; exit $BAD ;;
+    *) OBJECTS="$OBJECTS $1" ;;
   esac
   shift
 done
 [ -n "$ALLOW" ] || ALLOW=$HERE/session-end.allow
+[ -n "$OBJECTS" ] || OBJECTS=$ONE_OWNER_OBJECTS
 
 # The C5 table: file|function|fill|send|slot variable|slot member prefixes|
 # alias variable.  A function writes its slot through a pointer variable
@@ -81,10 +140,12 @@ problem() { echo "$*" >> "$WORK/problems"; }
 # The one blanker of comments and literals (tests/blank-c.awk).
 BLANK_C=$(cat "$HERE/blank-c.awk")
 
-# The C5 scan of one file: c5_awk FILE TABLE prints one line per offence.
-C5_AWK='
-function note(ln, msg) { printf "C5: %s:%d: %s\n", base_name, ln, msg }
-
+# The scanning functions the clauses share (awk text, put in front of each
+# clause's program, after tests/blank-c.awk).  A program reads the file into
+# code[1..total] with blank_c and calls index_functions(); then
+# statements_of(fn) leaves the statements of fn in text[1..ns], each with
+# the line it starts on in sline[].
+AWK_COMMON='
 # The name of the function whose header is LINE.
 function header_name(line,   head, parts, k) {
   head = line
@@ -115,6 +176,92 @@ function scan_calls(text, name,   at, rest, before, after, consumed, absolute, l
     rest = substr(rest, at + len)
   }
 }
+
+# 1 when LINE opens a function: a col-0 header that is no declaration.
+function is_header(line) {
+  return (line ~ /^[A-Za-z_]/ && line ~ /\(/ && line !~ /;[ \t]*$/ &&
+          line !~ /^(typedef|struct|union|enum|extern)[ \t]/)
+}
+
+# How many times the character CH is in TEXT (literals are blanked already).
+function count_char(text, ch,   n) {
+  n = gsub(ch, "", text)
+  return n
+}
+
+# Refuse a #define whose body holds code.  The scan reads statements, not
+# what a macro expands to, so a macro with code would hide a forbidden call
+# from every rule: its body (continuation lines followed, comments and strings
+# blanked) may hold no ";", "{" or "}" and no call "name(" (sizeof is
+# not one).  Needs note(ln, msg) from the program.
+function scan_defines(   i, ln0, body, name, k, probe) {
+  for (i = 1; i <= total; i++) {
+    if (code[i] !~ /^[ \t]*#[ \t]*define[ \t]/) continue
+    ln0 = i
+    body = code[i]
+    while (body ~ /\\[ \t]*$/ && i < total) {
+      sub(/\\[ \t]*$/, "", body)
+      i++
+      body = body " " code[i]
+    }
+    sub(/\\[ \t]*$/, "", body)
+    sub(/^[ \t]*#[ \t]*define[ \t]+/, "", body)
+    name = body
+    sub(/[^A-Za-z0-9_].*/, "", name)
+    sub(/^[A-Za-z0-9_]+/, "", body)            # the name
+    sub(/^\([^)]*\)/, "", body)                # the parameters of a function-like macro
+    probe = body
+    gsub(/sizeof[ \t]*\(/, "(", probe)
+    if (probe ~ /[;{}]/ || probe ~ /[A-Za-z_][A-Za-z0-9_]*[ \t]*\(/)
+      note(ln0, "#define " name " holds code: the scan cannot expand a macro, so a macro with a statement or a call is refused")
+  }
+}
+
+# The function each line is in: the last col-0 header seen.  defined[name]
+# and header_line[name] hold the functions the file defines.
+function index_functions(   i, fname, line) {
+  fname = ""
+  for (i = 1; i <= total; i++) {
+    line = code[i]
+    if (is_header(line)) {
+      fname = header_name(line)
+      defined[fname] = 1
+      header_line[fname] = i
+    }
+    func_of[i] = fname
+  }
+}
+
+# The statements of the function FNM: a line that holds ";", "{" or "}" ends
+# one.  The body opens at the first "{" at or after the header line (on the
+# header line itself for K&R style and one-line functions: what follows the
+# "{" is the first statement), and ends where its braces balance, so a
+# one-line function does not take the lines after it.  A call split over
+# lines is one statement.
+function statements_of(fnm,   i, stmt, start, line, depth, opened) {
+  ns = 0; stmt = ""; start = 0; depth = 0; opened = 0
+  for (i = header_line[fnm]; i <= total && func_of[i] == fnm; i++) {
+    line = code[i]
+    if (!opened) {
+      if (index(line, "{") == 0) continue
+      opened = 1
+      line = substr(line, index(line, "{"))      # from the opening brace on
+    }
+    depth += count_char(line, "\\{") - count_char(line, "\\}")
+    if (stmt == "") start = i
+    stmt = stmt " " line
+    if (line ~ /[;{}]/) {
+      gsub(/[ \t]*->[ \t]*/, "->", stmt)      # "p -> x" is "p->x"
+      ns++; text[ns] = stmt; sline[ns] = start; stmt = ""; start = 0
+    }
+    if (depth <= 0) break
+  }
+}
+'
+
+# The C5 scan of one file: c5_awk FILE TABLE prints one line per offence.
+C5_AWK='
+function note(ln, msg) { printf "C5: %s:%d: %s\n", base_name, ln, msg }
 
 # 1 when what follows the member name at POS of TEXT is an assignment, an
 # increment or a decrement.
@@ -222,18 +369,8 @@ BEGIN { blank_incom = 0 }
 { code[FNR] = blank_c($0, 0); total = FNR }
 
 END {
-  # The function each line is in: the last col-0 header seen.
-  fname = ""
-  for (i = 1; i <= total; i++) {
-    line = code[i]
-    if (line ~ /^[A-Za-z_]/ && line ~ /\(/ && line !~ /;[ \t]*$/ &&
-        line !~ /^(typedef|struct|union|enum|extern)[ \t]/) {
-      fname = header_name(line)
-      defined[fname] = 1
-      header_line[fname] = i
-    }
-    func_of[i] = fname
-  }
+  index_functions()
+  scan_defines()
 
   nrows = split(table, rowtext, ";")
   for (r = 1; r <= nrows; r++) {
@@ -249,18 +386,7 @@ END {
     if (!(fill in defined))
       note(header_line[fnm], fill " is not defined in the file (the scan is blind)")
 
-    # the statements of the function: a line that holds ";", "{" or "}" ends one
-    # (the body starts at the "{" that opens it, after a header of several lines)
-    ns = 0; stmt = ""; start = 0
-    for (i = header_line[fnm] + 1; i <= total && code[i] !~ /^\{/; i++) ;
-    for (i = i + 1; i <= total && func_of[i] == fnm; i++) {
-      if (stmt == "") start = i
-      stmt = stmt " " code[i]
-      if (code[i] ~ /[;{}]/) {
-        gsub(/[ \t]*->[ \t]*/, "->", stmt)      # "p -> x" is "p->x"
-        ns++; text[ns] = stmt; sline[ns] = start; stmt = ""; start = 0
-      }
-    }
+    statements_of(fnm)
 
     fill_n = 0; send_n = 0; fill_key = 0; send_key = 0
     for (k = 1; k <= ns; k++) {
@@ -306,8 +432,230 @@ c5_scan() {
       continue
     fi
     table=$(printf '%s' "$C5_TABLE" | tr '\n' ';')
-    awk -v base_name="$file" -v table="$table" "$BLANK_C$C5_AWK" "$dir/$file"
+    awk -v base_name="$file" -v table="$table" "$BLANK_C$AWK_COMMON$C5_AWK" "$dir/$file"
   done
+}
+
+# The C6 scan of we_fdloop.c: one line per offence.
+C6_AWK='
+function note(ln, msg) { printf "C6: %s:%d: %s\n", base_name, ln, msg }
+
+# The statement TEXT with its blanks squeezed to one and its ends trimmed.
+function squeeze(s) {
+  gsub(/[ \t]+/, " ", s)
+  sub(/^ /, "", s)
+  sub(/ $/, "", s)
+  return s
+}
+
+# 1 when the function FN is one of the names in the blank-separated LIST.
+function among(fn, list,   n, names, k) {
+  n = split(list, names, " ")
+  for (k = 1; k <= n; k++) if (names[k] == fn) return 1
+  return 0
+}
+
+# A call of NAME in the statement S (scan_calls), refused outside the
+# functions of LIST; the name used without a call is refused everywhere.
+function only_called_from(s, ln, fn, name, list, why) {
+  scan_calls(s, name)
+  if (bare_n) note(ln, name " is named without a call in " fn)
+  if (call_n && !among(fn, list)) note(ln, name " is called from " fn ": " why)
+  return call_n
+}
+
+BEGIN { blank_incom = 0 }
+{ code[FNR] = blank_c($0, 0); total = FNR }
+
+END {
+  index_functions()
+  scan_defines()
+  nneed = split("wpe_fd_flush_one wpe_fd_write_flush wpe_fd_flush_ready wpe_fd_tell_failures wpe_fd_close wpe_fd_close_when_written wpe_fd_write_failed_set wpe_fd_writer_finish wpe_fd_writer_flush wpe_fd_writer_fail_on_loop wpe_fd_writer_fail_at_call wpe_fd_writer_lost_number wpe_fd_write wpe_fd_writer_forget wpe_loop_owe", need, " ")
+  blind = 0
+  for (k = 1; k <= nneed; k++)
+    if (!(need[k] in defined)) { note(0, need[k] " is not in the file (the scan is blind)"); blind = 1 }
+  if (blind) exit
+
+  for (fn in defined) {
+    statements_of(fn)
+    flush_at = 0; fail_loop_at = 0; fail_call_at = 0; return_r_at = 0
+    one_at = 0; tell_at = 0; finish_here = 0; forget_here = 0; closed_set = 0
+    for (k = 1; k <= ns; k++) {
+      s = squeeze(text[k]); ln = sline[k]
+
+      # (a) the result of the writer
+      scan_calls(s, "wpe_fd_writer_flush")
+      if (bare_n) note(ln, "wpe_fd_writer_flush is named without a call in " fn)
+      if (call_n) {
+        if (!among(fn, "wpe_fd_flush_one wpe_fd_write_flush"))
+          note(ln, "wpe_fd_writer_flush is called from " fn ", not from wpe_fd_flush_one or wpe_fd_write_flush")
+        else if (s !~ /^(int )?r = wpe_fd_writer_flush ?\( ?w ?\) ?;$/)
+          note(ln, "the result of wpe_fd_writer_flush is not read as the whole statement r = wpe_fd_writer_flush(w);")
+        else flush_at = k
+      }
+      if (among(fn, "wpe_fd_flush_one wpe_fd_write_flush") && s ~ /\( ?void ?\)/)
+        note(ln, "a (void) cast in " fn ": a failed queue must not be dropped unread")
+      if (s ~ /wpe_fd_writer_fail_on_loop ?\( ?w ?, ?r ?\)/ && flush_at && k > flush_at) fail_loop_at = k
+      if (s ~ /wpe_fd_writer_fail_at_call ?\( ?w ?\)/ && flush_at && k > flush_at) fail_call_at = k
+      if (s ~ /^return r ?;$/ && flush_at && k > flush_at) return_r_at = k
+
+      # (b) the slot freed
+      only_called_from(s, ln, fn, "wpe_fd_writer_free", "wpe_fd_writer_finish wpe_fd_writer_forget wpe_fd_write wpe_fd_writer_lost_number", "a failed queue is dropped by wpe_fd_writer_fail_on_loop, wpe_fd_writer_fail_at_call or wpe_fd_writer_lost_number")
+
+      # (c) the queue finished
+      finish_here += only_called_from(s, ln, fn, "wpe_fd_writer_finish", "wpe_fd_writer_flush wpe_fd_writer_fail_on_loop wpe_fd_writer_fail_at_call", "a queue is finished by the flush that emptied it or by a failure path")
+
+      # (d) the queue forgotten
+      only_called_from(s, ln, fn, "wpe_fd_writer_forget", "wpe_fd_close", "the owner'\''s close is the one place a queue is forgotten")
+
+      # (e) the one close
+      scan_calls(s, "close")
+      if (call_n && fn != "wpe_fd_close")
+        note(ln, "close( is called from " fn ": the loop closes only through wpe_fd_close")
+      scan_calls(s, "wpe_fd_write_failed_forget")
+      if (call_n) forget_here = 1
+      if (s ~ /close_when_empty/) closed_set = 1
+
+      # (b) again: no inlined drop of a writer in another helper
+      scan_calls(s, "free")
+      if (call_n && fn != "wpe_fd_writer_free")
+        note(ln, "free( is called from " fn ": a queue'\''s memory is given back by wpe_fd_writer_free only")
+      scan_calls(s, "memset")
+      if (call_n && !among(fn, "wpe_fd_writer_free wpe_fd_writer_take wpe_fd_write_failed_forget wpe_fd_write_owner_take_failed"))
+        note(ln, "memset( is called from " fn ": only the functions that clear a slot today may (wpe_fd_writer_free, wpe_fd_writer_take, wpe_fd_write_failed_forget, wpe_fd_write_owner_take_failed)")
+
+      # (f) the order of the tell and the walk
+      scan_calls(s, "wpe_fd_flush_one")
+      if (call_n) one_at = k
+      scan_calls(s, "wpe_fd_tell_failures")
+      if (call_n) {
+        if (fn != "wpe_fd_flush_ready")
+          note(ln, "wpe_fd_tell_failures is called from " fn ", not from wpe_fd_flush_ready")
+        if (!tell_at) tell_at = k
+      }
+
+      # (g) the owed hook: asked for by no function of this file, and the flag
+      # raised by wpe_loop_owe alone
+      scan_calls(s, "wpe_loop_owe")
+      if (call_n)
+        note(ln, "wpe_loop_owe is called from " fn ": only the owner of the sessions'\'' ends may ask for the owed call")
+      if (s ~ /loop_owed_flag ?= ?1/ && fn != "wpe_loop_owe")
+        note(ln, "loop_owed_flag is raised in " fn ": only wpe_loop_owe raises it")
+    }
+    if (fn == "wpe_fd_flush_one" && !fail_loop_at)
+      note(header_line[fn], fn " never passes the result to wpe_fd_writer_fail_on_loop(w, r) after reading it")
+    if (fn == "wpe_fd_write_flush" && !fail_call_at)
+      note(header_line[fn], fn " never passes a failed queue to wpe_fd_writer_fail_at_call(w) after reading its result")
+    if (fn == "wpe_fd_write_flush" && !return_r_at)
+      note(header_line[fn], fn " does not return the result (return r;) after the flush")
+    if (fn == "wpe_fd_writer_flush" && finish_here != 1)
+      note(header_line[fn], fn " finishes the queue " finish_here " times: once, for the queue it emptied")
+    if ((fn == "wpe_fd_close" || fn == "wpe_fd_close_when_written") && !forget_here)
+      note(header_line[fn], fn " does not call wpe_fd_write_failed_forget: a number reused later would reach the old owner")
+    if (fn == "wpe_fd_write_failed_set" && !closed_set)
+      note(header_line[fn], fn " does not name close_when_empty: it must refuse a descriptor the loop closes")
+    if (fn == "wpe_fd_flush_ready") {
+      if (!one_at) note(header_line[fn], fn " does not call wpe_fd_flush_one (the scan is blind)")
+      if (!tell_at) note(header_line[fn], fn " does not call wpe_fd_tell_failures: a failed queue is never told")
+      if (one_at && tell_at && tell_at < one_at)
+        note(header_line[fn], fn " tells before the walk is over (wpe_fd_tell_failures above the last wpe_fd_flush_one)")
+    }
+  }
+
+  # (f) the tell, read anywhere in the file, file scope and macros included:
+  # a member named tell is read by wpe_fd_tell_failures only, and assigned by
+  # wpe_fd_write_failed_set.  A line is in a function between its "{" and "}"
+  # whose braces are still open, from the "{" on the header line or at column
+  # 0; a "#" line is never in one.
+  depth = 0
+  for (i = 1; i <= total; i++) {
+    line = code[i]
+    before = depth
+    depth += count_char(line, "\\{") - count_char(line, "\\}")
+    if (depth < 0) depth = 0
+    in_fn = (before > 0 || line ~ /^\{/ || (is_header(line) && index(line, "{") > 0))
+    where = (in_fn && line !~ /^[ \t]*#/) ? func_of[i] : "file scope"
+    if (line !~ /(\.|->) ?tell([^A-Za-z0-9_]|$)/) continue
+    if (where == "wpe_fd_tell_failures") continue
+    if (where == "wpe_fd_write_failed_set" && line ~ /->tell ?= ?tell ?;/) continue
+    note(i, "an owner'\''s tell is read in " where ": only wpe_fd_tell_failures tells, after the walk")
+  }
+}
+'
+
+# c6_scan DIR - the C6 offences of DIR/we_fdloop.c, one per line.
+c6_scan() {
+  dir=$1
+  if [ ! -f "$dir/we_fdloop.c" ]; then
+    echo "C6: we_fdloop.c not found under $dir (the scan is blind)"
+    return
+  fi
+  awk -v base_name=we_fdloop.c "$BLANK_C$AWK_COMMON$C6_AWK" "$dir/we_fdloop.c"
+}
+
+# The C8 source half: the words of the owed hook in a product source that is
+# not its owner or its one user.  c8_source_scan DIR prints one line per hit.
+C8_AWK='
+BEGIN { blank_incom = 0 }
+{
+  line = blank_c($0, 0)
+  if (line ~ /(^|[^A-Za-z0-9_])wpe_loop_owe([^A-Za-z0-9_]|$)/)
+    printf "C8: %s:%d: wpe_loop_owe is named outside we_fdloop.c, we_fdloop.h and we_sessend.c\n", base_name, FNR
+  if (line ~ /(^|[^A-Za-z0-9_])wpe_loop_owed_set([^A-Za-z0-9_]|$)/)
+    printf "C8: %s:%d: wpe_loop_owed_set is named outside we_fdloop.c, we_fdloop.h and we_sessend.c\n", base_name, FNR
+}
+'
+
+c8_source_scan() {
+  dir=$1
+  for path in "$dir"/*.c "$dir"/*.h; do
+    [ -f "$path" ] || continue
+    file=$(basename "$path")
+    case $file in
+      we_fdloop.c|we_fdloop.h|we_sessend.c) continue ;;
+    esac
+    awk -v base_name="$file" "$BLANK_C$C8_AWK" "$path"
+  done
+}
+
+# The C8 object half: who imports the owed hook, read through $NMTOOL.  Its
+# own canaries are seen or reported, never passed over.  c8_object_scan
+# OBJECT... prints one line per hit.
+object_imports() { "$NMTOOL" -u "$1" 2>/dev/null | nm_undefined_source_names; }
+object_defines() { "$NMTOOL" -g "$1" 2>/dev/null | nm_defined_names; }
+
+c8_object_scan() {
+  seen_loop=0
+  for obj in "$@"; do
+    base=$(basename "$obj")
+    base=${base#we-}
+    if [ ! -f "$obj" ]; then
+      echo "C8: object $obj not found (build before the check)"
+      continue
+    fi
+    object_imports "$obj" > "$WORK/obj.imports"
+    object_defines "$obj" > "$WORK/obj.defines"
+    case $base in
+      we_fdloop.o)
+        seen_loop=1
+        grep -qx poll "$WORK/obj.imports" ||
+          echo "C8: canary: poll not seen in we_fdloop.o (LTO objects, wrong nm, or an empty object list)"
+        for sym in wpe_loop_owe wpe_loop_owed_set; do
+          grep -qx "$sym" "$WORK/obj.defines" ||
+            echo "C8: canary: $sym not defined in we_fdloop.o (LTO objects, wrong nm, or an empty object list)"
+        done ;;
+      we_sessend.o)
+        grep -qx wpe_loop_owe "$WORK/obj.imports" ||
+          echo "C8: canary: wpe_loop_owe not seen in we_sessend.o (LTO objects, wrong nm, or an empty object list)" ;;
+      *)
+        for sym in wpe_loop_owe wpe_loop_owed_set; do
+          grep -qx "$sym" "$WORK/obj.imports" &&
+            echo "C8: $base imports $sym: only we_sessend.o may use the owed hook"
+        done ;;
+    esac
+  done
+  [ $seen_loop -eq 1 ] ||
+    echo "C8: canary: we_fdloop.o is not among the objects (an empty object list)"
 }
 
 # The allow file: no clause of this pass reads one, so a line is refused.
@@ -327,6 +675,9 @@ check_allow() {
 
 emit_dap_clean() {
   cat <<'EOF'
+#define DAP_NO_SEQ_X (-1)
+#define DAP_SLOT_BYTES(n) ((n) * sizeof(dap_pending))
+/*PLANT:dap_define*/
 /**
  * dap_slot_fill - Register a request that went out.
  */
@@ -487,28 +838,34 @@ EOF
 }
 
 # plant_into DIR MARKER TEXT - DIR gets the clean fixtures, with the line that
-# holds MARKER replaced by TEXT (\n in TEXT is a line break).
+# holds MARKER replaced by TEXT (\n in TEXT is a line break; an empty TEXT
+# deletes the line).
 plant_into() {
   dir=$1; marker=$2; text=$3
   rm -rf "$dir"; mkdir -p "$dir"
-  for file in $C5_FILES; do
+  for path in "$WORK/fx"/*; do
+    file=$(basename "$path")
     awk -v m="/*PLANT:$marker*/" -v t="$text" '
       index($0, m) { print t; next }
-      { print }' "$WORK/fx/$file" > "$dir/$file"
+      { print }' "$path" > "$dir/$file"
   done
 }
 
 canaries_run=0
 
-# canary NAME MARKER TEXT WORD - the planted offender must be named by C5,
-# in a message that holds WORD.
+# The clause the canaries below are about, and the function that scans for it.
+CLAUSE=C5
+SCAN=c5_scan
+
+# canary NAME MARKER TEXT WORD - the planted offender must be named by the
+# clause in force, in a message that holds WORD.
 canary() {
   name=$1; marker=$2; text=$3; word=$4
   canaries_run=$((canaries_run + 1))
   plant_into "$WORK/fx-case" "$marker" "$text"
-  c5_scan "$WORK/fx-case" > "$WORK/fx-case.out"
+  $SCAN "$WORK/fx-case" > "$WORK/fx-case.out"
   if ! grep -q -F "$word" "$WORK/fx-case.out"; then
-    problem "canary C5 $name: not named with \"$word\" (the clause is blind)"
+    problem "canary $CLAUSE $name: not named with \"$word\" (the clause is blind)"
   fi
 }
 
@@ -516,10 +873,277 @@ canary() {
 canary_tree() {
   name=$1; dir=$2; word=$3
   canaries_run=$((canaries_run + 1))
-  c5_scan "$dir" > "$WORK/fx-case.out"
+  $SCAN "$dir" > "$WORK/fx-case.out"
   if ! grep -q -F "$word" "$WORK/fx-case.out"; then
-    problem "canary C5 $name: not named with \"$word\" (the clause is blind)"
+    problem "canary $CLAUSE $name: not named with \"$word\" (the clause is blind)"
   fi
+}
+
+# ---- the fixtures of C6 and C8 -------------------------------------------
+
+# A we_fdloop.c with only the functions C6 reads, in their right shape.  The
+# marker comments are replaced by an offender (a marker on a statement's own
+# line deletes the statement when replaced by nothing).
+emit_loop_clean() {
+  cat <<'EOF'
+#define WPE_FD_WRITE_X (-2)
+#define WPE_FD_SLOT_BYTES(n) \
+  ((n) * sizeof(wpe_fd_writer))
+/*PLANT:define*/
+static void wpe_fd_writer_free(wpe_fd_writer *w)
+{
+ free(w->buf);
+ memset(w, 0, sizeof *w);
+}
+
+static void wpe_fd_writer_finish(wpe_fd_writer *w)
+{
+ int fd = w->fd, close_it = w->close_when_empty;
+
+ wpe_fd_writer_free(w);
+ if (!close_it)
+  return;
+ /*PLANT:finish*/
+ wpe_fd_close(fd);
+}
+
+static void wpe_fd_writer_fail_on_loop(wpe_fd_writer *w, int how)
+{
+ wpe_fd_write_owner_mark(w->fd, how);
+ wpe_fd_writer_finish(w);
+}
+
+static void wpe_fd_writer_fail_at_call(wpe_fd_writer *w)
+{
+ wpe_fd_writer_finish(w);
+}
+
+static void wpe_fd_writer_lost_number(wpe_fd_writer *w)
+{
+ wpe_fd_write_owner_mark(w->fd, WPE_FD_WRITE_REFUSED);
+ wpe_fd_writer_free(w);
+}
+
+static int wpe_fd_writer_flush(wpe_fd_writer *w)
+{
+ int r = wpe_fd_write_once(w->fd, w->buf, 1, 0);
+
+ if (r != WPE_FD_WRITE_SENT)
+ {
+  /*PLANT:flush_failed*/
+  return r;
+ }
+ if (wpe_fd_writer_waiting(w))
+  return WPE_FD_WRITE_QUEUED;
+ wpe_fd_writer_finish(w);
+ return WPE_FD_WRITE_SENT;
+}
+
+int wpe_fd_write(int fd, const void *buf, size_t n, const char *what,
+                 const char *ends)
+{
+ wpe_fd_writer *w = wpe_fd_writer_take(fd);
+ int r = wpe_fd_writer_queue_rest(w, buf, n);
+
+ if (r != WPE_FD_WRITE_QUEUED)
+  wpe_fd_writer_free(w);
+ return r;
+}
+
+int wpe_fd_write_flush(int fd)
+{
+ wpe_fd_writer *w = wpe_fd_writer_find(fd);
+ int r;
+
+ if (!w)
+  return WPE_FD_WRITE_SENT;
+ /*PLANT:wflush_top*/
+ r = wpe_fd_writer_flush(w);
+ /*PLANT:wflush_after*/
+ if (r == WPE_FD_WRITE_CLOSED || r == WPE_FD_WRITE_REFUSED)
+  wpe_fd_writer_fail_at_call(w); /*PLANT:wflush_fail*/
+ return r;
+}
+
+static void wpe_fd_writer_forget(int fd)
+{
+ wpe_fd_writer *w = wpe_fd_writer_find(fd);
+
+ if (!w)
+  return;
+ wpe_fd_writer_free(w);
+}
+
+int wpe_fd_close(int fd)
+{
+ if (fd < 0)
+  return 0;
+ wpe_fd_write_failed_forget(fd); /*PLANT:close_forget*/
+ wpe_fd_writer_forget(fd);
+ wpe_fd_del(fd);
+ return close(fd);
+}
+
+int wpe_fd_close_when_written(int fd)
+{
+ wpe_fd_writer *w;
+
+ if (fd < 0)
+  return 0;
+ wpe_fd_write_failed_forget(fd); /*PLANT:cww_forget*/
+ w = wpe_fd_writer_find(fd);
+ if (!w || !wpe_fd_writer_waiting(w))
+ {
+  wpe_fd_close(fd);
+  return 0;
+ }
+ w->close_when_empty = 1;
+ return 1;
+}
+
+int wpe_fd_write_failed_set(int fd, wpe_fd_write_failed_fn tell, void *data)
+{
+ wpe_fd_write_owner *o;
+ const wpe_fd_writer *w;
+
+ if (fd < 0 || !tell)
+  return -1;
+ w = wpe_fd_writer_find(fd);
+ if (w && w->close_when_empty) /*PLANT:set_refusal*/
+  return -1;
+ o = wpe_fd_write_owner_find(fd);
+ o->tell = tell;
+ o->data = data;
+ return 0;
+}
+
+static void wpe_fd_tell_failures(void)
+{
+ wpe_fd_write_owner o;
+
+ while (wpe_fd_write_owner_take_failed(&o))
+ {
+  /*PLANT:tell_loop*/
+  o.tell(o.fd, o.how, o.data);
+ }
+}
+/*PLANT:filescope*/
+
+void wpe_loop_owe(void)
+{
+ loop_owed_flag = 1;
+}
+
+static int wpe_loop_owed_run(void)
+{
+ loop_owed_flag = 0;
+ return 1;
+}
+/*PLANT:helper*/
+
+static void wpe_fd_flush_one(wpe_fd_writer *w, short revents)
+{
+ int r;
+
+ if (revents & POLLNVAL)
+ {
+  wpe_fd_writer_lost_number(w);
+  return;
+ }
+ /*PLANT:one_top*/
+ r = wpe_fd_writer_flush(w);
+ /*PLANT:one_after*/
+ if (r == WPE_FD_WRITE_CLOSED || r == WPE_FD_WRITE_REFUSED)
+  wpe_fd_writer_fail_on_loop(w, r); /*PLANT:one_fail*/
+}
+
+static void wpe_fd_flush_ready(const struct pollfd *pfd, const int *wmap, int n)
+{
+ int i;
+
+ for (i = 0; i < n; i++)
+ {
+  wpe_fd_writer *w = &writer_table[wmap[i]];
+
+  /*PLANT:walk*/
+  wpe_fd_flush_one(w, pfd[i].revents);
+ }
+ /*PLANT:ready_after_walk*/
+ wpe_fd_tell_failures();
+}
+/*PLANT:wrapper*/
+EOF
+}
+
+# The product sources of C8: the owner of the owed hook and its one user may
+# name it, a prose mention anywhere may not count, and the host may not use it.
+emit_owed_clean() {
+  cat <<'EOF'
+/* we_sessend.c names the owed hook: it is its one user. */
+static void sessend_run_owed(void)
+{
+}
+
+void wpe_sessend_init(void)
+{
+ wpe_loop_owed_set(sessend_run_owed);
+ wpe_loop_owe();
+}
+EOF
+}
+
+emit_host_clean() {
+  cat <<'EOF'
+/* A host never calls wpe_loop_owe: the owner of the sessions' ends does. */
+static void e_host_noted(void)
+{
+ const char *text = "wpe_loop_owe is a word in a string";
+
+ /*PLANT:host*/
+ (void)text;
+}
+EOF
+}
+
+emit_loop_header() {
+  cat <<'EOF'
+typedef void (*wpe_loop_owed_fn)(void);
+int  wpe_loop_owed_set(wpe_loop_owed_fn fn);
+void wpe_loop_owe(void);
+EOF
+}
+
+# What the object half reads: objects made from these sources, in the state
+# the loop and its one user leave them.
+emit_obj_loop_c() {
+  cat <<'EOF'
+#include <poll.h>
+static int flag;
+void wpe_loop_owe(void) { flag = 1; }
+int wpe_loop_owed_set(void (*fn)(void)) { return fn != 0; }
+int loop_poll(void) { return poll(0, 0, 0) + flag; }
+EOF
+}
+
+emit_obj_sessend_c() {
+  cat <<'EOF'
+void wpe_loop_owe(void);
+int wpe_loop_owed_set(void (*fn)(void));
+void sessend_owe(void) { wpe_loop_owe(); }
+EOF
+}
+
+emit_obj_other_c() {
+  cat <<'EOF'
+int wpe_loop_owed_set(void (*fn)(void));
+int other_user(void) { return wpe_loop_owed_set(0); }
+EOF
+}
+
+emit_obj_innocent_c() {
+  cat <<'EOF'
+int innocent(void) { return 1; }
+EOF
 }
 
 selftest() {
@@ -565,6 +1189,8 @@ selftest() {
   canary two-fills call_after_fill ' dap_slot_fill(p, &what);' "more than once"
   canary fill-named-bare call_top ' void (*f)(dap_pending *, const dap_pending *) = dap_slot_fill;' "named without a call"
   canary fill-from-other-function read_once ' dap_slot_fill(s->pending, 0);' "called from dap_read_once"
+  # A macro that writes the slot would hide the write from the scan.
+  canary macro-writes-the-slot dap_define '#define DAP_PRESET_SLOT do { p->kind = DAP_REQ_CALL; } while (0)' "#define DAP_PRESET_SLOT holds code"
   canary bsp-fill-from-other-function bsp_read_once ' bsp_out_fill(b, 1, "x", 0, 0);' "called from bsp_read_once"
 
   # The slot members of the session (the build server's slot).
@@ -600,12 +1226,180 @@ selftest() {
   mkdir -p "$WORK/fx-nofile"
   cp "$WORK/fx/we_dap.c" "$WORK/fx-nofile/we_dap.c"
   canary_tree file-missing "$WORK/fx-nofile" "we_bsp.c not found"
+
+  selftest_c6
+  selftest_c8_source
+  selftest_c8_objects
+}
+
+# The C6 canaries: the clean loop passes; each bypass is named.
+selftest_c6() {
+  CLAUSE=C6
+  SCAN=c6_scan
+  emit_loop_clean > "$WORK/fx/we_fdloop.c"
+  c6_scan "$WORK/fx" > "$WORK/fx-clean6.out"
+  if [ -s "$WORK/fx-clean6.out" ]; then
+    problem "selftest: the clean loop fixture is named by C6 (the clause is noisy):"
+    cat "$WORK/fx-clean6.out" >> "$WORK/problems"
+  fi
+
+  # (a) the writer's result.
+  canary base-flush-ready walk ' wpe_fd_writer_flush(w);' "called from wpe_fd_flush_ready"
+  canary void-cast-after one_after ' (void)r;' "a (void) cast"
+  canary void-cast-call one_top ' (void)wpe_fd_writer_flush(w);' "a (void) cast"
+  canary flush-result-unassigned one_top ' wpe_fd_writer_flush(w);' "not read as the whole statement"
+  canary flush-from-another-function tell_loop ' r = wpe_fd_writer_flush(w);' "called from wpe_fd_tell_failures"
+  canary flush-named-bare one_after ' int (*f)(wpe_fd_writer *) = wpe_fd_writer_flush;' "named without a call"
+  canary flush-result-never-failed one_fail '' "never passes the result to wpe_fd_writer_fail_on_loop"
+  canary write-flush-void wflush_after ' (void)r;' "a (void) cast"
+  canary write-flush-no-fail wflush_fail '' "never passes a failed queue to wpe_fd_writer_fail_at_call"
+  canary write-flush-no-return wflush_fail '' "does not return the result"
+  # (b) the slot freed.
+  canary free-in-the-walk one_top ' wpe_fd_writer_free(w);' "wpe_fd_writer_free is called from wpe_fd_flush_one"
+  canary free-named-bare one_after ' void (*f)(wpe_fd_writer *) = wpe_fd_writer_free;' "named without a call"
+  # (c) the queue finished.
+  canary finish-twice-in-flush flush_failed ' wpe_fd_writer_finish(w);' "finishes the queue 2 times"
+  canary finish-in-the-walk one_after ' wpe_fd_writer_finish(w);' "wpe_fd_writer_finish is called from wpe_fd_flush_one"
+  # (d) the queue forgotten.
+  canary forget-in-the-walk one_after ' wpe_fd_writer_forget(w->fd);' "wpe_fd_writer_forget is called from wpe_fd_flush_one"
+  # (e) the one close.
+  canary plain-close-in-finish finish ' close(fd);' "close( is called from wpe_fd_writer_finish"
+  canary plain-close-in-the-walk one_after ' close(w->fd);' "close( is called from wpe_fd_flush_one"
+  canary close-without-forget close_forget '' "wpe_fd_close does not call wpe_fd_write_failed_forget"
+  canary close-when-written-without-forget cww_forget '' "wpe_fd_close_when_written does not call wpe_fd_write_failed_forget"
+  canary set-without-refusal set_refusal '' "does not name close_when_empty"
+  # (f) the tell.
+  canary tell-in-the-walk one_after ' o->tell(w->fd, 0, 0);' "tell is read in wpe_fd_flush_one"
+  canary tell-call-in-the-walk one_after ' wpe_fd_tell_failures();' "wpe_fd_tell_failures is called from wpe_fd_flush_one"
+  canary tell-above-the-walk walk ' wpe_fd_tell_failures();' "tells before the walk is over"
+  canary tell-through-a-macro filescope '#define TELL(o, h) ((o)->tell((o)->fd, h, (o)->data))' "read in file scope"
+  canary tell-copied-to-a-pointer one_after ' void (*f)(int, int, void *) = o->tell;' "read in wpe_fd_flush_one"
+  # (b) again: a drop inlined in a helper other than wpe_fd_writer_free.
+  canary free-in-a-helper helper 'static void wpe_fd_writer_drop_quietly(wpe_fd_writer *w)\n{\n free(w->buf);\n memset(w, 0, sizeof *w);\n}' "free( is called from wpe_fd_writer_drop_quietly"
+  canary clear-in-a-helper helper 'static void wpe_fd_writer_drop_quietly(wpe_fd_writer *w)\n{\n free(w->buf);\n memset(w, 0, sizeof *w);\n}' "memset( is called from wpe_fd_writer_drop_quietly"
+  canary clear-table-slot one_after ' memset(&writer_table[0], 0, sizeof writer_table[0]);' "memset( is called from wpe_fd_flush_one"
+  canary clear-through-an-alias one_after ' wpe_fd_writer *slot = w; memset(slot, 0, sizeof *slot);' "memset( is called from wpe_fd_flush_one"
+  # A macro with code hides a call from every rule: it is refused.
+  canary macro-close define '#define WPE_SHUT(f) do { close(f); } while (0)' "#define WPE_SHUT holds code"
+  canary macro-owe define '#define WPE_OWE_SOON() wpe_loop_owe()' "#define WPE_OWE_SOON holds code"
+  canary macro-drop define '#define WPE_DROP(w) do { free((w)->buf); memset((w), 0, sizeof *(w)); } while (0)' "#define WPE_DROP holds code"
+  canary macro-continued define '#define WPE_SHUT2(f) \\\n do { close(f); } while (0)' "#define WPE_SHUT2 holds code"
+  canary macro-statement-only define '#define WPE_STEP x = 1;' "#define WPE_STEP holds code"
+  # A body whose "{" is on the header line: K&R style and one-line functions.
+  canary one-line-wrapper wrapper 'void wpe_loop_please(void) { wpe_loop_owe(); }' "wpe_loop_owe is called from wpe_loop_please"
+  canary knr-close helper 'static void wpe_fd_sneaky_close(int fd) {\n close(fd);\n}' "close( is called from wpe_fd_sneaky_close"
+  canary one-line-close helper 'static void wpe_fd_sneaky_close(int fd) { close(fd); }' "close( is called from wpe_fd_sneaky_close"
+  # (g) the owed hook inside the loop's own file.
+  canary exported-wrapper wrapper 'void wpe_loop_please(void)\n{\n wpe_loop_owe();\n}' "wpe_loop_owe is called from wpe_loop_please"
+  canary flag-raised-elsewhere one_after ' loop_owed_flag = 1;' "loop_owed_flag is raised in wpe_fd_flush_one"
+
+  # A scan that cannot find what it checks must fail, not pass.
+  mkdir -p "$WORK/fx6-blind"
+  awk '/^static void wpe_fd_tell_failures/ { skip = 1 } skip && /^}/ { skip = 0; next } !skip { print }' \
+    "$WORK/fx/we_fdloop.c" > "$WORK/fx6-blind/we_fdloop.c"
+  canary_tree function-missing "$WORK/fx6-blind" "wpe_fd_tell_failures is not in the file"
+  mkdir -p "$WORK/fx6-nofile"
+  canary_tree file-missing "$WORK/fx6-nofile" "we_fdloop.c not found"
+}
+
+# The C8 source canaries.
+selftest_c8_source() {
+  CLAUSE=C8
+  SCAN=c8_source_scan
+  emit_owed_clean > "$WORK/fx/we_sessend.c"
+  emit_host_clean > "$WORK/fx/we_debug.c"
+  emit_loop_header > "$WORK/fx/we_fdloop.h"
+  c8_source_scan "$WORK/fx" > "$WORK/fx-clean8.out"
+  if [ -s "$WORK/fx-clean8.out" ]; then
+    problem "selftest: the clean C8 fixtures are named (the clause is noisy):"
+    cat "$WORK/fx-clean8.out" >> "$WORK/problems"
+  fi
+  canary host-owes host ' wpe_loop_owe();' "wpe_loop_owe is named outside"
+  canary host-names-the-hook host ' wpe_loop_owed_set(0);' "wpe_loop_owed_set is named outside"
+  canary host-spaced host ' wpe_loop_owe ( );' "wpe_loop_owe is named outside"
+  canary host-takes-address host ' void (*f)(void) = wpe_loop_owe;' "wpe_loop_owe is named outside"
+}
+
+# make_fixture_object NAME SOURCE-EMITTER - compile one fixture object, or say
+# why it cannot be made.  Return: 0 made, 1 not.
+make_fixture_object() {
+  name=$1; emitter=$2
+  $emitter > "$WORK/fxo/${name%.o}.c"
+  test_cc -c -o "$WORK/fxo/$name" "$WORK/fxo/${name%.o}.c" 2> "$WORK/fxo/cc.err"
+}
+
+# The C8 object canaries: they need a compiler and nm; without either they
+# are not run, which the exit status says (77), never a pass.
+selftest_c8_objects() {
+  CLAUSE=C8
+  if [ "$NMTOOL" = ":" ] || ! command -v "$NMTOOL" > /dev/null 2>&1; then
+    SKIPPED="$SKIPPED the selftest's C8 object canaries not run (no nm: $NMTOOL);"
+    return
+  fi
+  test_cc_require
+  mkdir -p "$WORK/fxo"
+  make_fixture_object we_fdloop.o emit_obj_loop_c &&
+    make_fixture_object we_sessend.o emit_obj_sessend_c &&
+    make_fixture_object we_other.o emit_obj_other_c &&
+    make_fixture_object we_innocent.o emit_obj_innocent_c || {
+    problem "selftest: the C8 fixture objects were not compiled: $(cat "$WORK/fxo/cc.err")"
+    return
+  }
+  canaries_run=$((canaries_run + 1))
+  c8_object_scan "$WORK/fxo/we_fdloop.o" "$WORK/fxo/we_sessend.o" "$WORK/fxo/we_innocent.o" > "$WORK/fxo/clean.out"
+  if [ -s "$WORK/fxo/clean.out" ]; then
+    problem "selftest: the clean C8 objects are named (the clause is noisy):"
+    cat "$WORK/fxo/clean.out" >> "$WORK/problems"
+  fi
+  # A second importer of the owed hook.
+  canaries_run=$((canaries_run + 1))
+  c8_object_scan "$WORK/fxo/we_fdloop.o" "$WORK/fxo/we_sessend.o" "$WORK/fxo/we_other.o" > "$WORK/fxo/case.out"
+  grep -q -F "we_other.o imports wpe_loop_owed_set" "$WORK/fxo/case.out" ||
+    problem "canary C8 second-importer: not named (the clause is blind)"
+  # The owner's user that stopped importing the hook.
+  canaries_run=$((canaries_run + 1))
+  mkdir -p "$WORK/fxo/empty"
+  cp "$WORK/fxo/we_innocent.o" "$WORK/fxo/empty/we_sessend.o"
+  c8_object_scan "$WORK/fxo/we_fdloop.o" "$WORK/fxo/empty/we_sessend.o" > "$WORK/fxo/case.out"
+  grep -q -F "wpe_loop_owe not seen in we_sessend.o" "$WORK/fxo/case.out" ||
+    problem "canary C8 sessend-without-import: not named (the clause is blind)"
+  # An object nm cannot read: named we_fdloop.o, it shows none of the canaries.
+  canaries_run=$((canaries_run + 1))
+  mkdir -p "$WORK/fxo/unreadable"
+  echo "this is not an object" > "$WORK/fxo/unreadable/we_fdloop.o"
+  c8_object_scan "$WORK/fxo/unreadable/we_fdloop.o" > "$WORK/fxo/case.out"
+  grep -q -F "poll not seen in we_fdloop.o" "$WORK/fxo/case.out" ||
+    problem "canary C8 unreadable-object: not named (the clause is blind)"
+  # An object list without the loop's object.
+  canaries_run=$((canaries_run + 1))
+  c8_object_scan "$WORK/fxo/we_innocent.o" > "$WORK/fxo/case.out"
+  grep -q -F "we_fdloop.o is not among the objects" "$WORK/fxo/case.out" ||
+    problem "canary C8 no-loop-object: not named (the clause is blind)"
+  # An object that is not there.
+  canaries_run=$((canaries_run + 1))
+  c8_object_scan "$WORK/fxo/we_fdloop.o" "$WORK/fxo/missing.o" > "$WORK/fxo/case.out"
+  grep -q -F "missing.o not found" "$WORK/fxo/case.out" ||
+    problem "canary C8 missing-object: not named (the clause is blind)"
+}
+
+# What this run could not do: said at the end with status 77, never passed.
+SKIPPED=
+
+# The object half of the real tree: the objects make built.
+real_objects() {
+  if [ -z "$OBJECTS" ]; then
+    SKIPPED="$SKIPPED the C8 object half of the real tree not run (no object list: ONE_OWNER_OBJECTS or arguments);"
+  elif [ "$NMTOOL" = ":" ] || ! command -v "$NMTOOL" > /dev/null 2>&1; then
+    SKIPPED="$SKIPPED the C8 object half of the real tree not run (no nm: $NMTOOL);"
+  else
+    c8_object_scan $OBJECTS
+  fi
 }
 
 check_allow
 
 if [ -z "$SELFTEST_ONLY" ]; then
-  c5_scan "$SRCDIR" > "$WORK/real.out"
+  { c5_scan "$SRCDIR"; c6_scan "$SRCDIR"; c8_source_scan "$SRCDIR"; real_objects; } > "$WORK/real.out"
   cat "$WORK/real.out" >> "$WORK/problems"
 fi
 selftest
@@ -615,5 +1409,9 @@ if [ -s "$WORK/problems" ]; then
   cat "$WORK/problems"
   exit $BAD
 fi
-echo "check-session-end: ok (C5, $canaries_run canaries)"
+if [ -n "$SKIPPED" ]; then
+  echo "check-session-end: SKIP,$SKIPPED the source halves and their canaries passed"
+  exit $SKIP
+fi
+echo "check-session-end: ok (C5, C6, C8, $canaries_run canaries)"
 exit 0
