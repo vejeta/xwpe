@@ -32,7 +32,6 @@ box is read from it and from the screen.
 """
 import os
 import re
-import time
 
 import pytest
 
@@ -42,8 +41,11 @@ from conftest import (SCREEN, SCREEN_W, SCREEN_H, XwpeSession, _SERVED,
                       wait_for)
 
 TRACE = "ui.trace"
-ALIVE_S = 2.0
+# Deadlines, in seconds before XWPE_TEST_WAIT_SCALE: how long a row waits for
+# a line of the trace, and how long it waits out what must not happen (an
+# editor that ends, a layout walked again).
 TRACE_S = 10.0
+ALIVE_S = 2.0
 FLOOR_GRID = "grid 30x6 taken"
 CLAMP_NOTICE = "grid notice Screen cut to"
 HUGE_GEOMETRY = "30000x30000"
@@ -87,6 +89,7 @@ REMAINDER_PIXEL = (900, 650)
 DISMISS_KEY = "Escape"
 TYPED = "x"
 KEY_S = 0.6
+# How long a row waits out what a plain move of the window must not do.
 SETTLE_S = 1.5
 
 
@@ -138,6 +141,24 @@ def _size(win, width, height):
     _xdo("windowsize", win, width, height)
 
 
+def _wait_out(event_fn, what, seconds):
+    """Wait out a stretch in which @event_fn must not come true.
+
+    A row that judges what did NOT happen (an editor that ends, a layout
+    walked a second time) has no event of its own to wait for, so it waits
+    for the thing it forbids and goes on the moment it happens, leaving the
+    sentence to the assertion that follows.  The owner's wait holds until
+    that event or its deadline and stretches both by XWPE_TEST_WAIT_SCALE,
+    so a loaded host waits the whole stretch out; a sleep of the row's own
+    was stretched by nothing, and the row judged the editor before it had
+    answered.  A wait that runs out is the answer the row wants, so its
+    timeout is caught."""
+    try:
+        wait_for(event_fn, what, seconds)
+    except owner_api.OwnerTimeout:
+        pass
+
+
 def _wait_refused(tmp_path):
     """Wait for the grid owner to keep its grid against a size it was asked
     for, and show the trace when it does not."""
@@ -186,6 +207,14 @@ def _a_larger_grid_was_taken(tmp_path, kept_cells):
     return any(int(cols) * int(rows) > kept_cells for cols, rows in taken)
 
 
+def _a_move_changed_something(tmp_path, walks):
+    """True once a move of the window has walked the layout again or said the
+    refusal a second time: the two things a plain move must not do."""
+    trace = _trace(tmp_path)
+    return (trace.count(LAYOUT_WALK) > walks
+            or len(NOTICE_REFUSED.findall(trace)) > 1)
+
+
 def _dismiss_box(session):
     """Answer the box the reader showed, as the user does."""
     session.key(DISMISS_KEY, delay=KEY_S)
@@ -217,7 +246,8 @@ def test_geometry_larger_than_the_screen_starts_at_the_screen(
     assert width <= SCREEN_W and height <= SCREEN_H, \
         "the window is %dx%d on a %dx%d screen" % (width, height, SCREEN_W,
                                                     SCREEN_H)
-    time.sleep(ALIVE_S)
+    _wait_out(lambda: not owned.running(),
+              "the editor to end after its window was made", ALIVE_S)
     assert owned.proc.poll() is None, "the editor ended after its window " \
         "was made"
 
@@ -237,7 +267,8 @@ def test_a_window_below_one_cell_keeps_the_floor(bare_display, gui_owner,
     assert ZERO_LAYOUT not in _trace(tmp_path), \
         "the layout ran for a grid of no cell:\n" + _trace(tmp_path)
     assert FLOOR_GRID in _trace(tmp_path)
-    time.sleep(ALIVE_S)
+    _wait_out(lambda: not owned.running(),
+              "the editor to end on a tiny window", ALIVE_S)
     assert owned.proc.poll() is None, "the editor ended on a tiny window"
 
 
@@ -263,7 +294,9 @@ def test_a_refused_grow_keeps_the_editor_and_its_text(
         "the refusal was not said exactly once:\n" + trace
     walks = trace.count(LAYOUT_WALK)
     _xdo("windowmove", session.win, MOVE_X, MOVE_Y)
-    time.sleep(SETTLE_S)
+    _wait_out(lambda: _a_move_changed_something(tmp_path, walks),
+              "a move of the window to walk the layout or say the refusal "
+              "again", SETTLE_S)
     moved = _trace(tmp_path)
     assert moved.count(LAYOUT_WALK) == walks, \
         "a move of the window walked the layout again:\n" + moved
@@ -297,7 +330,8 @@ def test_a_start_without_memory_for_its_screen_says_so(
     assert int(notice.group(4)) == FALLBACK_ROWS, \
         "the notice does not name the grid in use:\n" + trace
     _type_and_save(session)
-    time.sleep(ALIVE_S)
+    _wait_out(lambda: not owned.running(),
+              "the editor to end after a refused start", ALIVE_S)
     assert owned.proc.poll() is None, "the editor ended after a refused start"
 
 
