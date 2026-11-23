@@ -41,7 +41,15 @@ Sub-commands (all stdlib, no third-party imports, so CI can run it bare):
                                      never ran (what a gate still has to run)
     check                            drift guard: every manifest id resolves,
                                      every tests/**/test_ai_*.py is mapped or
-                                     listed in tests/harness/UNMAPPED.txt
+                                     listed in tests/harness/UNMAPPED.txt, and
+                                     the suite still fits in the jobs of the
+                                     CI plan (tests/harness/suite_plan.py fit)
+
+``report`` also takes ``--plan PLAN.json`` and ``--status DIR`` (anywhere on
+the line): the plan the jobs of one CI run were made from and the folder that
+holds each job's status file.  A mapped row the plan gave to a job and that no
+junit holds is MISSING, and the line on stderr says why: the job was cut at N
+min, ended before running it, or uploaded nothing.
     coverage edit-model <run.json|dir>
                                      the edit model's coverage matrix of one
                                      run (a coverage file, or the directory
@@ -110,6 +118,11 @@ TOP = os.path.dirname(os.path.dirname(HERE))
 # engine_guard.py is stdlib only: it names the live files.
 sys.path.insert(0, os.path.dirname(HERE))
 import engine_guard  # noqa: E402
+sys.path.insert(0, HERE)
+try:
+    import suite_plan  # noqa: E402
+finally:
+    sys.path.pop(0)
 PYTHON_LAYERS = ("ncurses", "x11", "wayland", "asan", "config-file", "live")
 # The file tests/conftest.py writes the host tools of every collected row to
 # when this variable names one (see collect_suite).
@@ -427,11 +440,61 @@ def say_why(this, scenario, reasons, expected):
         sys.stderr.write("%s: KNOWN, %s\n" % (scenario["id"], scenario["known"]))
 
 
-def cmd_report(capability, layer, source):
+class PlanUnreadable(Exception):
+    """The --plan file of a report is missing or is not JSON."""
+
+
+def load_plan(path):
+    """The plan of a CI run (tests/harness/suite_plan.py plan), or None when
+    the report is read without one."""
+    if not path:
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError) as err:
+        raise PlanUnreadable("report: the plan file %s cannot be read (%s)"
+                             % (path, err))
+
+
+def rows_the_plan_gave_but_no_junit_holds(test_id, raw, plan):
+    """The collected rows that @test_id names (a file, a test, one case), that
+    the plan gave to a job, and that no junit file ran, as [node id]."""
+    absent = []
+    for node, _shard in sorted(plan["assignment"].items()):
+        if row_covers(test_id, node) and junit_key(node) not in raw:
+            absent.append(node)
+    return absent
+
+
+def not_run_reasons(absent, plan, statuses):
+    """Why each shard that held a row of @absent produced no result for it,
+    one line a shard: cut at N min, ended before running it, uploaded
+    nothing."""
+    shards = sorted({plan["assignment"][node] for node in absent})
+    return [suite_plan.shard_reason(shard, statuses) for shard in shards]
+
+
+def folded_with_the_plan(scenario, result, raw, plan, statuses):
+    """(result, reasons): the junit's result of the scenario's row, made None
+    (MISSING) when the plan gave a row of it to a job whose junit lacks it,
+    with the lines that say why."""
+    test_id = scenario.get("test")
+    if plan is None or not test_id or result == "FAIL":
+        return result, []
+    absent = rows_the_plan_gave_but_no_junit_holds(test_id, raw, plan)
+    if not absent:
+        return result, []
+    return None, not_run_reasons(absent, plan, statuses)
+
+
+def cmd_report(capability, layer, source, plan_path=None, status_dir=None):
     manifest = load_manifest(capability)
     skip_reasons = {}
     skip_kinds = {}
     expected = expected_tools()
+    plan = load_plan(plan_path) if layer != "c-unit" else None
+    statuses = suite_plan.read_statuses(status_dir)
     if layer == "c-unit":
         raw = automake_results(source)
         lookup = lambda test_id: raw.get(test_id)
@@ -445,8 +508,11 @@ def cmd_report(capability, layer, source):
         result = lookup(scenario["test"]) if scenario.get("test") else None
         reasons = junit_skip_reasons(skip_reasons, scenario["test"]) if scenario.get("test") else []
         kinds = junit_skip_kinds(skip_kinds, scenario["test"]) if scenario.get("test") else []
+        result, not_run = folded_with_the_plan(scenario, result, raw, plan, statuses)
         this = verdict(scenario, result, reasons, kinds, expected)
         say_why(this, scenario, reasons, expected)
+        for line in not_run:
+            sys.stderr.write("%s: MISSING, %s\n" % (scenario["id"], line))
         seen = report.get(scenario["id"])
         if seen is None or SEVERITY[this] < SEVERITY[seen]:
             report[scenario["id"]] = this
@@ -603,6 +669,19 @@ def unmapped_allowed():
         return {line.strip() for line in fh if line.strip() and not line.startswith("#")}
 
 
+def tree_fit_problems(record_path=None, ids=None):
+    """The findings of the suite's fitness check for this tree: the record
+    the tree carries against the rows the CI selection collects.  A tree that
+    grew a file or a row the record never saw fails here, in minutes, instead
+    of a CI job being cut after hours."""
+    record = suite_plan.load_record(record_path or suite_plan.TRACKED_RECORD)
+    try:
+        found = ids if ids is not None else suite_plan.collect_ids()
+    except suite_plan.CollectionError as err:
+        return ["suite fit: %s" % err]
+    return suite_plan.fit_problems(record, found)
+
+
 def cmd_check():
     problems = []
     mapped_files = set()
@@ -627,6 +706,7 @@ def cmd_check():
                     problems.append("%s: %s -> %s does not collect" % (entry, scenario["id"], test_id))
     problems.extend(needs_drift(manifests, node_needs, base_tools()))
     problems.extend(known_problems(manifests))
+    problems.extend(tree_fit_problems())
     allowed = unmapped_allowed()
     for path in ai_test_files():
         if path not in mapped_files and path not in allowed:
@@ -684,13 +764,28 @@ def cmd_coverage(capability, source):
     return 1 if (holes or uncovered or bad_rows) else 0
 
 
+def take_option(argv, name):
+    """(value, the rest of @argv) for an option written `name value`; the
+    value is None when the option is not there."""
+    if name not in argv:
+        return None, argv
+    at = argv.index(name)
+    return argv[at + 1], argv[:at] + argv[at + 2:]
+
+
 def main(argv):
+    plan_path, argv = take_option(argv, "--plan")
+    status_dir, argv = take_option(argv, "--status")
     if len(argv) >= 3 and argv[0] == "coverage":
         return cmd_coverage(argv[1], argv[2])
     if len(argv) >= 3 and argv[0] == "files":
         return cmd_files(argv[1], argv[2]) or 0
     if len(argv) >= 4 and argv[0] == "report":
-        return cmd_report(argv[1], argv[2], argv[3])
+        try:
+            return cmd_report(argv[1], argv[2], argv[3], plan_path, status_dir)
+        except PlanUnreadable as err:
+            sys.stderr.write("%s\n" % err)
+            return 2
     if len(argv) >= 4 and argv[0] == "missing":
         return cmd_missing(argv[1], argv[2], argv[3])
     if argv and argv[0] == "check":

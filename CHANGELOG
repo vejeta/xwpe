@@ -65,6 +65,14 @@ Bugs fixed in 1.6.x:
   assistant pane ends in "..." where a character ends instead of in half a
   letter, and the line and column of a very large file and the counts of
   Search > Replace are shown whole.
+* Debug > Quit, Pause and the other debugger commands now answer a missing
+  session the same way from every key.  Ctrl-F2, Shift-F5 and Ctrl-Break used
+  to skip the check the menu and the Ctrl-G letters make: Ctrl-F2 asked
+  whether to quit a session that was not there, and Ctrl-Break said "Nothing
+  to pause" instead of "No debug session".  The menu, the Ctrl-G letters and
+  the function keys now run one table of actions, so the line is the same.
+  Pause while the program is still being compiled for the session says so
+  instead of "no debugger session is running".
 * The editor no longer waits, fills the memory or reads your keys when a name
   it reads is not a regular file.  An xwperc in the folder you started in that
   is a link to /dev/zero or a pipe, a project file that is a pipe, and a

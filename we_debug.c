@@ -2339,6 +2339,10 @@ static void e_d_run_goto_after_start(ECNT *cn, const E_D_RUN_OPS *ops)
  ops->run_to_line(e_d_run_window(cn), line);
 }
 
+/* Said only when Pause reaches the debugger with no session at all, which
+   the table's entry (e_d_pause_command) never lets a key do: it says
+   "No debug session" first.  The line keeps a key that skipped the table
+   from looking like the same answer. */
 #define E_D_PAUSE_NO_SESSION_LINE \
  " Nothing to pause: no debugger session is running"
 #define E_D_PAUSE_STOPPED_LINE \
@@ -3429,19 +3433,18 @@ int e_deb_inp(FENSTER *f)
 {
  ECNT *cn = f->ed;
  int c = 0;
+ int action;
 
  c = wpe_paint_modal_getch();
  f = cn->f[cn->mxedt];
- switch (wpe_binding_action(c, wpe_binding_style(cn->edopt), WPE_CTX_PREFIX_DEBUG))
+ action = wpe_binding_action(c, wpe_binding_style(cn->edopt), WPE_CTX_PREFIX_DEBUG);
+ switch (action)
  {
   case WPE_ACT_DEBUG_OUTPUT:
    e_deb_out(f);
    break;
   case WPE_ACT_DEBUG_OPTIONS:
    e_deb_options(f);
-   break;
-  case WPE_ACT_DEBUG_BREAKPOINT:
-   e_breakpoint(f);
    break;
   case WPE_ACT_DEBUG_REMOVE_BREAKPOINTS:
    e_remove_breakpoints(f);
@@ -3452,38 +3455,13 @@ int e_deb_inp(FENSTER *f)
   case WPE_ACT_DEBUG_DELETE_WATCH:
    e_delete_watches_command(f);
    break;
-  case WPE_ACT_DEBUG_WATCH:
-   e_make_watches(f);
-   break;
   case WPE_ACT_DEBUG_EDIT_WATCH:
    e_edit_watches_command(f);
    break;
-  case WPE_ACT_DEBUG_STACK:
-   e_deb_stack(f);
-   break;
-  case WPE_ACT_DEBUG_TRACE:
-   e_deb_trace(f);
-   break;
-  case WPE_ACT_DEBUG_STEP:
-   e_deb_next(f);
-   break;
-  case WPE_ACT_DEBUG_RUN:
-   e_deb_run(f);
-   break;
-  case WPE_ACT_DEBUG_QUIT:
-   e_d_quit_entry(f);
-   break;
-  case WPE_ACT_DEBUG_GOTO_CURSOR:
-   e_d_goto_cursor(f);
-   break;
-  case WPE_ACT_DEBUG_FINISH:
-   e_d_finish_func(f);
-   break;
-  case WPE_ACT_DEBUG_PAUSE:
-   e_d_pause_command(f);
-   break;
   default:
-   return(c);
+   /* the actions the keys share with the letters: one table */
+   if (!e_d_run_action(f, action, 0))
+    return(c);
  }
  return(0);
 }
@@ -3492,10 +3470,11 @@ int e_deb_inp(FENSTER *f)
  * e_d_say_no_session - Tell the user a debugger command has no session.
  * @f: the window on top.
  *
- * A command that needs a session (quit it, pause it, change its watches) and
- * finds none used to do nothing and say nothing.  The status row now says
- * why, the same line from the menu and from the Ctrl-G letters.  A program
- * still being compiled for its session counts as one, so Quit still ends it.
+ * A command that needs a session (quit it, change its watches) and finds
+ * none used to do nothing and say nothing.  The status row now says why,
+ * the same line from the menu and from the Ctrl-G letters.  A program still
+ * being compiled for its session counts as one, so Quit still ends it; a
+ * command that needs the program itself asks e_d_say_no_program.
  * Return: 1 when there is no session and the line was said, else 0.
  */
 int e_d_say_no_session(FENSTER *f)
@@ -3503,6 +3482,27 @@ int e_d_say_no_session(FENSTER *f)
  if (e_d_session_runs() || e_d_compile_busy())
   return(0);
  e_status_say_until_key(f, E_SAY_NO_DEBUG_SESSION);
+ return(1);
+}
+
+/**
+ * e_d_say_no_program - Tell the user a command has no program to act on.
+ * @f: the window on top.
+ *
+ * Pause and the commands that act on the program itself find two states
+ * with nothing to do: a session whose program is still being compiled, and
+ * no session at all.  Each says its own line here, in the entry every way in
+ * runs through, so the answer to the state never depends on the key that
+ * asked, and a command's own refusal has no state of the session to name.
+ * Return: 1 when there is no program and the line was said, else 0.
+ */
+int e_d_say_no_program(FENSTER *f)
+{
+ if (e_d_session_runs())
+  return(0);
+ if (!e_d_compile_busy())
+  return(e_d_say_no_session(f));
+ e_status_say_until_key(f, E_SAY_DEBUG_COMPILING);
  return(1);
 }
 
@@ -3514,10 +3514,10 @@ int e_d_quit_entry(FENSTER *f)
  return(e_d_quit(f));
 }
 
-/** Debug > Interrupt, and Ctrl-G I: pause the program, or say there is no session. */
+/** Debug > Interrupt, and Ctrl-G I: pause the program, or say why there is none. */
 int e_d_pause_command(FENSTER *f)
 {
- if (e_d_say_no_session(f))
+ if (e_d_say_no_program(f))
   return(0);
  return(e_d_pause(f));
 }
@@ -3568,50 +3568,86 @@ int e_d_session_runs(void)
  return(e_d_swtch > 0);
 }
 
-int e_debug_switch(FENSTER *f, int c)
+/**
+ * e_d_quit_asking_entry - Quit the session from its key (Ctrl-F2, Shift-F5):
+ * ask first, or say there is no session.
+ *
+ * The keys end a session someone may be working in, so they ask; the menu
+ * and the Ctrl-G letter do not (e_d_quit_entry).  With no session the
+ * status row says so, as it does there.
+ * Return: 0.
+ */
+static int e_d_quit_asking_entry(FENSTER *f)
 {
- switch (wpe_binding_action(c, wpe_binding_style(f->ed->edopt), WPE_CTX_DEBUG))
+ if (e_d_say_no_session(f))
+  return(0);
+ return(e_d_q_quit(f));
+}
+
+/**
+ * The one table from a debugger action to the command that does it.  The
+ * menu, the Ctrl-G letters and the function keys all reach the same entry,
+ * so the answer to a command that has no session to act on is said once, in
+ * the entry, and never differs between the ways of asking.  An action that
+ * the keys ask differently has its own entry in the last column (Quit asks
+ * before it ends a session).
+ */
+typedef struct {
+ int action;
+ int (*entry)(FENSTER *f);
+ int (*key_entry)(FENSTER *f);   /* when a function key asks, else NULL */
+} E_D_ACTION_ENTRY;
+
+static const E_D_ACTION_ENTRY e_d_action_entries[] = {
+ { WPE_ACT_DEBUG_TRACE, e_deb_trace, NULL },
+ { WPE_ACT_DEBUG_STEP, e_deb_next, NULL },
+ { WPE_ACT_DEBUG_RUN, e_deb_run, NULL },
+ { WPE_ACT_DEBUG_QUIT, e_d_quit_entry, e_d_quit_asking_entry },
+ { WPE_ACT_DEBUG_PAUSE, e_d_pause_command, NULL },
+ { WPE_ACT_DEBUG_BREAKPOINT, e_breakpoint, NULL },
+ { WPE_ACT_DEBUG_WATCH, e_make_watches, NULL },
+ { WPE_ACT_DEBUG_STACK, e_deb_stack, NULL },
+ { WPE_ACT_DEBUG_FINISH, e_d_finish_func, NULL },
+ { WPE_ACT_DEBUG_GOTO_CURSOR, e_d_goto_cursor, NULL },
+ { 0, NULL, NULL }
+};
+
+/**
+ * e_d_run_action - Do a debugger action through its entry.
+ * @f: the window on top.
+ * @action: a WPE_ACT_DEBUG_* action.
+ * @from_key: 1 when a function key asked, 0 for the menu and Ctrl-G.
+ *
+ * Borland's F4 is Go to cursor while a program is stopped and Search the
+ * rest of the time, so a key does what the bar under it says: only a source
+ * window whose bar offers it runs to the cursor, never Messages or a
+ * backend that cannot.  Such a key is not taken.
+ * Return: 1 when the action is one of the table's and was done, else 0.
+ */
+int e_d_run_action(FENSTER *f, int action, int from_key)
+{
+ const E_D_ACTION_ENTRY *row;
+
+ for (row = e_d_action_entries; row->entry; row++)
  {
-  case WPE_ACT_DEBUG_TRACE:
-   e_deb_trace(f);
-   break;
-  case WPE_ACT_DEBUG_STEP:
-   e_deb_next(f);
-   break;
-  case WPE_ACT_DEBUG_RUN:
-   e_deb_run(f);
-   break;
-  case WPE_ACT_DEBUG_QUIT:
-   e_d_q_quit(f);
-   break;
-  case WPE_ACT_DEBUG_PAUSE:
-   e_d_pause(f);
-   break;
-  case WPE_ACT_DEBUG_BREAKPOINT:
-   e_breakpoint(f);
-   break;
-  case WPE_ACT_DEBUG_WATCH:
-   e_make_watches(f);
-   break;
-  case WPE_ACT_DEBUG_STACK:
-   e_deb_stack(f);
-   break;
-  case WPE_ACT_DEBUG_FINISH:
-   e_d_finish_func(f);
-   break;
-  case WPE_ACT_DEBUG_GOTO_CURSOR:
-   /* Borland's F4 is Go to cursor while a program is stopped and Search
-      the rest of the time, so the key does what the bar under it says:
-      only a source window whose bar offers it runs to the cursor, never
-      Messages or a backend that cannot. */
-   if (!e_bar_offers_goto_cursor(f))
-    return(c);
-   e_d_goto_cursor(f);
-   break;
-  default:
-   return(c);
+  if (row->action != action)
+   continue;
+  if (action == WPE_ACT_DEBUG_GOTO_CURSOR && from_key && !e_bar_offers_goto_cursor(f))
+   return(0);
+  if (from_key && row->key_entry)
+   row->key_entry(f);
+  else
+   row->entry(f);
+  return(1);
  }
  return(0);
+}
+
+int e_debug_switch(FENSTER *f, int c)
+{
+ int action = wpe_binding_action(c, wpe_binding_style(f->ed->edopt), WPE_CTX_DEBUG);
+
+ return(e_d_run_action(f, action, 1) ? 0 : c);
 }
 
 /**
@@ -11327,10 +11363,13 @@ static int e_d_refuse_while_running(FENSTER *f)
  * e_d_pause_refused - Say why Pause has nothing to do, when it has not.
  * @f: the window the key was pressed in.
  *
- * Pause only means something while the program runs: with no session, or
- * at a stop (or a stop waiting behind a box), the status row says so and
- * nothing is sent to the debugger.  A backend that cannot interrupt yet
- * says that.
+ * Pause only means something while the program runs: at a stop (or a stop
+ * waiting behind a box) the status row says so and nothing is sent to the
+ * debugger.  A backend that cannot interrupt yet says that.  The states of
+ * the session itself are not named here: with no session, or while its
+ * program is still being compiled, the command's entry has already said its
+ * line (e_d_say_no_program), so the row below is reached only by a key that
+ * went around the table.
  * Return: 1 when Pause must not go on.
  */
 static int e_d_pause_refused(FENSTER *f)

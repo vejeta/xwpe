@@ -1,0 +1,246 @@
+# The sites of rules WS, WD, WE and WF (tests/check_test_waits.py) that a sweep
+# has not moved onto the owner yet, counted per file: `file RULE=n ...`.
+#   WS  a clock or a sleep of the row's own (time.sleep, time.time, ...)
+#   WD  a product duration written as a literal name, not through
+#       gui_owner.product_duration / product_option_line
+#   WE  one read of the END of a session (not alive(), poll() is not None,
+#       returncode is not None, exit_code()) where the row should wait with
+#       WpeSession.ended_within; a "still running" check is not counted
+#   WF  a sleep inside the text of a program or a stand-in script that a
+#       debugger or a row runs, where the row should wait at a
+#       tests/program_gate.py gate
+# A count may only fall; a count above the measurement fails as stale.  The
+# check prints the current list with --list.
+tests/edit_model/oracle.py WS=11
+tests/frames_compare.py WS=1
+tests/live_ai.py WS=2
+tests/test_ai_agent_answer.py WS=2
+tests/test_ai_agent_dial_contracts.py WD=1 WS=5
+tests/test_ai_agent_engine_contracts.py WS=2
+tests/test_ai_agent_gaps.py WD=2 WS=10
+tests/test_ai_agent_preview.py WS=2
+tests/test_ai_agent_project_instructions.py WD=2 WS=5
+tests/test_ai_agent_reply_modal.py WD=1 WS=1
+tests/test_ai_agent_run_contracts.py WD=1 WS=4
+tests/test_ai_agent_run_visibility.py WD=1 WS=6
+tests/test_ai_agent_screen_oracle.py WS=14
+tests/test_ai_agent_tool_contracts.py WS=7
+tests/test_ai_agent_tool_safety.py WS=4
+tests/test_ai_agent_write.py WD=2 WS=5
+tests/test_ai_apply_patch.py WS=4
+tests/test_ai_async.py WD=2
+tests/test_ai_cancel.py WD=1
+tests/test_ai_capabilities_prompt.py WS=1
+tests/test_ai_changeset.py WS=2
+tests/test_ai_chat_error.py WS=2
+tests/test_ai_chat_history_window.py WS=3
+tests/test_ai_chat_input_contracts.py WS=2
+tests/test_ai_chat_input_paste_limit.py WS=3
+tests/test_ai_chat_pane_contracts.py WD=2 WS=5
+tests/test_ai_chat_short_reply.py WS=3
+tests/test_ai_chat_tool_preamble.py WS=1
+tests/test_ai_chat_turn_contracts.py WD=5 WS=7
+tests/test_ai_chat_web.py WS=7
+tests/test_ai_complete.py WS=4
+tests/test_ai_complete_preview.py WD=1 WS=1
+tests/test_ai_contain_credentials.py WD=1 WS=6
+tests/test_ai_diagnostics.py WS=2
+tests/test_ai_diff_overlay.py WS=4
+tests/test_ai_edit_blocked_contracts.py WS=3
+tests/test_ai_edit_contracts.py WE=1 WS=4
+tests/test_ai_edit_entry_contracts.py WD=1 WS=2
+tests/test_ai_edit_error_guard.py WS=2
+tests/test_ai_edit_hook.py WS=2
+tests/test_ai_edit_hook_contracts.py WS=1
+tests/test_ai_edit_ollama_stream_end.py WS=4
+tests/test_ai_edit_pending_window.py WD=1 WS=1
+tests/test_ai_edit_reply_guard.py WE=1 WS=3
+tests/test_ai_edit_reply_modal.py WD=1 WS=1
+tests/test_ai_edit_waiting_line.py WD=1 WS=1
+tests/test_ai_fix_build.py WS=2
+tests/test_ai_fix_build_quoting.py WS=2
+tests/test_ai_glob.py WS=1
+tests/test_ai_host.py WS=6
+tests/test_ai_host_dial_and_interrupt.py WD=2 WS=2
+tests/test_ai_host_text.py WS=2
+tests/test_ai_input_utf8.py WS=1
+tests/test_ai_journeys.py WD=2 WS=1
+tests/test_ai_line_endings.py WS=1
+tests/test_ai_menu_door_contracts.py WD=1
+tests/test_ai_menu_quick_rows.py WD=1
+tests/test_ai_menu_repaint.py WD=1
+tests/test_ai_model_fallback.py WS=1
+tests/test_ai_overlay_repaint.py WS=2
+tests/test_ai_pane_first_row.py WD=1 WS=2
+tests/test_ai_pane_reflow.py WS=2
+tests/test_ai_pane_save_and_limit.py WS=3
+tests/test_ai_pane_scroll_lock.py WD=3 WS=2
+tests/test_ai_pane_wrap_agent.py WS=2
+tests/test_ai_pending_lock.py WD=1 WS=1
+tests/test_ai_plan.py WS=2
+tests/test_ai_plan_approval.py WS=1
+tests/test_ai_plan_checklist.py WS=2
+tests/test_ai_project_memory.py WS=1
+tests/test_ai_prompt_popup_contracts.py WD=1
+tests/test_ai_queue.py WD=2
+tests/test_ai_read_scope.py WS=8
+tests/test_ai_review_box_contracts.py WS=1
+tests/test_ai_runtime.py WD=6 WS=26
+tests/test_ai_slash.py WS=1
+tests/test_ai_tls.py WS=2
+tests/test_ai_tool_children.py WD=1 WF=3 WS=14
+tests/test_ai_tool_feedback.py WS=1
+tests/test_ai_workspace_links.py WS=3
+tests/test_ai_workspace_protected.py WS=3
+tests/test_algol68.py WS=1
+tests/test_autosave_copy.py WS=4
+tests/test_block.py WS=3
+tests/test_block_asan.py WS=3
+tests/test_bsp_start.py WS=2
+tests/test_buffer_owner.py WS=9
+tests/test_child_ends.py WE=3 WF=2 WS=8
+tests/test_child_signals.py WF=1 WS=4
+tests/test_child_writes.py WF=1 WS=2
+tests/test_clangd_blanklines.py WS=2
+tests/test_clangd_lsp.py WS=13
+tests/test_compile.py WS=3
+tests/test_compile_and_messages.py WS=4
+tests/test_crash_file.py WS=2
+tests/test_debug_prefix_after_end.py WS=2
+tests/test_debugger_chain_outcome.py WD=1 WF=1
+tests/test_debugger_dies_with_editor.py WD=1 WF=1 WS=3
+tests/test_debugger_ends.py WF=1 WS=5
+tests/test_debugger_integration.py WD=9 WE=2 WF=49 WS=12
+tests/test_debugger_watchdog.py WE=2 WS=12
+tests/test_describe_children.py WS=3
+tests/test_empty_desktop.py WS=3
+tests/test_error_patterns.py WS=1
+tests/test_esc_key.py WS=3
+tests/test_file_manager_copy.py WS=25
+tests/test_file_manager_folder.py WS=23
+tests/test_file_manager_layout.py WS=2
+tests/test_find_regex_owner.py WS=2
+tests/test_ga68.py WS=2
+tests/test_ga68_debug.py WS=3
+tests/test_go_dap.py WS=5
+tests/test_gopls_lsp.py WS=4
+tests/test_gui_owner.py WS=13
+tests/test_gui_owner_log.py WF=4
+tests/test_help_info.py WS=3
+tests/test_input_eof.py WS=5
+tests/test_keymap_terminal.py WF=1 WS=3
+tests/test_keys_modified.py WS=11
+tests/test_legacy_debuggers.py WD=2 WS=2
+tests/test_line_endings.py WS=3
+tests/test_lsp_menu.py WS=3
+tests/test_lsp_on_the_loop.py WS=2
+tests/test_lsp_positions.py WS=2
+tests/test_macos_platform.py WF=1 WS=3
+tests/test_macos_smoke.py WS=10
+tests/test_maxcol_paste.py WS=3
+tests/test_menu_debug.py WS=5
+tests/test_menu_file.py WS=1
+tests/test_menu_project.py WS=1
+tests/test_menu_run.py WS=3
+tests/test_menu_status_bar.py WS=4
+tests/test_modern_keys.py WE=1 WS=2
+tests/test_mouse_sgr_raw.py WS=1
+tests/test_mouse_tracking.py WS=3
+tests/test_opt_dialog_place.py WD=1
+tests/test_other_child_signals.py WF=2 WS=2
+tests/test_overwrite_question.py WS=9
+tests/test_popup_close_button.py WS=5
+tests/test_position_writers.py WS=3
+tests/test_private_modes.py WE=1 WS=4
+tests/test_procinfo.py WF=3 WS=6
+tests/test_program_name.py WS=7
+tests/test_project_persist.py WS=3
+tests/test_project_windows.py WE=1 WS=4
+tests/test_python_lsp.py WS=4
+tests/test_readonly_marker.py WS=3
+tests/test_run_ends.py WF=1 WS=4
+tests/test_run_kind.py WS=1
+tests/test_rust_dap.py WS=1
+tests/test_rust_lsp.py WS=2
+tests/test_save_identity.py WS=9
+tests/test_scala_dap.py WS=6
+tests/test_scala_lsp.py WS=1
+tests/test_scala_lsp_complete.py WS=1
+tests/test_scala_lsp_format.py WS=1
+tests/test_screen_owner.py WF=3 WS=2
+tests/test_screen_owner_boxes.py WD=1 WS=4
+tests/test_screen_owner_callbacks.py WD=1 WF=2 WS=2
+tests/test_scrollbar_glyphs.py WS=1
+tests/test_short_commands.py WE=2 WF=3 WS=6
+tests/test_signal_save.py WE=1 WF=2 WS=11
+tests/test_startcmd.py WS=3
+tests/test_startplan.py WS=5
+tests/test_startplan_debug.py WS=3
+tests/test_syntax_algol68.py WS=1
+tests/test_terminal_modes.py WS=2
+tests/test_terminal_owner.py WE=5 WS=4
+tests/test_truecolor_console.py WS=3
+tests/test_user_screen.py WS=3
+tests/test_utf8_border.py WS=5
+tests/test_wait_owner.py WD=4 WS=1
+tests/test_window_close_button.py WS=3
+tests/test_window_closed.py WD=2 WS=3
+tests/test_window_menu.py WS=3
+tests/test_window_views.py WS=3
+tests/test_write_owner.py WS=6
+tests/wayland/conftest.py WS=9
+tests/wayland/test_ai_resize.py WS=3
+tests/wayland/test_clipboard.py WS=11
+tests/wayland/test_debug_focus_trace.py WS=2
+tests/wayland/test_display_lost.py WD=1 WS=13
+tests/wayland/test_mouse_scroll.py WS=4
+tests/wayland/test_resize.py WS=4
+tests/wayland/test_resize_mouse.py WS=2
+tests/wayland/test_surface_bound.py WE=1 WS=6
+tests/x11/conftest.py WS=1
+tests/x11/test_ai_options.py WS=3
+tests/x11/test_ai_resize.py WS=3
+tests/x11/test_breakpoint_hollow.py WF=1 WS=2
+tests/x11/test_child_exec.py WS=2
+tests/x11/test_clipboard.py WS=11
+tests/x11/test_close_save_fails.py WS=3
+tests/x11/test_dap_answer_wait.py WS=2
+tests/x11/test_debug_answer_wait.py WS=2
+tests/x11/test_debug_no_ctty.py WF=1 WS=2
+tests/x11/test_debug_prefix_after_end.py WS=2
+tests/x11/test_debugger_chain_outcome.py WD=1 WS=2
+tests/x11/test_debugger_command_length.py WS=2
+tests/x11/test_debugger_ends.py WS=3
+tests/x11/test_display_lost.py WD=1 WS=13
+tests/x11/test_expose.py WS=2
+tests/x11/test_file_manager_close.py WS=1
+tests/x11/test_file_manager_folder.py WS=6
+tests/x11/test_font_query.py WF=1 WS=3
+tests/x11/test_keymap.py WS=2
+tests/x11/test_legacy_debuggers.py WS=2
+tests/x11/test_lsp_positions.py WS=6
+tests/x11/test_menu_debug.py WF=3 WS=4
+tests/x11/test_menu_file.py WS=3
+tests/x11/test_menu_project.py WS=1
+tests/x11/test_menu_run.py WS=4
+tests/x11/test_menu_status_bar.py WS=2
+tests/x11/test_mouse_menu.py WS=1
+tests/x11/test_mouse_scroll.py WS=4
+tests/x11/test_palette_display.py WS=2
+tests/x11/test_popup_close_button.py WS=1
+tests/x11/test_program_name.py WS=2
+tests/x11/test_resize.py WS=4
+tests/x11/test_run_typing.py WS=2
+tests/x11/test_screen_owner.py WF=2 WS=2
+tests/x11/test_screen_owner_callbacks.py WF=1 WS=2
+tests/x11/test_short_command_cancel.py WE=1 WF=2 WS=2
+tests/x11/test_short_command_repaint.py WF=1 WS=3
+tests/x11/test_signal_save.py WE=1
+tests/x11/test_startcmd.py WS=2
+tests/x11/test_startplan_debug.py WS=2
+tests/x11/test_startplan_run.py WS=2
+tests/x11/test_syntax_algol68.py WS=1
+tests/x11/test_terminal_owner.py WE=1 WS=1
+tests/x11/test_user_screen.py WS=8
+tests/x11/test_window_zoom_redraw.py WS=13
+tests/x11/test_write_owner.py WS=1

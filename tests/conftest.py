@@ -11,6 +11,7 @@ test_keys_session.py).
 """
 import json
 import os
+import sys
 
 import pytest
 
@@ -21,7 +22,46 @@ import host_tools
 # pytest finds the hook of a conftest by its name.
 from live_gate import pytest_pycollect_makemodule  # noqa: F401
 
+HARNESS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "harness")
+sys.path.insert(0, HARNESS_DIR)
+try:
+    import suite_plan
+finally:
+    sys.path.pop(0)
+
 os.environ.setdefault("XWPE_KEYS", "borland")
+
+
+_RECORD = []
+
+
+def timing_record():
+    """The record of how long each row took (tests/harness/suite_plan.py),
+    read once per process."""
+    if not _RECORD:
+        _RECORD.append(suite_plan.load_record(suite_plan.default_record_path()))
+    return _RECORD[0]
+
+
+def row_budget_s(nodeid):
+    """The seconds the row clock gives @nodeid: XWPE_ROW_BUDGET_S when the
+    run names one, else a few times the row's recorded time."""
+    fixed = os.environ.get(gui_owner.ROW_BUDGET_VAR)
+    if fixed:
+        return float(fixed)
+    return suite_plan.row_budget_s(timing_record(), nodeid, gui_owner.wait_scale())
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_call(item):
+    """Run the row under its clock: a row that hangs ends as RowOverBudget
+    with its name and budget, and its editor ends through the owner's ladder.
+    Setup and teardown are never cut."""
+    gui_owner.ROW_CLOCK.arm(item.nodeid, row_budget_s(item.nodeid))
+    try:
+        yield
+    finally:
+        gui_owner.ROW_CLOCK.disarm()
 
 
 def make_basetemp_parent(config):
@@ -49,13 +89,21 @@ def pytest_sessionstart(session):
 
 
 def is_known_gap_hidden_failure(report, call):
-    """True when a report reads as a recorded incoherence (an xfail whose
-    reason starts with INCOHERENCE_PREFIX) but what failed was the test
-    owner (a timeout, a crash, a leak): that is never the known gap."""
+    """True when a report reads as a known gap (an xfail) but what failed was
+    the test owner or the row clock: that is never the known gap.
+
+    A recorded incoherence (an xfail whose reason starts with
+    INCOHERENCE_PREFIX) hides nothing the owner found (a timeout, a crash, a
+    leak).  Any xfail hides nothing of a row the clock cut: a hung row is
+    never a recorded gap."""
     reason = getattr(report, "wasxfail", None)
+    if reason is None or call.excinfo is None:
+        return False
+    if isinstance(call.excinfo.value, gui_owner.RowOverBudget):
+        return True
     if not isinstance(reason, str) or not reason.startswith(gui_owner.INCOHERENCE_PREFIX):
         return False
-    return call.excinfo is not None and isinstance(call.excinfo.value, gui_owner.OwnerFailure)
+    return isinstance(call.excinfo.value, gui_owner.OwnerFailure)
 
 
 @pytest.hookimpl(hookwrapper=True, tryfirst=True)
@@ -73,6 +121,26 @@ def pytest_runtest_makereport(item, call):
         report.outcome = "failed"
         report.longrepr = item.repr_failure(call.excinfo)
         del report.wasxfail
+        tell_rerunfailures_the_row_failed(item, report, call)
+
+
+def tell_rerunfailures_the_row_failed(item, report, call):
+    """Make the rerun plugin judge the corrected report, not the xfail it read.
+
+    The plugin's own makereport wrapper sits inside this one: it reads the
+    report while it still says "xfailed", records that no failure of the row
+    is one to stop at (--rerun-except), and so a row the clock cut would be
+    run twice more.  Its two records are put right here, from the report as
+    corrected, so --rerun-except RowOverBudget ends the row at the cut.  The
+    plugin is pinned (tests/ci-versions.txt); without it nothing is to be told."""
+    terminal = getattr(item, "_terminal_errors", None)
+    xfailed = getattr(item, "_test_xfailed", None)
+    if terminal is None or xfailed is None:
+        return
+    import pytest_rerunfailures
+    terminal[report.when] = pytest_rerunfailures._should_hard_fail_on_error(
+        item, report, call.excinfo)
+    xfailed[report.when] = False
 
 
 def pytest_configure(config):

@@ -31,7 +31,6 @@ display_name(), never by a constant.
 """
 import os
 import pty
-import shutil
 import subprocess
 import sys
 import time
@@ -53,24 +52,21 @@ from gui_owner import PreviousRowLeft  # noqa: E402,F401  (rows import it from h
 # xwdtopnm on macOS (XQuartz ships no matchbox; IM7 dropped the legacy `convert`
 # binary and its XWD codec).  Probe what's installed and pick the first chain
 # that works; the suite skips with a precise reason if nothing matches.
-_WM_BIN = next((b for b in ("matchbox-window-manager", "twm")
-                if shutil.which(b)), None)
+_WM_BIN = host_tools.first_usable(("matchbox-window-manager", "twm"))
 # Prefer `magick` when both are present: ImageMagick 7 keeps a `convert` shim
 # but its XWD decode delegate is gone, so `convert xwd:-` errors out -- only
 # `magick` (via xwdtopnm) decodes XWD on IM7.  IM6 ships `convert` only and
 # decodes XWD directly.
-_CONV_BIN = next((b for b in ("magick", "convert") if shutil.which(b)), None)
-_XWDTOPNM = shutil.which("xwdtopnm")  # needed only when convert is absent
+_CONV_BIN = host_tools.first_usable(("magick", "convert"))
 
 REQUIRED_BINS = ["Xvfb", "xdotool", "xwd"]
-_MISSING = [b for b in REQUIRED_BINS if shutil.which(b) is None]
-if _WM_BIN is None:
-    _MISSING.append("matchbox-window-manager|twm")
-if _CONV_BIN is None:
-    _MISSING.append("convert|magick")
+LAYER_TOOLS = REQUIRED_BINS + ["matchbox-window-manager|twm", "convert|magick"]
 # IM7's `magick` cannot read xwd directly; needs xwdtopnm as a bridge.
-if _CONV_BIN == "magick" and _XWDTOPNM is None:
-    _MISSING.append("xwdtopnm (netpbm)")
+if _CONV_BIN != "convert":
+    LAYER_TOOLS.append("xwdtopnm")
+# The tools the layer cannot use, each with its reason (the machine has none,
+# the tool farm does not give it, it does not run).
+_MISSING = host_tools.layer_unmet("X11 GUI layer", LAYER_TOOLS)
 
 # A module-level `pytestmark` set in a conftest does NOT propagate to the
 # sibling test modules, so an earlier skipif here never actually engaged: the

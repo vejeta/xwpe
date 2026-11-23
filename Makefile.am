@@ -1660,6 +1660,13 @@ EXTRA_DIST = \
   tests/check-ci-tools.sh \
   tests/check_ci_tools.py \
   tests/ci-tools.txt \
+  tests/ci-install.sh \
+  tests/ci-venv.sh \
+  tests/ci-shard.sh \
+  tests/program_gate.py \
+  tests/test-waits.allow \
+  tests/harness/suite_plan.py \
+  tests/harness/suite-timings.json \
   tests/test-real-tools.allow \
   tests/engine_guard.py \
   tests/live_gate.py \

@@ -383,10 +383,15 @@ def wait_screen(session, needle, tmo=12):
     """
     def needle_is_shown():
         return needle in "\n".join(session.display(drain=0))
-    return wait_until(session, needle_is_shown, tmo)
+    return wait_until(session, needle_is_shown, tmo, what="%r on the screen" % needle)
 
 
-def wait_until(session, ready, tmo=12):
+# One look at the screen: how long wait_until reads before it asks again.
+# Not scaled: the scale stretches the ceiling of a wait, never the grain.
+TURN_S = 0.4
+
+
+def wait_until(session, ready, tmo=12, what="the awaited state"):
     """Drain the editor, one turn of 0.4 s at a time, until ``ready()`` is
     true; False when ``tmo`` seconds (stretched by the wait scale) run out.
 
@@ -395,8 +400,10 @@ def wait_until(session, ready, tmo=12):
     The row writes only what "ready" means; how long it waits is decided
     here, with wait_screen's."""
     end = wait_deadline(tmo)
+    gui_owner.ROW_CLOCK.note_wait(what)
     while time.time() < end:
-        session._drain(0.4)
+        gui_owner.ROW_CLOCK.check()
+        session._read_for(TURN_S, SETTLE_S * WAIT_SCALE)
         if ready():
             return True
     return False
@@ -515,6 +522,18 @@ def pane_frame(disp, name=PANE_NAME):
     x0 = title.rfind(FRAME_TOP_LEFT, 0, at)
     x1 = title.index(FRAME_TOP_RIGHT, at)
     return y, x0, x1
+
+
+def pane_frame_drawn(disp, name=PANE_NAME):
+    """True once the pane ``name`` is open and its title row is drawn to the
+    right corner.  A row that reads the pane (pane_frame, pane_rows,
+    pane_text_with_history) right after a wait for some text in it can catch
+    the frame half painted, with no right corner yet; waiting for this first
+    reads it whole."""
+    y = title_row(disp, name)
+    if y < 0:
+        return False
+    return FRAME_TOP_RIGHT in disp[y][disp[y].index(" %s " % name):]
 
 
 def pane_rows(disp, name=PANE_NAME):
@@ -1043,12 +1062,22 @@ class WpeSession(procinfo.ChildAsker):
         With SETTLE_S set, return early once output has arrived and the
         editor has then been silent for SETTLE_S: the screen has settled.
         """
-        deadline = time.time() + timeout * WAIT_SCALE
         # A slower machine pauses longer between two paints, so the quiet
         # window stretches with the same factor as every other wait.
-        settle = SETTLE_S * WAIT_SCALE
+        self._read_for(timeout * WAIT_SCALE, SETTLE_S * WAIT_SCALE)
+
+    def _read_for(self, seconds, settle):
+        """Read what the editor writes for @seconds, as they are (no scale),
+        returning early once output has arrived and @settle seconds of quiet
+        have followed.
+
+        The scale is for ceilings.  The grain of looking (TURN_S in
+        wait_until) is read through here unscaled, so that a state shown for
+        a second is not missed between two looks on a slow machine."""
+        deadline = time.time() + seconds
         last_output = None
         while time.time() < deadline:
+            gui_owner.ROW_CLOCK.check()
             poll = DRAIN_POLL_S
             if settle and last_output is not None:
                 quiet_left = last_output + settle - time.time()
@@ -1256,6 +1285,21 @@ class WpeSession(procinfo.ChildAsker):
         """True while wpe is still running healthily."""
         return self.proc.poll() is None
 
+    def ended_within(self, tmo, what="the editor to end"):
+        """Wait for the editor to end, up to @tmo seconds (stretched by the
+        wait scale), and return its exit code.  A row that asserts the editor
+        closed after a key reads this and not alive(): one read right after
+        the key sees the editor still on its way out on a loaded machine.
+        The failure names what was waited for and the scale."""
+        end = wait_deadline(tmo)
+        while self.proc.poll() is None:
+            if time.time() >= end:
+                raise gui_owner.OwnerTimeout(
+                    "waited %.1f s (scale %.1f) for %s; the editor is still running"
+                    % (tmo * WAIT_SCALE, WAIT_SCALE, what))
+            self._read_for(TURN_S, SETTLE_S * WAIT_SCALE)
+        return self.proc.returncode
+
     def process_report(self):
         """What to add to the message of a check that looked for a child of
         the editor and did not find it: the processes below the editor as
@@ -1330,3 +1374,10 @@ class WpeSession(procinfo.ChildAsker):
         while (procinfo.processes_running(jvm, self.workdir)
                and time.time() < deadline):
             time.sleep(SERVER_PROGRAM_POLL_S)
+
+
+# The row clock (gui_owner.ROW_CLOCK) never cuts a row while its editor is
+# being started or ended: a cut half way would leave the editor to the sweep
+# instead of ending it whole.
+gui_owner.ROW_CLOCK.defer_in(WpeSession.__init__.__code__)
+gui_owner.ROW_CLOCK.defer_in(WpeSession.close.__code__)

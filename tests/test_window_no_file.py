@@ -12,7 +12,6 @@ Run: WPE_BIN=$PWD/wpe tests/.venv/bin/python -m pytest -q tests/test_window_no_f
 import os
 import signal
 import subprocess
-import time
 
 import pytest
 
@@ -160,10 +159,7 @@ def test_a_terminated_session_leaves_no_emergency_copy_of_the_composer(tmp_path)
     with _session(tmp_path) as w:
         _open_composer(w)
         os.kill(w.proc.pid, signal.SIGTERM)
-        end = time.time() + EXIT_DEADLINE_S
-        while time.time() < end and w.proc.poll() is None:
-            w._drain(0.1)
-        assert w.proc.poll() is not None, "wpe still running after SIGTERM"
+        w.ended_within(EXIT_DEADLINE_S, what="the editor to end after SIGTERM")
     assert _files_named_after_the_title(tmp_path) == []
     assert not [n for n in os.listdir(str(tmp_path)) if n.endswith(".ESV") and "AI" in n]
 

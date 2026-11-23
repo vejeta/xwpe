@@ -26,7 +26,7 @@ import time
 import pytest
 from host_tools import needs
 from wpe_driver import WpeSession, ALT, WAIT_SCALE, WPE_BIN, assistant_build, wait_screen, \
-    pane_text_with_history
+    pane_text_with_history, pane_frame_drawn, wait_until
 
 pytestmark = pytest.mark.skipif(not assistant_build(),
                                 reason="wpe built without --enable-ai")
@@ -360,6 +360,13 @@ def test_the_header_says_uncontained_and_the_line_is_said_once(tmp_path):
         _run_agent(s, "first task")
         assert wait_screen(s, "[agent] task: first task", 8), \
             "the run never started:\n" + "\n".join(s.display())
+        # The notice paints over the header's row for a moment: read the
+        # screen once the header says UNCONTAINED and the notice is shown.
+        assert wait_until(s, lambda: any("| UNCONTAINED]" in r for r in s.display(drain=0))
+                          and any("[AI] containment on this system" in r
+                                  for r in s.display(drain=0)), 8,
+                          what="the header and the containment notice"), \
+            "the header never settled:\n" + "\n".join(s.display())
         rows = s.display()
         header = next(i for i, r in enumerate(rows) if "[AI: mock" in r)
         notice = next(i for i, r in enumerate(rows) if "[AI] containment on this system" in r)
@@ -372,6 +379,11 @@ def test_the_header_says_uncontained_and_the_line_is_said_once(tmp_path):
         header_cell = s.screen.buffer[header][rows[header].index("[AI:")]
         assert (notice_cell.fg, notice_cell.bg) != (header_cell.fg, header_cell.bg), \
             "the notice is not in the error colour"
+        # The frame is read whole: the notice is on screen before the title
+        # row is painted to its right corner.
+        assert wait_until(s, lambda: pane_frame_drawn(s.display(drain=0)), 8,
+                          what="the pane's frame to be drawn to its right corner"), \
+            "the pane's frame was never drawn whole:\n" + "\n".join(s.display())
         text = "\n".join(pane_text_with_history(
             s, ["containment on this system", "fs=none", "net=uncontrolled",
                 "NOT held", "files you can read"]))

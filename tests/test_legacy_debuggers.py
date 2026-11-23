@@ -34,9 +34,10 @@ import time
 
 import pytest
 
+import gui_owner
 import procinfo
 from host_tools import require
-from wpe_driver import WpeSession, ALT, WAIT_SCALE
+from wpe_driver import WpeSession, ALT, WAIT_SCALE, wait_until
 
 CTRL_G = "\x07"         # debugger command prefix
 DOWN = "\033OB"
@@ -202,13 +203,10 @@ def _sent(tmp_path, backend):
 
 
 def _wait_for(w, predicate, timeout):
-    """Drain the editor until predicate() holds or the scaled timeout ends."""
-    deadline = time.time() + timeout * WAIT_SCALE
-    while time.time() < deadline:
-        w._drain(POLL_S)
-        if predicate():
-            return True
-    return predicate()
+    """Drain the editor until predicate() holds or the scaled timeout ends.
+    The wait is the driver's (wait_until): its look is one unscaled turn, so
+    a line the editor shows for a second is seen at any wait scale."""
+    return wait_until(w, predicate, timeout) or predicate()
 
 
 def _screen(w):
@@ -973,7 +971,8 @@ ANSWER_ENDS = {
     "esc": {"key": ESC, "env": None, "within": False},
     "ctrl_c": {"key": CTRL_C, "env": None, "within": False},
     "deadline": {"key": None,
-                 "env": {"XWPE_DEBUG_ANSWER_TIMEOUT": str(ANSWER_TIMEOUT_S)},
+                 "env": {"XWPE_DEBUG_ANSWER_TIMEOUT": gui_owner.product_duration(
+                     "XWPE_DEBUG_ANSWER_TIMEOUT", ANSWER_TIMEOUT_S)},
                  "within": True},
 }
 

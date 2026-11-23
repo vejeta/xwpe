@@ -217,6 +217,17 @@ class OwnerFailure(AssertionError):
     behind a recorded gap)."""
 
 
+class RowOverBudget(BaseException):
+    """A row ran past the budget its clock gave it and was ended.
+
+    It is a BaseException on purpose, and not an OwnerFailure: a row that
+    waits in a loop with `try: ... except Exception: pass` or `except
+    AssertionError` would swallow an AssertionError and go on, and a row that
+    hangs would pass.  Nothing a row writes in the ordinary way can catch
+    this one, so it always ends the row, and the conftest (tests/conftest.py)
+    reads it as a failure even in a row marked as a known gap."""
+
+
 class OwnerTimeout(OwnerFailure):
     """A named event did not happen within its scaled deadline."""
 
@@ -401,7 +412,9 @@ def wait_for(event_fn, what, timeout, poll=DEFAULT_POLL_S, state_fn=None):
     scale = wait_scale()
     deadline_s = timeout * scale
     start = time.monotonic()
+    ROW_CLOCK.note_wait(what)
     while True:
+        ROW_CLOCK.check()
         value = event_fn()
         if value:
             return value
@@ -410,6 +423,230 @@ def wait_for(event_fn, what, timeout, poll=DEFAULT_POLL_S, state_fn=None):
         time.sleep(poll)
     state = state_fn() if state_fn is not None else repr(value)
     raise OwnerTimeout(_timeout_message(deadline_s, scale, what, state))
+
+
+# ---------------------------------------------------------------------------
+# The row clock
+
+
+# How soon a budget that ran out inside a section of the owner is tried
+# again, in seconds.
+ROW_RETRY_S = 0.2
+# The name of the variable that sets one budget, in seconds and not
+# stretched, for every row of a run (a user who wants a tighter limit, the
+# rows that prove the clock).
+ROW_BUDGET_VAR = "XWPE_ROW_BUDGET_S"
+
+
+class RowClock:
+    """The budget of the running row: a hung row ends with its name and its
+    budget, and the editor it held is ended whole.
+
+    A user who runs the suite gets a row that waits forever cut after a few
+    times what it normally takes, instead of a job that is cut after hours
+    with no log.  The clock is a one-shot real-time timer armed for the call
+    phase of one row.  When it runs out the handler raises RowOverBudget in
+    the row, unless the row is inside a section of the owner that must not
+    be cut: any frame of this file on the stack (a launch between the
+    process and the ledger, the end ladder, the sweep, the farm's charge) or
+    a code object registered with defer_in (the driver's session start and
+    close).  Then the expiry is only noted and tried again after ROW_RETRY_S;
+    the owner's own waits (wait_for, and the driver's wait_until and drain)
+    call check() at each turn and raise a noted expiry, so a row that hangs
+    inside a wait is still cut."""
+
+    def __init__(self):
+        self.row = ""
+        self.budget_s = 0.0
+        self.armed = False
+        self.pending = False
+        self.last_wait = ""
+        self._previous = None
+        self._deferring = set()
+        self._own_file = None
+
+    def own_file(self, filename):
+        """Name the file whose frames never take an expiry (the owner's)."""
+        self._own_file = filename
+
+    def defer_in(self, code):
+        """Never cut a row inside a call of the function with this code."""
+        self._deferring.add(code)
+
+    def note_wait(self, what):
+        """Remember what the row waits for, for the message of a cut."""
+        self.last_wait = what
+
+    def arm(self, row, budget_s):
+        """Start the clock of @row for @budget_s seconds.  Only the main
+        thread can take a signal, and only there rows run; elsewhere the row
+        has no clock."""
+        if threading.current_thread() is not threading.main_thread():
+            return
+        self.row, self.budget_s, self.pending = row, budget_s, False
+        self.last_wait = ""
+        self._previous = signal.signal(signal.SIGALRM, self._on_alarm)
+        signal.setitimer(signal.ITIMER_REAL, budget_s)
+        self.armed = True
+
+    def disarm(self):
+        """Stop the clock and give the signal back as it was found."""
+        if not self.armed:
+            return
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, self._previous)
+        self.armed = False
+        self.pending = False
+
+    def check(self):
+        """Raise a noted expiry; called by the waits that are safe points.
+        It raises unless a section the owner must finish is still open above
+        the caller."""
+        if not self.pending:
+            return
+        caller = sys._getframe(1)
+        if not self._holds_a_section(caller, caller.f_code):
+            self._expire()
+
+    def _holds_a_section(self, frame, skip):
+        """True when a frame of the owner's file, or of a registered
+        function, other than the code @skip, is on the stack from @frame."""
+        while frame is not None:
+            code = frame.f_code
+            if code is not skip and (code in self._deferring
+                                     or code.co_filename == self._own_file):
+                return True
+            frame = frame.f_back
+        return False
+
+    def _on_alarm(self, _signum, frame):
+        """The timer ran out: cut the row, or note it and try again."""
+        self.pending = True
+        if self._holds_a_section(frame, None):
+            signal.setitimer(signal.ITIMER_REAL, ROW_RETRY_S)
+            return
+        self._expire()
+
+    def _expire(self):
+        """End the row with RowOverBudget, naming it and what it waited for."""
+        self.pending = False
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        waited = self.last_wait or "nothing the owner knows of"
+        raise RowOverBudget(
+            "RowOverBudget: %s ran past its budget of %.1f s (scale %.1f); "
+            "last wait: %s" % (self.row, self.budget_s, wait_scale(), waited))
+
+
+ROW_CLOCK = RowClock()
+ROW_CLOCK.own_file(wait_for.__code__.co_filename)
+
+
+# ---------------------------------------------------------------------------
+# Durations a row hands the product, and the clock of files and elapsed time
+
+
+# The suffix of a name decides its unit: the editor reads *_MS in
+# milliseconds and every other duration in whole seconds.
+PRODUCT_MS_SUFFIX = "_MS"
+PRODUCT_NAME_SUFFIXES = ("TIMEOUT", "_MS", "_S")
+# The option names of xwperc that hold a duration, read from we_opt.c.
+PRODUCT_OPTION_SUFFIX = "Timeout"
+_PRODUCT_NAMES = {}
+
+
+def _scan_names(files, pattern):
+    """The distinct names @pattern finds in the text of @files."""
+    found = set()
+    for path in files:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            found.update(re.findall(pattern, fh.read()))
+    return found
+
+
+def product_duration_names():
+    """{name: maximum or None}: every environment variable of the editor and
+    of the debugger stand-ins that holds a duration, read from the sources
+    and not listed by hand (a new one is picked up when it is added).
+
+    The C names are the quoted XWPE_ strings of the *.c and *.h files that
+    end in TIMEOUT, _MS or _S; the stand-ins' are the XWPE_STUB_ names of
+    tests/stubs that end in _S or _MS.  The editor's own maximum is read where
+    the C defines one (E_D_REQ_TIMEOUT_MAX_S)."""
+    if _PRODUCT_NAMES:
+        return _PRODUCT_NAMES
+    sources = [os.path.join(TOP, n) for n in sorted(os.listdir(TOP))
+               if n.endswith((".c", ".h"))]
+    stubs = []
+    for folder, _dirs, files in os.walk(os.path.join(HERE, "stubs")):
+        stubs.extend(os.path.join(folder, n) for n in files)
+    names = _scan_names(sources, r'"(XWPE_[A-Z0-9_]+)"') | _scan_names(
+        stubs, r"\b(XWPE_STUB_[A-Z0-9_]+)\b")
+    for name in names:
+        if name.endswith(PRODUCT_NAME_SUFFIXES):
+            _PRODUCT_NAMES[name] = None
+    with open(os.path.join(TOP, "we_debreq.h"), encoding="utf-8") as fh:
+        text = fh.read()
+    limit = re.search(r"E_D_REQ_TIMEOUT_MAX_S\s+(\d+)", text)
+    if limit and "XWPE_DEBUG_ANSWER_TIMEOUT" in _PRODUCT_NAMES:
+        _PRODUCT_NAMES["XWPE_DEBUG_ANSWER_TIMEOUT"] = int(limit.group(1))
+    return _PRODUCT_NAMES
+
+
+def product_duration(name, amount):
+    """The text of an environment variable that hands the editor a duration,
+    stretched by the wait scale.
+
+    A row that tells the product to wait or give up after N seconds means N
+    seconds of a machine at scale 1: the same ceiling on a slow runner would
+    end the wait the row is looking at.  The unit comes from the name's
+    suffix: seconds are rounded up (the editor reads whole digits only),
+    milliseconds are rounded.  A name that is not a duration of the product
+    is refused, and so is a value above the product's own maximum, so that
+    the editor never clamps one in silence.  @amount is in the unit of the
+    name, before the scale."""
+    known = product_duration_names()
+    if name not in known:
+        raise ValueError("%s is not a duration the product reads: %s"
+                         % (name, ", ".join(sorted(known))))
+    value = scaled(amount)
+    if name.endswith(PRODUCT_MS_SUFFIX):
+        text = int(round(value))
+    else:
+        text = int(-(-value // 1))
+    if known[name] is not None and text > known[name]:
+        raise ValueError("%s=%d is above the product's maximum %d"
+                         % (name, text, known[name]))
+    return str(text)
+
+
+def product_option_line(name, amount):
+    """The xwperc line `<name> : <seconds>` for an option that holds a
+    duration (AIToolTimeout, AIAnswerTimeout), stretched by the wait scale
+    and rounded up to whole seconds, with its newline."""
+    if not name.endswith(PRODUCT_OPTION_SUFFIX):
+        raise ValueError("%s is not a duration option (its name ends in %s)"
+                         % (name, PRODUCT_OPTION_SUFFIX))
+    return "%s : %d\n" % (name, int(-(-scaled(amount) // 1)))
+
+
+def elapsed_within(start, bound_s, what="the operation"):
+    """Assert that the time since @start (a time.monotonic() reading) is
+    within @bound_s seconds stretched by the wait scale.  The failure names
+    what was measured, the time, the bound and the scale: the bound of a row
+    that measures a time is a ceiling and scales like any other."""
+    took = time.monotonic() - start
+    limit = scaled(bound_s)
+    if took > limit:
+        raise OwnerTimeout("%s took %.1f s, over %.1f s (%.1f s at scale %.1f)"
+                           % (what, took, limit, bound_s, wait_scale()))
+    return took
+
+
+def file_time_from(path, offset_s=0.0):
+    """A time @offset_s seconds after the modification time of @path, for a
+    row that sets a file's time (os.utime) relative to another file's own
+    clock and not to the machine's, so a slow machine cannot reorder them."""
+    return os.stat(path).st_mtime + offset_s
 
 
 # ---------------------------------------------------------------------------

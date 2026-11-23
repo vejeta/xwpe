@@ -187,3 +187,46 @@ def test_no_row_decides_on_its_own_whether_a_tool_is_usable():
                 if guard.search(fh.read()):
                     offenders.append(os.path.relpath(path, HERE))
     assert not offenders, "decide a skip with needs(): %s" % ", ".join(sorted(offenders))
+
+
+LAYER_CONFTESTS = ("x11", "wayland", "console")
+
+
+def which_calls_in(path):
+    """The line numbers of every call of a function called `which`, on any
+    receiver (shutil.which, a bare which), outside strings and comments."""
+    import ast
+    with open(path, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read(), filename=path)
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+            if name == "which":
+                found.append(node.lineno)
+    return sorted(found)
+
+
+# @scenario SC-platform-host-tools-03
+def test_no_layer_conftest_asks_shutil_which_it_asks_layer_unmet():
+    """The three layer gates decide whether their tools are usable in one
+    place (host_tools.layer_unmet, first_usable, layer_reason): a `which` of
+    their own finds a program the tool farm denies, and the layer then runs
+    and errors every row at setup."""
+    offenders = []
+    for layer in LAYER_CONFTESTS:
+        path = os.path.join(HERE, layer, "conftest.py")
+        for line in which_calls_in(path):
+            offenders.append("tests/%s/conftest.py:%d" % (layer, line))
+    assert not offenders, "ask host_tools.layer_unmet: %s" % ", ".join(offenders)
+
+
+def test_the_scan_for_which_calls_sees_each_spelling(tmp_path):
+    """A canary for the rule above: both spellings are found, a string and a
+    comment are not."""
+    source = tmp_path / "conftest.py"
+    source.write_text("import shutil\nfrom shutil import which\n"
+                      "a = shutil.which('x')\nb = which('y')\n"
+                      "c = 'shutil.which(z)'  # which(w)\n")
+    assert which_calls_in(str(source)) == [3, 4]

@@ -15,63 +15,78 @@
 # All three front-ends share one SCREENCELL/editor core, so running the same
 # operations under each catches a divergence in any single backend.
 #
-# Versions: the runner, the actions and pyte are named in tests/ci-versions.txt
-# and checked by tests/check-ci-versions.sh.  ubuntu-26.04 is the newest image
-# (GitHub calls it a public preview; ubuntu-latest is still 24.04).  The first
-# run on a new image compares its passed and skipped counts with the last run
-# on the old one: a rise in skips is a finding, not a green.
+# One run, several jobs (one run at a time stays true):
+#   build  builds the program once, runs `make check` and the C units under
+#          the sanitizers, collects the rows the suite selects, plans which
+#          rows run in which job from the recorded time of each row
+#          (tests/harness/suite_plan.py) and fails the run in minutes when the
+#          suite no longer fits;
+#   pyte   one job per shard of the plan: a shard runs its node ids and is cut
+#          by `timeout -s INT` (100 min) inside its step (110 min) inside its
+#          job (130 min), so GitHub's six-hour limit never ends a job and a cut
+#          keeps its junit, its status and its trace;
+#   gui    the X11 suite and the native Wayland gates and suite;
+#   gate   reads every shard's junit and status, judges each capability, and
+#          records the time of each row for the next run's plan.
+#
+# Versions: the runner, the actions, pyte and pytest are named in
+# tests/ci-versions.txt and checked by tests/check-ci-versions.sh.  ubuntu-26.04
+# is the newest image (GitHub calls it a public preview; ubuntu-latest is still
+# 24.04).  The first run on a new image compares its passed and skipped counts
+# with the last run on the old one: a rise in skips is a finding, not a green.
 
 name: Linux (manual)
 
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+env:
+  DEBIAN_FRONTEND: noninteractive
+  # The runner exports XDG_CONFIG_HOME.  The editor reads it before HOME,
+  # so every test session would share one xwperc, one key file and one
+  # session store across workers and reruns, and fail on what an earlier
+  # test saved (the 81 runner-only failures of 2026-10-20).  Empty means
+  # "unset" to the editor: each session falls back under its own HOME.
+  XDG_CONFIG_HOME: ""
+  XDG_STATE_HOME: ""
+  # CI runners are slower and more loaded than a dev box; stretch every
+  # harness settle (keystroke -> screenshot) so timing flakes don't masquerade
+  # as failures -- same knob the Debian autopkgtest uses.
+  XWPE_TEST_WAIT_SCALE: "3"
+  # The host tools every job but x11-core installs (tests/ci-install.sh;
+  # tests/ci-tools.txt keeps the list equal to it by tests/check-ci-tools.sh).
+  # A row that declares one of them and skips is a failure of the image, not a
+  # declared absence, and a display layer whose tool is missing stops the
+  # session.
+  XWPE_TEST_TOOLS_EXPECTED: >-
+    gdb dlv scalac scala ga68 a68g de_DE.UTF-8
+    Xvfb xdotool xwd xlogo xwininfo weston matchbox-window-manager
+    magick xwdtopnm wl-clipboard wl-copy wl-paste
+
 jobs:
-  linux:
-    name: Linux build + GUI test gates
+  build:
+    name: Build, plan and check
     runs-on: ubuntu-26.04
-    env:
-      DEBIAN_FRONTEND: noninteractive
-      # The runner exports XDG_CONFIG_HOME.  The editor reads it before HOME,
-      # so every test session would share one xwperc, one key file and one
-      # session store across workers and reruns, and fail on what an earlier
-      # test saved (the 81 runner-only failures of 2026-10-20).  Empty means
-      # "unset" to the editor: each session falls back under its own HOME.
-      XDG_CONFIG_HOME: ""
-      XDG_STATE_HOME: ""
-      # CI runners are slower and more loaded than a dev box; stretch every
-      # harness settle (keystroke -> screenshot) so timing flakes don't masquerade
-      # as failures -- same knob the Debian autopkgtest uses.
-      XWPE_TEST_WAIT_SCALE: "3"
-      # The host tools this job installs (tests/ci-tools.txt, kept equal to the
-      # apt-get list below by tests/check-ci-tools.sh).  A row that declares one
-      # of them and skips is a failure of the image, not a declared absence,
-      # and a display layer whose tool is missing stops the session.
-      XWPE_TEST_TOOLS_EXPECTED: >-
-        gdb dlv scalac scala ga68 a68g de_DE.UTF-8
-        Xvfb xdotool xwd xlogo xwininfo weston matchbox-window-manager
-        magick xwdtopnm wl-clipboard wl-copy wl-paste
+    # Above the sum of its steps: the two sanitizer steps are cut at 30
+    # minutes each on their own, and the job has to outlive every step's cut
+    # so a step that was cut still reports what it got.
+    timeout-minutes: 105
+    # The newest timing record is looked up in the artifacts of earlier runs
+    # (actions: read); naming a scope turns every other one off, so checkout
+    # needs contents: read named.
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      shards: ${{ steps.plan.outputs.shards }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Install build + GUI-test dependencies
-        # gdb, delve, scala, ga68, algol68g and locales are the debuggers,
-        # compilers and the German locale rows of the harness declare; x11-apps
-        # (xwd, xlogo) and netpbm (xwdtopnm, which ImageMagick 7 needs to read
-        # a screen dump) are what the X11 layer gate needs to run at all.
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential autoconf automake autopoint pkg-config \
-            libncurses-dev ncurses-term libx11-dev libxext-dev libxft-dev \
-            libfontconfig1-dev libcairo2-dev libpango1.0-dev libfreetype-dev \
-            libvterm-dev libjson-c-dev zlib1g-dev libgpm-dev libssl-dev \
-            libwayland-dev wayland-protocols libwayland-bin libxkbcommon-dev \
-            xvfb x11-utils x11-xserver-utils xauth xdotool x11-apps netpbm \
-            matchbox-window-manager imagemagick weston wl-clipboard \
-            gdb delve scala ga68 algol68g locales \
-            python3 python3-pip python3-venv python3-pil
-          sudo locale-gen de_DE.UTF-8
+      - name: Install build, tool and GUI-test dependencies
+        run: sh tests/ci-install.sh
 
       - name: Build (--with-wayland --enable-ai)
         # The assistant is off by default at configure time, so a build without
@@ -119,6 +134,13 @@ jobs:
         # a byte written past a size is a report here and not only a guard
         # byte that changed.  The same step takes any further unit that reads
         # or writes rows of the text.
+        #
+        # Cut like every other long step of this workflow: `timeout -s INT`
+        # (25 min) inside the step (30 min) inside the job, so a row that
+        # hangs under the sanitizers ends the step and the job still reports
+        # what it got, instead of running to GitHub's own limit.  The
+        # interrupt, not a kill, is what lets pytest write what it finished.
+        timeout-minutes: 30
         run: |
           tests/run-tests.sh --asan-units
           # The rows that drive the editor's own formatted texts, run on
@@ -127,16 +149,15 @@ jobs:
           tests/run-tests.sh --asan-build
           python3 -m venv /tmp/asanenv
           /tmp/asanenv/bin/pip install --quiet pyte==0.8.2 pytest pillow
-          ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 XWPE_TEST_WAIT_SCALE=2 \
-            WPE_BIN="$PWD/wpe-asan" /tmp/asanenv/bin/python -m pytest -q \
+          export ASAN_OPTIONS=detect_leaks=0:abort_on_error=1
+          export XWPE_TEST_WAIT_SCALE=2
+          export WPE_BIN="$PWD/wpe-asan"
+          timeout -s INT -k 120 25m /tmp/asanenv/bin/python -m pytest -q \
             tests/test_fmt_sites.py tests/test_ai_formatted_requests.py \
             tests/test_debugger_command_length.py
 
-      - name: Set up a pytest venv + a private XDG_RUNTIME_DIR
-        run: |
-          python3 -m venv /tmp/ptenv
-          /tmp/ptenv/bin/pip install --quiet pyte==0.8.2 pytest pytest-rerunfailures pytest-xdist pillow
-          mkdir -p /tmp/xdg && chmod 700 /tmp/xdg
+      - name: Set up the pytest venv
+        run: sh tests/ci-venv.sh
 
       - name: Reads outside a row (AddressSanitizer)
         # A walk that reads the byte before a row or past its NUL is no failure
@@ -145,7 +166,9 @@ jobs:
         # the unit of the readers and the rows of the walks (Run > Beautify, the
         # syntax colours, the painters of a help page) run under one.  The
         # editor is started as wpe-asan: under the name we the programming
-        # layer is off and the rows would test nothing.
+        # layer is off and the rows would test nothing.  Cut like the step
+        # above: `timeout -s INT` inside the step inside the job.
+        timeout-minutes: 30
         env:
           ASAN_OPTIONS: "detect_leaks=0:abort_on_error=1:allow_user_segv_handler=0"
         run: |
@@ -154,100 +177,157 @@ jobs:
           /tmp/test_rowread-asan
           tests/run-tests.sh --asan-build
           export XWPE_LIB="$PWD"
-          WPE_BIN="$PWD/wpe-asan" XWPE_TEST_WAIT_SCALE=2 /tmp/ptenv/bin/python -m pytest -q \
+          WPE_BIN="$PWD/wpe-asan" XWPE_TEST_WAIT_SCALE=2 timeout -s INT -k 120 25m \
+            /tmp/ptenv/bin/python -m pytest -q \
             tests/test_row_readers.py tests/test_help_paint.py \
             tests/test_help_check.py tests/test_error_search_text.py -n 4
 
-      - name: ncurses UI suite (pyte, pseudo-terminal)
-        # The deterministic key / menu / editing / rendering scenarios; the
-        # toolchain-bound LSP/DAP/compile pipelines are excluded to stay fast.
-        #
-        # NON-BLOCKING by itself: the capability gate below reads this step's
-        # junit, so the scenarios that matter fail the job from there.
-        #
-        # The tests run once, in four workers.  A test spends nearly all its
-        # time waiting for the editor to paint, so workers overlap almost
-        # perfectly; one run of 2026-10-19 took three hours serially and the
-        # gate then ran the mapped tests a second time, which hit the
-        # six-hour job limit.  The junit written here is what the gate reads.
-        # --reruns gives a timing wobble under load two more tries; a real
-        # fault fails all three.
-        #
-        # XWPE_TEST_SETTLE_MS: a key's wait ends once the editor has painted
-        # and stayed silent this long, instead of sleeping the whole delay.
-        # Locally at 250 ms it cut the suite's test time by a third with no
-        # failure and no rerun; the runner is slower, so it gets a wider window.
-        continue-on-error: true
+      - name: Collect the rows and plan the jobs
+        # The rows the suite selects, plus every ncurses row a manifest maps,
+        # are collected once; the plan gives each to a job from the recorded
+        # time of the rows (the newest record of this branch that has not
+        # expired, else the tracked one).  `fit` fails the run here, in
+        # minutes, when the suite no longer fits in the jobs.  The jobs get
+        # node ids and no selection, so a row the selection leaves out and a
+        # manifest maps still runs.
+        id: plan
         env:
-          TERM: "xterm-256color"
-          XWPE_TEST_SETTLE_MS: "400"
+          GH_TOKEN: ${{ github.token }}
         run: |
-          export XWPE_LIB="$PWD"
-          WPE_BIN="$PWD/wpe" /tmp/ptenv/bin/python -m pytest -q tests \
-            --ignore=tests/x11 --ignore=tests/wayland --durations=40 \
-            -n 4 --reruns 2 --reruns-delay 3 -rf \
-            --junitxml="$PWD/suite-junit.xml" \
-            -k "not (_live or clangd or gopls or rust or scala or metals or python_lsp or go_dap or dap or algol68 or ga68 or truecolor_console or compile or make_output or build_cwd or user_screen or debugger_watchdog or ctrl_f9 or alt_f5)"
+          PLAN="/tmp/ptenv/bin/python tests/harness/suite_plan.py"
+          mkdir -p plan
+          $PLAN collect plan/ids.txt
+          cp tests/harness/suite-timings.json plan/record.json
+          $PLAN fetch --repo "$GITHUB_REPOSITORY" --branch "$GITHUB_REF_NAME" \
+            --out plan/fetched.json --settle-ms 400
+          if [ -s plan/fetched.json ]; then cp plan/fetched.json plan/record.json; fi
+          $PLAN plan plan/plan.json --record plan/record.json \
+            --collected plan/ids.txt --scale "$XWPE_TEST_WAIT_SCALE"
+          $PLAN fit --record plan/record.json --collected plan/ids.txt
+          echo "shards=$($PLAN shards plan/plan.json)" >> "$GITHUB_OUTPUT"
 
       - name: Capability drift guard (BLOCKING)
         # Cheap, deterministic and nothing to do with a terminal: every manifest
-        # id must resolve to a test that collects, and every tests/**/test_ai_*.py
-        # must be mapped or listed in tests/harness/UNMAPPED.txt.  This is what
-        # catches a test renamed or deleted out from under a scenario, which is
-        # how a capability quietly stops being covered while its harness still
-        # reports green.  Run with the suite's own interpreter: under a bare
-        # python3 with no pyte nothing collects and every row reads as drift.
-        if: always()
+        # id must resolve to a test that collects, every tests/**/test_ai_*.py
+        # must be mapped or listed in tests/harness/UNMAPPED.txt, and the suite
+        # must still fit in the jobs of the plan.  This is what catches a test
+        # renamed or deleted out from under a scenario, which is how a capability
+        # quietly stops being covered while its harness still reports green.
+        # It runs here, in the job that built the tree: some files read the
+        # binary or its tools while they collect, so on an unbuilt checkout
+        # rows would fail to collect and read as drift.  Run with the suite's
+        # own interpreter: under a bare python3 with no pyte nothing collects.
         run: /tmp/ptenv/bin/python tests/harness/harness.py check
 
-      - name: Capability harness gates (BLOCKING)
-        # Every capability with a manifest gates, found by listing the
-        # manifests, so a new capability cannot be left out of the loop.  The
-        # verdicts are read from the suite's junit above: the gate runs only
-        # the mapped tests the suite did not select (its -k leaves out a few),
-        # in a second, small junit, and never runs a test twice.  If the suite
-        # died before writing its junit, every mapped test runs here.  Every
-        # capability is judged even when an earlier one failed, and the step
-        # fails at the end naming each that did.  A scenario that is FAIL or
-        # MISSING fails it.
+      - name: Pack the built tree
+        # The tests need only the tree (XWPE_LIB is the checkout), unpacked at
+        # the same path in every job.
+        run: tar --exclude=.git --exclude=./plan -czf /tmp/tree.tar.gz .
+
+      - name: Upload the built tree
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: tree
+          path: /tmp/tree.tar.gz
+          retention-days: 3
+
+      - name: Upload the plan
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: suite-plan
+          path: plan/
+          retention-days: 3
+
+  pyte:
+    name: ncurses UI suite, shard ${{ matrix.shard }}
+    needs: build
+    runs-on: ubuntu-26.04
+    timeout-minutes: 130
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.build.outputs.shards) }}
+    env:
+      TERM: "xterm-256color"
+      # A key's wait ends once the editor has painted and stayed silent this
+      # long, instead of sleeping the whole delay.  Locally at 250 ms it cut the
+      # suite's test time by a third with no failure and no rerun; the runner
+      # is slower, so it gets a wider window.
+      XWPE_TEST_SETTLE_MS: "400"
+      # The record the plan was made from: the row clock reads it too.
+      XWPE_SUITE_TIMINGS: ${{ github.workspace }}/plan/record.json
+    steps:
+      - name: Download the built tree
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: tree
+          path: /tmp/tree
+
+      - name: Unpack the tree
+        run: tar -xzf /tmp/tree/tree.tar.gz -C "$GITHUB_WORKSPACE"
+
+      - name: Download the plan
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: suite-plan
+          path: plan
+
+      - name: Install build, tool and GUI-test dependencies
+        run: sh tests/ci-install.sh
+
+      - name: Set up the pytest venv
+        run: sh tests/ci-venv.sh
+
+      - name: Run the shard
+        # NON-BLOCKING by itself: the gate reads this shard's junit and status
+        # file, so a row that failed or never ran fails the run from there.
+        # tests/ci-shard.sh cuts pytest by an interrupt after 100 minutes (the
+        # step's own limit is above it, the job's above that) and keeps its
+        # exit status, 124 for a cut, in the status file.  Each row runs under
+        # its own clock, and `--rerun-except RowOverBudget` keeps a cut row
+        # from running again.
+        continue-on-error: true
+        timeout-minutes: 110
+        run: sh tests/ci-shard.sh ${{ matrix.shard }}
+
+      - name: Upload the shard's junit, status and trace
         if: always()
-        env:
-          TERM: "xterm-256color"
-          XWPE_TEST_SETTLE_MS: "400"
-          XWPE_UI_TRACE: ${{ github.workspace }}/harness-ui-trace.log
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: suite-junit-${{ matrix.shard }}
+          path: shard-out/
+          if-no-files-found: ignore
+
+  gui:
+    name: X11 and native Wayland GUI suites
+    needs: build
+    runs-on: ubuntu-26.04
+    timeout-minutes: 90
+    env:
+      XDG_RUNTIME_DIR: /tmp/xdg
+    steps:
+      - name: Download the built tree
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: tree
+          path: /tmp/tree
+
+      - name: Unpack the tree
+        run: tar -xzf /tmp/tree/tree.tar.gz -C "$GITHUB_WORKSPACE"
+
+      - name: Install build, tool and GUI-test dependencies
+        run: sh tests/ci-install.sh
+
+      - name: Set up the pytest venv and a private XDG_RUNTIME_DIR
         run: |
-          export XWPE_LIB="$PWD"
-          PY=/tmp/ptenv/bin/python
-          mkdir -p tests/harness/out
-          failed=""
-          for manifest in tests/harness/*/manifest.json; do
-            cap=$(basename "$(dirname "$manifest")")
-            echo "::group::harness $cap (ncurses)"
-            sources="$PWD/suite-junit.xml"
-            missing=$("$PY" tests/harness/harness.py missing "$cap" ncurses "$sources")
-            if [ -n "$missing" ]; then
-              topup="$PWD/tests/harness/out/$cap-topup.xml"
-              WPE_BIN="$PWD/wpe" "$PY" -m pytest -q $missing \
-                --reruns 2 --reruns-delay 3 -rf --junitxml="$topup" || true
-              sources="$sources,$topup"
-            fi
-            "$PY" tests/harness/harness.py report "$cap" ncurses "$sources" \
-              > "tests/harness/out/$cap-ncurses.json" || failed="$failed $cap"
-            cat "tests/harness/out/$cap-ncurses.json"
-            echo "::endgroup::"
-          done
-          if [ -n "$failed" ]; then
-            echo "harness gate failed for:$failed"
-            exit 1
-          fi
+          sh tests/ci-venv.sh
+          mkdir -p /tmp/xdg && chmod 700 /tmp/xdg
 
       - name: X11/Xft GUI suite (Xvfb + matchbox)
         # The conftest starts its own Xvfb + window manager; it skips cleanly if
-        # a tool is missing.  always(): run even if the ncurses gate above failed,
-        # so a flake in one backend never hides another's result.
+        # a tool is missing.  always(): run even if an earlier step failed, so a
+        # flake in one backend never hides another's result.
         if: always()
-        env:
-          XDG_RUNTIME_DIR: /tmp/xdg
         run: XWPE_BIN="$PWD/xwpe" /tmp/ptenv/bin/python -m pytest -q tests/x11
 
       - name: Native Wayland resize/relayout gate (BLOCKING)
@@ -263,8 +343,6 @@ jobs:
         # keeps every process's log in the row's folder under --basetemp, which
         # the log upload below collects.
         if: always()
-        env:
-          XDG_RUNTIME_DIR: /tmp/xdg
         run: |
           mkdir -p wl-logs
           XWPE_BIN="$PWD/xwpe" /tmp/ptenv/bin/python -m pytest -q \
@@ -290,8 +368,6 @@ jobs:
         # breadth and uploads logs.
         continue-on-error: true
         if: always()
-        env:
-          XDG_RUNTIME_DIR: /tmp/xdg
         # The weston log and each row's editor log stay under --basetemp, so a
         # failure on a loaded runner is explainable (a real crash vs a
         # slow-runner mistime).
@@ -304,31 +380,135 @@ jobs:
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: linux-test-logs
-          path: |
-            *.log
-            suite-junit.xml
-            harness-ui-trace.log
-            wl-logs/
-            tests/harness/out/
+          name: gui-test-logs
+          path: wl-logs/
           if-no-files-found: ignore
+
+  gate:
+    name: Capability gates
+    needs: [build, pyte, gui]
+    # Runs when a job before it failed or was cut: a missing shard is the
+    # finding, and every capability is judged whatever happened.
+    if: always()
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    env:
+      TERM: "xterm-256color"
+      BUILD_RESULT: ${{ needs.build.result }}
+      PYTE_RESULT: ${{ needs.pyte.result }}
+      GUI_RESULT: ${{ needs.gui.result }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up the pytest venv
+        run: sh tests/ci-venv.sh
+
+      - name: Download the plan
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: suite-plan
+          path: plan
+
+      - name: Download every shard's junit and status
+        # A shard that uploaded nothing is named by the report below, not here.
+        continue-on-error: true
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: suite-junit-*
+          merge-multiple: true
+          path: shards
+
+      - name: Capability harness gates (BLOCKING)
+        # Every capability with a manifest gates, found by listing the
+        # manifests, so a new capability cannot be left out of the loop.  The
+        # verdicts are read from every shard's junit together with the plan and
+        # the shards' status files: a mapped row that no junit holds is MISSING
+        # and the line says whether its shard was cut, ended early or uploaded
+        # nothing.  Nothing runs again here.  Every capability is judged even
+        # when an earlier one failed, and the step fails at the end naming each
+        # that did.  A scenario that is FAIL or MISSING fails it.
+        if: always()
+        run: |
+          PY=/tmp/ptenv/bin/python
+          mkdir -p tests/harness/out
+          sources=$(ls shards/suite-junit-*.xml 2>/dev/null | paste -sd, -)
+          failed=""
+          for manifest in tests/harness/*/manifest.json; do
+            cap=$(basename "$(dirname "$manifest")")
+            echo "::group::harness $cap (ncurses)"
+            "$PY" tests/harness/harness.py report "$cap" ncurses "$sources" \
+              --plan plan/plan.json --status shards \
+              > "tests/harness/out/$cap-ncurses.json" || failed="$failed $cap"
+            cat "tests/harness/out/$cap-ncurses.json"
+            echo "::endgroup::"
+          done
+          if [ -n "$failed" ]; then
+            echo "harness gate failed for:$failed"
+            exit 1
+          fi
+
+      - name: Record the time of each row
+        # The next run plans from this record (the newest of the branch that
+        # has not expired); a row this run cut, failed, skipped or never
+        # reached keeps the time the previous record holds.  Commit it as
+        # tests/harness/suite-timings.json when a commit changes tests/.
+        if: always()
+        run: |
+          sources=$(ls shards/suite-junit-*.xml 2>/dev/null | paste -sd, -)
+          previous=plan/record.json
+          [ -f "$previous" ] || previous=tests/harness/suite-timings.json
+          /tmp/ptenv/bin/python tests/harness/suite_plan.py record "$sources" \
+            suite-timings.json --previous "$previous" --collected plan/ids.txt \
+            --host-kind runner --scale "$XWPE_TEST_WAIT_SCALE" --settle-ms 400 \
+            --source "run-$GITHUB_RUN_ID"
+
+      - name: Upload the record
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: suite-timings
+          path: suite-timings.json
+          if-no-files-found: ignore
+
+      - name: Upload the gate's reports
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gate-reports
+          path: tests/harness/out/
+          if-no-files-found: ignore
+
+      - name: Every job ended well (BLOCKING)
+        # The gate fails, naming the job, when the build did not succeed or a
+        # shard job or the GUI job did not: a cut or a failed job is never read
+        # as a green run because its junit is missing.
+        if: always()
+        run: |
+          bad=""
+          [ "$BUILD_RESULT" = success ] || bad="$bad build=$BUILD_RESULT"
+          [ "$PYTE_RESULT" = success ] || bad="$bad pyte=$PYTE_RESULT"
+          [ "$GUI_RESULT" = success ] || bad="$bad gui=$GUI_RESULT"
+          if [ -n "$bad" ]; then
+            echo "jobs that did not succeed:$bad"
+            exit 1
+          fi
 
   x11-core:
     name: X11 core-font build (no Xft, no Cairo)
     # A build without Xft and Cairo has no back buffer and draws with the
     # core font straight on the window.  The default build never makes that
     # program, so this job builds each such configuration and runs the X11
-    # resize and uncover rows on it.  Same workflow as the job above, so one
+    # resize and uncover rows on it.  Same workflow as the jobs above, so one
     # dispatch still starts one run.
     runs-on: ubuntu-26.04
     env:
-      DEBIAN_FRONTEND: noninteractive
       XDG_CONFIG_HOME: ""
       XDG_STATE_HOME: ""
       XWPE_TEST_WAIT_SCALE: "3"
-      # The host tools this job installs (see the job above): the X11 layer
-      # gate stops the session when one of them is missing, where it used to
-      # skip the whole layer.
+      # The host tools this job installs (see the top of the file): the X11
+      # layer gate stops the session when one of them is missing, where it used
+      # to skip the whole layer.
       XWPE_TEST_TOOLS_EXPECTED: >-
         Xvfb xdotool xwd xlogo xwininfo matchbox-window-manager magick xwdtopnm
     steps:
@@ -360,10 +540,9 @@ jobs:
       - name: Every core-font configuration builds and says what it has
         run: make -s check-build-configs
 
-      - name: Set up a pytest venv + a private XDG_RUNTIME_DIR
+      - name: Set up the pytest venv and a private XDG_RUNTIME_DIR
         run: |
-          python3 -m venv /tmp/ptenv
-          /tmp/ptenv/bin/pip install --quiet pyte==0.8.2 pytest pillow
+          sh tests/ci-venv.sh
           mkdir -p /tmp/xdg && chmod 700 /tmp/xdg
 
       - name: X11 resize and uncover rows on the core-font program

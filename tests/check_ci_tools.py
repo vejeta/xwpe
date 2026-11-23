@@ -11,10 +11,13 @@ image, absent:R, condition).  Three things must agree with it, offline:
       apt-get list of each job of .github/workflows/linux.yml that expects
       the tool; a note that starts with "run: " names a command the job also
       runs (a package alone does not make a locale);
-  C3  the XWPE_TEST_TOOLS_EXPECTED of each job is exactly the apt and layer
-      tools whose package that job installs.  The harness reads a declared
-      tool of this list that skips as a failure of the image; a display layer
-      gate stops the session on a missing one.
+  C3  the XWPE_TEST_TOOLS_EXPECTED of each job (its own, else the workflow's)
+      is exactly the apt and layer tools whose package that job installs.
+      The harness reads a declared tool of this list that skips as a failure
+      of the image; a display layer gate stops the session on a missing one;
+  C4  the build job, every pyte shard and the GUI job install through the one
+      script tests/ci-install.sh, which holds the apt-get list and the locale
+      command (a job that installs nothing, as the gate, only reads the list).
 
 Not seen: whether a package carries the program the record names (that needs
 the package index); the first run of the job on the image shows it.
@@ -35,8 +38,19 @@ import shutil
 import sys
 import tempfile
 
+HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(HERE, "harness"))
+try:
+    import suite_plan
+finally:
+    sys.path.pop(0)
+
 RECORD = os.path.join("tests", "ci-tools.txt")
 WORKFLOW = os.path.join(".github", "workflows", "linux.yml")
+INSTALL_SCRIPT = os.path.join("tests", "ci-install.sh")
+SHARD_SCRIPT = os.path.join("tests", "ci-shard.sh")
+# The jobs that run the suite and so install through the script.
+SCRIPT_JOBS = ("build", "pyte", "gui")
 MANIFESTS = os.path.join("tests", "harness", "*", "manifest.json")
 EXPECTED_VARIABLE = "XWPE_TEST_TOOLS_EXPECTED"
 KINDS = ("apt", "layer", "base", "image", "absent", "condition")
@@ -151,18 +165,33 @@ def check_tree(root):
             problems.append("%s: a row of %s needs it and %s has no line for it"
                             % (need, ", ".join(sorted(capabilities)), RECORD))
     with open(os.path.join(root, WORKFLOW), encoding="utf-8") as fh:
-        jobs = split_jobs(fh.read())
+        workflow = fh.read()
+    with open(os.path.join(root, INSTALL_SCRIPT), encoding="utf-8") as fh:
+        script = fh.read()
+    jobs = split_jobs(workflow)
+    top_expected = expected_tools(workflow.split("\njobs:", 1)[0])
     installed = {need for need, (_p, kind, _n) in record.items() if kind in INSTALLED_KINDS}
     for need in sorted(installed):
         package, _kind, note = record[need]
         if package == NO_PACKAGE:
             problems.append("%s: an installed tool needs a package in %s" % (need, RECORD))
     seen_in_a_job = set()
+    for job in SCRIPT_JOBS:
+        if INSTALL_SCRIPT not in jobs.get(job, ""):
+            problems.append("job %s: does not run %s, the one list of packages"
+                            % (job, INSTALL_SCRIPT))
     for job, text in sorted(jobs.items()):
         expected = expected_tools(text)
         if expected is None:
+            expected = top_expected
+        if expected is None:
             continue
-        packages = apt_packages(text)
+        uses_script = INSTALL_SCRIPT in text
+        packages = apt_packages(text) | (apt_packages(script) if uses_script else set())
+        if not packages:
+            continue    # a job that installs nothing (the gate) only reads the list
+        if uses_script:
+            text = text + "\n" + script
         wanted = {need for need in installed if record[need][0] in packages}
         seen_in_a_job |= wanted
         for need in sorted(expected - wanted):
@@ -180,7 +209,55 @@ def check_tree(root):
     for need in sorted(installed - seen_in_a_job):
         problems.append("%s: package %s is in no job's apt-get list that sets %s"
                         % (need, record[need][0], EXPECTED_VARIABLE))
+    problems.extend(shard_findings(root, jobs))
     return problems
+
+
+def first_number(pattern, text):
+    """The integer of the first line of @text that matches @pattern, or None."""
+    found = re.search(pattern, text, re.M)
+    return int(found.group(1)) if found else None
+
+
+def shard_findings(root, jobs):
+    """The findings of the shard rules (C5) over the workflow's jobs and the
+    shard script: the cut inside the step's limit inside the job's inside
+    GitHub's, no masked exit status, no rerun of a cut row, a gate that
+    always runs after every job it judges."""
+    findings = []
+    pyte = jobs.get("pyte", "")
+    job_limit = first_number(r"^    timeout-minutes:\s*(\d+)", pyte)
+    step_limit = first_number(r"^        timeout-minutes:\s*(\d+)", pyte)
+    cut = suite_plan.SHARD_CUT_MIN
+    if job_limit is None or step_limit is None:
+        findings.append("job pyte: the job and its shard step each need timeout-minutes")
+    elif not cut < step_limit < job_limit < suite_plan.GITHUB_JOB_LIMIT_MIN:
+        findings.append("job pyte: the cut (%d), the step (%d), the job (%d) and GitHub's "
+                        "limit (%d) minutes must rise in that order"
+                        % (cut, step_limit, job_limit, suite_plan.GITHUB_JOB_LIMIT_MIN))
+    elif (step_limit, job_limit) != (suite_plan.STEP_LIMIT_MIN, suite_plan.JOB_LIMIT_MIN):
+        findings.append("job pyte: the limits %d and %d are not the %d and %d of "
+                        "tests/harness/suite_plan.py" % (
+                            step_limit, job_limit, suite_plan.STEP_LIMIT_MIN,
+                            suite_plan.JOB_LIMIT_MIN))
+    with open(os.path.join(root, SHARD_SCRIPT), encoding="utf-8") as fh:
+        script = fh.read()
+    if "timeout -s INT" not in script:
+        findings.append("%s: a shard is cut with `timeout -s INT`, never a kill (a kill "
+                        "writes no junit)" % SHARD_SCRIPT)
+    if "--rerun-except RowOverBudget" not in script:
+        findings.append("%s: a row the clock cut must not be rerun: pass "
+                        "--rerun-except RowOverBudget" % SHARD_SCRIPT)
+    if "|| true" in script:
+        findings.append("%s: `|| true` would hide a cut (exit 124) from the status file"
+                        % SHARD_SCRIPT)
+    gate = jobs.get("gate", "")
+    needs = re.search(r"^    needs:\s*\[([^\]]*)\]", gate, re.M)
+    listed = {n.strip() for n in needs.group(1).split(",")} if needs else set()
+    if not {"build", "pyte", "gui"} <= listed or "if: always()" not in gate:
+        findings.append("job gate: it needs build, pyte and gui and runs `if: always()`, so "
+                        "a cut or failed job is judged and not skipped")
+    return findings
 
 
 def mutate(root, relative, old, new):
@@ -199,13 +276,30 @@ def mutate(root, relative, old, new):
 # One planted offence per rule: (name, file, text to change, its replacement,
 # a phrase the findings must contain).
 CANARIES = (
-    ("package-missing", WORKFLOW, "            gdb delve scala", "            delve scala",
+    ("package-missing", INSTALL_SCRIPT, "  gdb delve scala", "  delve scala",
      "is expected but"),
-    ("expected-drift", WORKFLOW, "XWPE_TEST_TOOLS_EXPECTED: >-\n        gdb dlv",
-     "XWPE_TEST_TOOLS_EXPECTED: >-\n        dlv", "installs gdb and"),
+    ("expected-drift", WORKFLOW, "XWPE_TEST_TOOLS_EXPECTED: >-\n    gdb dlv",
+     "XWPE_TEST_TOOLS_EXPECTED: >-\n    dlv", "installs gdb and"),
     ("no-record-line", RECORD, "\ngdb|gdb|apt|", "\nxgdb|gdb|apt|", "has no line for it"),
-    ("run-command-gone", WORKFLOW, "sudo locale-gen de_DE.UTF-8", "true",
+    ("run-command-gone", INSTALL_SCRIPT, "sudo locale-gen de_DE.UTF-8", "true",
      "needs the command"),
+    ("script-not-run", WORKFLOW,
+     "        run: sh tests/ci-install.sh\n\n      - name: Set up the pytest venv\n"
+     "        run: sh tests/ci-venv.sh\n\n      - name: Run the shard",
+     "        run: true\n\n      - name: Set up the pytest venv\n"
+     "        run: sh tests/ci-venv.sh\n\n      - name: Run the shard",
+     "job pyte: does not run"),
+    ("step-limit-under-the-cut", WORKFLOW, "        timeout-minutes: 110\n",
+     "        timeout-minutes: 90\n", "must rise in that order"),
+    ("job-limit-over-github", WORKFLOW, "    timeout-minutes: 130\n",
+     "    timeout-minutes: 400\n", "must rise in that order"),
+    ("shard-killed-not-interrupted", SHARD_SCRIPT, "timeout -s INT", "timeout -s KILL",
+     "with `timeout -s INT`"),
+    ("cut-row-rerun", SHARD_SCRIPT, "--rerun-except RowOverBudget", "--reruns-all",
+     "--rerun-except RowOverBudget"),
+    ("cut-status-masked", SHARD_SCRIPT, "|| rc=$?", "|| true", "hide a cut"),
+    ("gate-skipped", WORKFLOW, "    needs: [build, pyte, gui]\n", "    needs: [build, pyte]\n",
+     "job gate:"),
     ("unknown-kind", RECORD, "|apt|17.1", "|installed|17.1", "is none of"),
     ("no-package", RECORD, "gdb|gdb|apt|", "gdb|-|apt|", "needs a package"),
 )
@@ -221,6 +315,8 @@ def selftest(root):
         shutil.copytree(os.path.join(root, ".github", "workflows"),
                         os.path.join(base, ".github", "workflows"))
         shutil.copy(os.path.join(root, RECORD), os.path.join(base, RECORD))
+        shutil.copy(os.path.join(root, INSTALL_SCRIPT), os.path.join(base, INSTALL_SCRIPT))
+        shutil.copy(os.path.join(root, SHARD_SCRIPT), os.path.join(base, SHARD_SCRIPT))
         shutil.copytree(os.path.join(root, "tests", "harness"),
                         os.path.join(base, "tests", "harness"),
                         ignore=shutil.ignore_patterns("out", "__pycache__", "*.py"))

@@ -231,3 +231,101 @@ def test_a_layer_gate_stops_the_session_for_an_installed_tool(monkeypatch):
 def test_a_layer_gate_still_skips_on_a_job_that_installed_nothing(monkeypatch):
     monkeypatch.delenv(host_tools.EXPECTED_VARIABLE, raising=False)
     host_tools.fail_the_session_on_expected("X11 GUI layer", ["xwdtopnm (netpbm)"])
+
+
+# The gate reads the plan of the run and what each job wrote about how it
+# ended, so a row no junit holds says why (tests/harness/suite_plan.py).
+
+PLAN_ROW = "tests/t.py::t"
+PLAN_CASE = "tests/t.py::t[b]"
+
+
+def planted_report(tmp_path, monkeypatch, capsys, shard_of, statuses, junit_cases=(),
+                   with_plan=True):
+    """Run `report` for one scenario of a made-up capability: @shard_of is
+    {node id: shard} the plan holds, @statuses {shard: exit} the status files
+    say (a shard missing from it uploaded nothing).  Returns (verdict,
+    stderr)."""
+    import json
+    monkeypatch.setattr(harness, "load_manifest", lambda cap: {"scenarios": [
+        scenario(id="SC-plan-01", test=PLAN_ROW)]})
+    plan = tmp_path / "plan.json"
+    plan.write_text(json.dumps({"assignment": shard_of}))
+    status = tmp_path / "status"
+    status.mkdir()
+    for shard, code in statuses.items():
+        (status / ("shard-%d-status.json" % shard)).write_text(json.dumps(
+            {"shard": shard, "exit": code, "cut_min": 100}))
+    cases = "".join('<testcase classname="tests.t" name="%s"/>' % name for name in junit_cases)
+    junit = tmp_path / "j.xml"
+    junit.write_text("<testsuites><testsuite>%s</testsuite></testsuites>" % cases)
+    harness.cmd_report("plan", "ncurses", str(junit),
+                       str(plan) if with_plan else None, str(status))
+    seen = capsys.readouterr()
+    return json.loads(seen.out)["SC-plan-01"], seen.err
+
+
+# @scenario SC-platform-suite-plan-10
+def test_a_mapped_row_in_a_cut_shard_is_missing_and_says_the_shard_was_cut(
+        tmp_path, monkeypatch, capsys):
+    got, err = planted_report(tmp_path, monkeypatch, capsys, {"tests/t.py::t": 2}, {2: 124})
+    assert got == "MISSING"
+    assert "SC-plan-01: MISSING, not run: shard 2 was cut at 100 min" in err, err
+
+
+def test_a_mapped_row_in_a_shard_that_ended_early_says_the_exit(tmp_path, monkeypatch, capsys):
+    got, err = planted_report(tmp_path, monkeypatch, capsys, {"tests/t.py::t": 1}, {1: 2})
+    assert got == "MISSING" and "shard 1 ended (exit 2) before running it" in err, err
+
+
+def test_a_mapped_row_in_a_shard_that_uploaded_nothing_says_so(tmp_path, monkeypatch, capsys):
+    got, err = planted_report(tmp_path, monkeypatch, capsys, {"tests/t.py::t": 3}, {})
+    assert got == "MISSING" and "shard 3 uploaded nothing" in err, err
+
+
+def test_one_case_of_a_row_that_a_cut_shard_never_reached_makes_the_row_missing(
+        tmp_path, monkeypatch, capsys):
+    """The junit holds case a; case b was in the plan and never ran."""
+    got, err = planted_report(
+        tmp_path, monkeypatch, capsys,
+        {"tests/t.py::t[a]": 0, PLAN_CASE: 0}, {0: 124}, junit_cases=["t[a]"])
+    assert got == "MISSING" and "was cut at 100 min" in err, err
+
+
+def test_a_row_every_planned_case_of_which_ran_is_judged_by_its_junit(
+        tmp_path, monkeypatch, capsys):
+    got, err = planted_report(
+        tmp_path, monkeypatch, capsys,
+        {"tests/t.py::t[a]": 0, PLAN_CASE: 0}, {0: 0}, junit_cases=["t[a]", "t[b]"])
+    assert got == "PASS" and "MISSING" not in err, err
+
+
+def test_a_report_with_no_plan_reads_the_junit_alone(tmp_path, monkeypatch, capsys):
+    got, err = planted_report(tmp_path, monkeypatch, capsys, {"tests/t.py::t": 2}, {2: 124},
+                              with_plan=False)
+    assert got == "MISSING" and "shard" not in err, err
+
+
+def test_the_plan_and_status_options_are_read_from_anywhere_on_the_line():
+    value, rest = harness.take_option(["report", "--plan", "p.json", "cap", "ncurses", "j"], "--plan")
+    assert value == "p.json" and rest == ["report", "cap", "ncurses", "j"]
+    assert harness.take_option(["check"], "--plan") == (None, ["check"])
+
+
+# @scenario SC-platform-suite-plan-11
+def test_the_check_asks_the_planner_whether_the_suite_still_fits(tmp_path):
+    ids = ["tests/test_a.py::t%d" % n for n in range(3)]
+    thin = tmp_path / "thin.json"
+    suite_plan_record = {"rows": {}, "host_kind": "runner", "scale": 3}
+    import json
+    thin.write_text(json.dumps(suite_plan_record))
+    problems = harness.tree_fit_problems(str(thin), ids)
+    assert any("%d%%" % harness.suite_plan.RECORD_COVER in line for line in problems), problems
+    import ast
+    with open(harness.__file__, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read())
+    body = next(n for n in ast.walk(tree)
+                if isinstance(n, ast.FunctionDef) and n.name == "cmd_check")
+    called = {c.func.id for c in ast.walk(body)
+              if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)}
+    assert "tree_fit_problems" in called, "harness.py check does not run the fitness check"

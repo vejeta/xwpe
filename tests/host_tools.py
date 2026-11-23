@@ -30,7 +30,11 @@ The one named exception: the display-tool gates of tests/x11/conftest.py,
 tests/wayland/conftest.py and tests/console/conftest.py (Xvfb, weston, a
 window manager, qemu).  They decide whether a whole graphical or console
 layer can run at all, once, for every row of that layer; they are layer
-gates, not the skip of a row, and they stay where they are.
+gates, not the skip of a row, and they stay where they are.  They ask this
+module too, through layer_unmet(): a layer tool is usable when the machine
+has it, the tool farm gives it to the rows (a layer that ran where the farm
+denies its tool would error every row at setup) and it runs, and a layer
+conftest never calls `which` itself.
 """
 import os
 import re
@@ -80,6 +84,18 @@ PROBES = {
     "xclip": PRESENCE_ONLY,
     "wl-copy": PRESENCE_ONLY,
     "wl-paste": PRESENCE_ONLY,
+    # The tools of the layer gates: a window manager and a converter that
+    # read standard input, a screen dump, a virtual machine.  None of them
+    # is started to ask whether it runs.
+    "xwd": PRESENCE_ONLY,
+    "xwininfo": PRESENCE_ONLY,
+    "matchbox-window-manager": PRESENCE_ONLY,
+    "twm": PRESENCE_ONLY,
+    "magick": PRESENCE_ONLY,
+    "convert": PRESENCE_ONLY,
+    "xwdtopnm": PRESENCE_ONLY,
+    "qemu-system-x86_64": PRESENCE_ONLY,
+    "cpio": PRESENCE_ONLY,
 }
 
 _answers = {}
@@ -196,6 +212,62 @@ def require_absent(*tools):
     for tool in tools:
         if shutil.which(tool) is not None:
             pytest.skip("%s is installed on this host" % tool)
+
+
+FARM_REFUSES = "the tool farm does not provide it"
+
+
+def provided_by_farm(name):
+    """True when the tool farm (tests/engine_guard.py) gives the rows a tool
+    called @name: it is in the baseline, or a job declared it with
+    XWPE_TEST_TOOLS.  A program the farm does not give is denied to every
+    process the owner starts, whatever the machine has on PATH."""
+    declared = os.environ.get(engine_guard.TOOLS_VAR, "").split()
+    return engine_guard.is_baseline_tool(name) or name in declared
+
+
+def layer_reason(name):
+    """Why a row of a display or console layer cannot use @name, or None.
+
+    Three reasons, each naming the tool, so a reader can tell them apart:
+    the machine has no such program, the farm does not provide it (a layer
+    that ran anyway would start the program and have it denied), or it is
+    there and does not run."""
+    if shutil.which(name) is None:
+        return MISSING_FORMAT % name
+    if not provided_by_farm(name):
+        return "%s: %s" % (name, FARM_REFUSES)
+    if not _usable_once(name):
+        return "%s does not run" % name
+    return None
+
+
+def first_usable(names):
+    """The first of @names a layer can use (a window manager, a converter),
+    or None.  It is the pick of a program to start, not a skip."""
+    for name in names:
+        if layer_reason(name) is None:
+            return name
+    return None
+
+
+def layer_unmet(layer, tools):
+    """The tools of @tools that a row of @layer cannot use, as the phrases a
+    layer gate lists, or an empty list when the layer can run.
+
+    The one place the three layer gates (tests/x11, tests/wayland,
+    tests/console) decide, so that a layer never runs on a host where its
+    tool is on PATH and the farm denies it: the rows would error at setup
+    and the session would end with a stray engine hit.  A name may list
+    alternatives with "|", met when any one is usable.  Each phrase says why
+    ("qemu-system-x86_64: the tool farm does not provide it").  A gate
+    passes the list to fail_the_session_on_expected before it skips."""
+    unmet = []
+    for spec in tools:
+        reasons = [layer_reason(name) for name in _alternatives(spec)]
+        if all(reasons):
+            unmet.append("%s: %s" % (spec, "; ".join(reasons)))
+    return unmet
 
 
 EXPECTED_VARIABLE = "XWPE_TEST_TOOLS_EXPECTED"

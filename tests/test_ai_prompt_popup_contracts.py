@@ -5,6 +5,9 @@ XWPE_AI_TRACE log or the disk, with the mock backend answering every turn.
 The Agent popup ("AI agent task") is used where the action does not matter;
 the Edit popup where a turn must be streaming underneath it.
 """
+import os
+import re
+
 import pytest
 from wpe_driver import (WpeSession, ALT, WAIT_SCALE, assistant_build, title_pos,
                         title_row, wait_screen)
@@ -21,7 +24,6 @@ ALT_C = "\033c"
 ALT_M = "\033m"
 ALT_S = "\033s"
 FIELD_ROW_BELOW_TITLE = 3
-TASK_LIMIT_BYTES = 1999
 SCREEN_MESSAGE_TITLE = "Message"
 AI_PANE_TITLE = "AI"
 
@@ -88,22 +90,35 @@ def test_field_scrolls_to_show_the_tail_of_a_long_text(tmp_path):
     assert seventy[:10] not in field, "the field did not scroll (head still visible): %r" % field
 
 
+def prompt_limit_bytes():
+    """The most bytes a prompt holds, read from the product (AI_PROMPT_MAX in
+    we_ai_ui.c): a request carries that many, and the field refuses the next
+    byte with "Input at its limit (N bytes)"."""
+    with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           "we_ai_ui.c"), encoding="utf-8") as fh:
+        return int(re.search(r"#define AI_PROMPT_MAX (\d+)", fh.read()).group(1))
+
+
 # @scenario SC-ai-menu-33
-def test_send_carries_1999_bytes_and_drops_the_rest(tmp_path):
-    """2003 typed bytes: the field holds 1999 and Send hands exactly 1999 to
-    the agent; the last bytes typed are not kept."""
-    chunk = "0123456789" * 10                                   # 100 bytes
+def test_send_carries_the_prompt_limit_and_drops_the_rest(tmp_path):
+    """The limit and three bytes more typed: the field holds the limit and
+    Send hands exactly that many to the agent; the last bytes typed are not
+    kept."""
+    limit = prompt_limit_bytes()
+    chunk = "0123456789" * 100                                  # 1000 bytes
+    whole, rest = divmod(limit, len(chunk))
     with WpeSession(str(tmp_path), C_SRC, filename="a.c", env_extra=_env(tmp_path)) as s:
         _open_popup(s, "g", AGENT_TITLE)
-        for _ in range(20):                                     # 2000 bytes
-            s.key(chunk, delay=0.12)
+        for _ in range(whole):
+            s.key(chunk, delay=0.2)
+        s.key(chunk[:rest], delay=0.3)
         s.key("END", delay=0.3)                                 # three more, past the limit
         s.key("\r", delay=1.5)
         s._drain(1.0)
         task = _task_line(_trace(tmp_path)).split("\n")[0]
         s.key("\033", delay=0.4)
     assert task, "Send did not reach the agent (no task line in the trace)"
-    assert len(task) == TASK_LIMIT_BYTES, "task is %d bytes, expected %d" % (len(task), TASK_LIMIT_BYTES)
+    assert len(task) == limit, "task is %d bytes, expected %d" % (len(task), limit)
     assert "END" not in task, "bytes past the limit were kept: %r" % task[-20:]
 
 

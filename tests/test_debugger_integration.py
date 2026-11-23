@@ -25,10 +25,11 @@ import pytest
 
 import deep_folder
 import gui_owner
+import program_gate
 import procinfo
 from host_tools import require, require_absent
 from mode_premise import file_mode_is_obeyed
-from wpe_driver import (WpeSession, ALT, WAIT_SCALE, server_program,
+from wpe_driver import (WpeSession, ALT, WAIT_SCALE, server_program, wait_until,
                         CURRENT_LINE_BG, BREAKPOINT_BG,
                         UNCONFIRMED_BREAKPOINT_FG, incoherence,
                         late_reader_c_program, paste_text, end_paste_until,
@@ -248,13 +249,10 @@ def _breakpoint_lines(w):
 
 
 def _wait_for(w, predicate, timeout):
-    """Drain the editor until predicate() holds or the scaled timeout ends."""
-    deadline = time.time() + timeout * WAIT_SCALE
-    while time.time() < deadline:
-        w._drain(POLL_S)
-        if predicate():
-            return True
-    return predicate()
+    """Drain the editor until predicate() holds or the scaled timeout ends.
+    The wait is the driver's (wait_until): its look is one unscaled turn, so
+    a line the editor shows for a second is seen at any wait scale."""
+    return wait_until(w, predicate, timeout) or predicate()
 
 
 def _screen(w):
@@ -7387,12 +7385,14 @@ def test_the_running_bar_names_pause_and_its_click_pauses(tmp_path):
 
 # @scenario SC-debug-45
 def test_pause_at_a_stop_or_without_a_session_only_says_so(tmp_path):
-    """With no session, and at a stop, Pause names the reason on the status
-    row and sends the debugger nothing: the mark stays, and F8 steps on."""
+    """With no session, Pause says "No debug session", the line every
+    debugger command says without one; at a stop it names the reason on the
+    status row.  Either way the debugger is sent nothing: the mark stays,
+    and F8 steps on."""
     _need("gcc", "gdb")
     with _c_session(tmp_path) as w:
         w.key(*CTRL_G_I, delay=0.5)
-        assert _wait_for(w, lambda: "no debugger session" in _bottom_row(w),
+        assert _wait_for(w, lambda: NO_DEBUG_SESSION_LINE in _bottom_row(w),
                          STEP_TIMEOUT_S), \
             "with no session Pause should say so:\n%s" % _screen(w)
         assert not _children(w, "gdb"), "Pause must not start a debugger"
@@ -7405,6 +7405,65 @@ def test_pause_at_a_stop_or_without_a_session_only_says_so(tmp_path):
             "the mark must stay on line %d:\n%s" % (C_BREAK_LINE, _screen(w))
         assert _step(w, F8, C_NEXT_LINE), \
             "F8 should still step on from the stop:\n%s" % _screen(w)
+
+
+NO_DEBUG_SESSION_LINE = "No debug session"       # edit.h, E_SAY_NO_DEBUG_SESSION
+CTRL_F2_KEY = "\x1b[1;5Q"                         # Quit, from the keyboard
+
+
+# @scenario SC-debug-45
+def test_quit_from_its_key_with_no_session_says_the_same_line(tmp_path):
+    """Ctrl-F2 reaches the same entry as Debug > Quit and Ctrl-G Q: with no
+    session the status row says "No debug session"."""
+    _need("gcc", "gdb")
+    with _c_session(tmp_path) as w:
+        w.key(CTRL_F2_KEY, delay=0.5)
+        assert _wait_for(w, lambda: NO_DEBUG_SESSION_LINE in _bottom_row(w),
+                         STEP_TIMEOUT_S), \
+            "with no session Quit should say so:\n%s" % _screen(w)
+        assert not _children(w, "gdb"), "Quit must not start a debugger"
+
+
+# The line the owner of the session's states says while the program is still
+# being compiled for its session (edit.h, E_SAY_DEBUG_COMPILING).  Pause says
+# that line and not one of its own: the state is the session's, so its
+# sentence belongs to the entry every way in runs through.
+COMPILING_LINE = "The program is still being compiled for its debug session"
+HELD_COMPILER = '#!/bin/sh\nread _ < "%s"\nexec "%s" "$@"\n'
+
+
+# @scenario SC-debug-45
+def test_pause_while_the_program_compiles_says_it_is_being_compiled(tmp_path):
+    """A Rust session compiles first, in the background.  Until the compiler
+    ends there is a session being made and no program to pause: the status
+    row says the session is still compiling, in the line the owner of the
+    session's states owns, and never "no debugger session is running", which
+    was false."""
+    _need("rustc", "gdb")
+    release = tmp_path / "release"
+    os.mkfifo(str(release))
+    stub_dir = tmp_path / "stub"
+    stub_dir.mkdir()
+    stub = stub_dir / "rustc"
+    stub.write_text(HELD_COMPILER % (release, shutil.which("rustc")))
+    stub.chmod(0o755)
+    env = {"PATH": "%s:%s" % (stub_dir, os.environ["PATH"])}
+    with WpeSession(str(tmp_path), 'fn main() {\n    println!("x");\n}\n',
+                    filename="main.rs", wait=1.5, env_extra=env) as w:
+        w.key(CTRL_G, "r", delay=0.5)
+        assert _wait_for(w, lambda: "Compiling for debug" in _screen(w),
+                         STEP_TIMEOUT_S), \
+            "the session should be compiling:\n%s" % _screen(w)
+        w.key(*CTRL_G_I, delay=0.5)
+        assert _wait_for(w, lambda: COMPILING_LINE in _bottom_row(w),
+                         STEP_TIMEOUT_S), \
+            "Pause while compiling should say the line the owner of the " \
+            "session's states says:\n%s" % _screen(w)
+        assert "no debugger session is running" not in _bottom_row(w)
+        assert "Nothing to pause" not in _bottom_row(w), \
+            "the sentence is the session's state, not Pause's own:\n%s" % _screen(w)
+        with open(str(release), "w") as fh:     # let the compiler end
+            fh.write("go\n")
 
 
 # Prints which of SIGINT and SIGPIPE its signal mask says are ignored, then
@@ -8144,8 +8203,8 @@ def test_a_breakpoint_set_while_running_stops_the_program_there(tmp_path,
 # Loops that pass their body line once every LIVE_SLOW_S seconds: a line
 # unmarked while the program sleeps is reached again only if the debugger
 # still has the breakpoint.
-LIVE_SLOW_S = 2
 LIVE_SLOW_PASSES = 3              # passes watched for a wrong stop
+QUIET_AFTER_PASS_S = 1.0          # looked at after each pass, before the scale
 GDB_SLOW_PROG = (
     "#include <stdio.h>\n"
     "#include <unistd.h>\n"
@@ -8153,60 +8212,62 @@ GDB_SLOW_PROG = (
     "{\n"
     "  int n = 0;\n"
     "  for (;;) {\n"
-    "    sleep(%d);\n"
+    "    " + program_gate.MARKER + "\n"
     "    n++;\n"
-    "    printf(\"N %%d\\n\", n);\n"
+    "    printf(\"N %d\\n\", n);\n"
     "    fflush(stdout);\n"
     "  }\n"
-    "}\n" % LIVE_SLOW_S
+    "}\n"
 )
 PY_SLOW_PROG = (
-    "import time\n"
+    "import os, time\n"
     "n = 0\n"
     "while True:\n"
-    "    time.sleep(%d)\n"
+    "    " + program_gate.MARKER + "\n"
     "    n += 1\n"
-    "    print('N', n, flush=True)\n" % LIVE_SLOW_S
+    "    print('N', n, flush=True)\n"
 )
 JDB_LIVE_SLOW_PROG = (
     "public class P {\n"
     "    public static void main(String[] a) throws Exception {\n"
     "        int n = 0;\n"
     "        while (true) {\n"
-    "            Thread.sleep(%d);\n"
+    "            " + program_gate.MARKER + "\n"
     "            n++;\n"
     "            System.out.println(n);\n"
     "        }\n"
     "    }\n"
-    "}\n" % (LIVE_SLOW_S * 1000)
+    "}\n"
 )
 GO_SLOW_PROG = (
     "package main\n"
     "\n"
     "import (\n"
     "\t\"fmt\"\n"
-    "\t\"time\"\n"
+    "\t\"os\"; \"time\"\n"
     ")\n"
     "\n"
     "func main() {\n"
     "\tn := 0\n"
     "\tfor {\n"
-    "\t\ttime.Sleep(%d * time.Second)\n"
+    "\t\t" + program_gate.MARKER + "\n"
     "\t\tn++\n"
     "\t\tfmt.Println(n)\n"
     "\t}\n"
-    "}\n" % LIVE_SLOW_S
+    "}\n"
 )
 RUST_SLOW_PROG = (
     "fn main() {\n"
     "    let mut n: u64 = 0;\n"
     "    loop {\n"
-    "        std::thread::sleep(std::time::Duration::from_secs(%d));\n"
+    "        " + program_gate.MARKER + "\n"
     "        n += 1;\n"
     "        println!(\"{}\", n);\n"
     "    }\n"
-    "}\n" % LIVE_SLOW_S
+    "}\n"
 )
+SLOW_LANGUAGE = {"gdb": "c", "pdb": "py", "jdb": "java", "dlv": "go",
+                 "lldb-dap": "rust", "gdb-dap": "rust"}
 # the program and the body line that follows its sleep, per backend
 BRK_SLOW_CASES = {
     "gdb": dict(BRK_LIVE_CASES["gdb"], prog=GDB_SLOW_PROG, body=8),
@@ -8225,18 +8286,23 @@ def test_a_breakpoint_removed_while_running_is_not_stopped_at(tmp_path,
     """A breakpoint taken off the body of a loop while the program sleeps
     in it is gone from the debugger before the next pass: the program runs
     past the line pass after pass, with no stop there and no Pause first."""
-    case = BRK_SLOW_CASES[debugger]
+    gate = program_gate.ProgramGate(tmp_path)
+    case = dict(BRK_SLOW_CASES[debugger])
+    case["prog"] = gate.fill(case["prog"], SLOW_LANGUAGE[debugger])
     with _live_session(tmp_path, case) as w:
+        gate.open(1)                     # the first pass reaches the breakpoint
         _stop_on_a_breakpoint_at(w, case["body"], case["start_s"])
-        w.key(CTRL_G, "r", delay=0.3)    # into the sleep; the cursor stays
+        w.key(CTRL_G, "r", delay=0.3)    # into the gate; the cursor stays
         w.key(CTRL_G, "b", delay=0.6)    # on the breakpoint's line
         assert case["body"] not in \
             _breakpoint_lines(w) + _unconfirmed_lines(w), \
             "the line should be unmarked at once:\n%s" % _screen(w)
-        assert _never_marked_at(w, case["body"],
-                                LIVE_SLOW_PASSES * LIVE_SLOW_S), \
-            "the program must not stop on the removed line %d:\n%s" \
-            % (case["body"], _screen(w))
+        for n in range(2, 2 + LIVE_SLOW_PASSES):
+            gate.open(n)
+            assert gate.passed(w, n), "the program never passed gate %d" % n
+            assert _never_marked_at(w, case["body"], QUIET_AFTER_PASS_S), \
+                "the program must not stop on the removed line %d after " \
+                "pass %d:\n%s" % (case["body"], n, _screen(w))
         _quit_and_see_the_session_gone(w)
 
 
@@ -8850,26 +8916,26 @@ def test_an_interrupt_gdb_reports_at_the_next_resume_is_not_shown(tmp_path,
             "the command should have gone out again once:\n%s" % log
 
 
-PY_OWN_SIGINT_SLEEP_S = 6        # room to move the cursor and toggle
 # pdb puts its own SIGINT handler back at every continue, so the script sets
-# its handler while it runs, as a program that installs one late does.
+# its handler while it runs, as a program that installs one late does.  The
+# program waits at the gate (tests/program_gate.py): the interrupt lands in
+# the gate's poll, which is a sleep, as it did in the sleep this replaces.
 PY_OWN_SIGINT_PROG_FMT = (
-    "import signal, time\n"
+    "import os, signal, time\n"
     "def own(sig, frame):\n"
     "    print('%s', flush=True)\n"
     "n = 0\n"
     "while True:\n"
     "    signal.signal(signal.SIGINT, own)\n"
-    "    time.sleep(%d)\n"
+    "    " + program_gate.MARKER + "\n"
     "    n += 1\n"
     "    m = n\n"
 )
-PY_OWN_SIGINT_PROG = PY_OWN_SIGINT_PROG_FMT % ("own handler",
-                                               PY_OWN_SIGINT_SLEEP_S)
+PY_OWN_SIGINT_PROG = PY_OWN_SIGINT_PROG_FMT % "own handler"
 # The same script, whose handler names the exception pdb's own answer to an
 # interrupt names.
 PY_OWN_SIGINT_WORDS_PROG = PY_OWN_SIGINT_PROG_FMT % (
-    "own handler: KeyboardInterrupt ignored", PY_OWN_SIGINT_SLEEP_S)
+    "own handler: KeyboardInterrupt ignored")
 PY_OWN_SIGINT_START_LINE = 4      # n = 0
 PY_OWN_SIGINT_TOGGLE_LINE = 8     # n += 1, marked while it sleeps
 PY_OWN_SIGINT_STOP_LINE = 9       # m = n, armed: the next stop
@@ -8900,20 +8966,23 @@ def _pdb_own_sigint_falls_back(tmp_path, prog):
     change sends while it sleeps: the change is applied at its next stop and
     the status row says why."""
     _need("python3")
-    with WpeSession(str(tmp_path), prog, filename="p.py",
+    gate = program_gate.ProgramGate(tmp_path)
+    with WpeSession(str(tmp_path), gate.fill(prog, "py"), filename="p.py",
                     wait=1.5) as w:
         _go_to_line(w, PY_OWN_SIGINT_STOP_LINE)
         w.key(CTRL_G, "b", delay=0.4)
         _stop_on_a_breakpoint_at(w, PY_OWN_SIGINT_START_LINE,
                                  START_TIMEOUT_S)
         w.key(CTRL_G, "r", delay=0.5)
+        gate.open(1)                     # the first pass, to its breakpoint
         assert _wait_for(w, lambda: _mark_line(w) == PY_OWN_SIGINT_STOP_LINE,
                          LIVE_STOP_TIMEOUT_S), _screen(w)
-        w.key(CTRL_G, "r", delay=0.3)    # into the sleep
+        w.key(CTRL_G, "r", delay=0.3)    # into the gate
         _go_to_line(w, PY_OWN_SIGINT_TOGGLE_LINE)
         w.key(CTRL_G, "b", delay=0.6)
         assert _mark_line(w) is None, \
-            "the program should still sleep, unmarked:\n%s" % _screen(w)
+            "the program should still wait, unmarked:\n%s" % _screen(w)
+        gate.open(2)                     # the next stop, where the change applies
         assert _wait_for(w, lambda: _mark_line(w) == PY_OWN_SIGINT_STOP_LINE,
                          LIVE_STOP_TIMEOUT_S), \
             "the program should stop at its next breakpoint (mark on %s):\n%s" \
@@ -8924,6 +8993,7 @@ def _pdb_own_sigint_falls_back(tmp_path, prog):
             % _screen(w)
         _assert_solid(w, PY_OWN_SIGINT_TOGGLE_LINE, "at that stop")
         w.key(CTRL_G, "r", delay=0.5)
+        gate.open(3)
         assert _wait_for(w, lambda: _mark_line(w) ==
                          PY_OWN_SIGINT_TOGGLE_LINE, LIVE_STOP_TIMEOUT_S), \
             "the next pass should stop on line %d (mark on %s):\n%s" \
@@ -9237,25 +9307,26 @@ GDB_ENDING_PROG = (
     "  long n = 0;\n"
     "  printf(\"READY\\n\");\n"
     "  fflush(stdout);\n"
-    "  for (n = 0; n < 8; n++)\n"
-    "    sleep(1);\n"
+    "  " + program_gate.MARKER + "\n"
     "  return 0;\n"
     "}\n"
+    "\n"
 )
 RUST_ENDING_PROG = (
     "fn main() {\n"
     "    let n: u64 = 7;\n"
     "    println!(\"ready\");\n"
-    "    std::thread::sleep(std::time::Duration::from_secs(8));\n"
+    "    " + program_gate.MARKER + "\n"
     "    println!(\"{}\", n);\n"
     "}\n"
 )
+# The pass the program waits for at its gate: n + 1, n being 0 and 7.
 WATCH_END_CASES = {
-    "gdb": dict(BRK_LIVE_CASES["gdb"], prog=GDB_ENDING_PROG),
+    "gdb": dict(BRK_LIVE_CASES["gdb"], prog=GDB_ENDING_PROG, lang="c", gate_pass=1),
     WATCH_ADAPTER_CASE: dict(BRK_LIVE_CASES[WATCH_ADAPTER_CASE],
-                             prog=RUST_ENDING_PROG),
+                             prog=RUST_ENDING_PROG, lang="rust", gate_pass=8),
 }
-PROGRAM_END_S = 20                # the program's 8 s, the debugger's end
+PROGRAM_END_S = 20                # the debugger's end once the program is let go
 WATCH_NO_SESSION_WORDS = "No symbol in current context"   # any watch, no session
 
 
@@ -9281,11 +9352,14 @@ def test_a_waiting_watch_says_no_next_stop_when_the_program_ends(tmp_path,
     """A watch added while the program runs, which then ends, does not keep
     promising a value "at the next stop": there is none.  It shows what a
     watch shows without a session."""
-    case = WATCH_END_CASES[debugger]
+    gate = program_gate.ProgramGate(tmp_path)
+    case = dict(WATCH_END_CASES[debugger])
+    case["prog"] = gate.fill(case["prog"], case["lang"])
     with _live_session(tmp_path, case) as w:
         _run_into_the_program(w, case["break"], case["start_s"])
         _add_watch(w, "n")
         assert _watch_waits_for_the_stop(w, "n"), _screen(w)
+        gate.open(case["gate_pass"])     # now the program may end
         _source_window_on_top(w)
         assert _wait_for(w, lambda: "^Brk Pause" not in _bottom_bar(w),
                          PROGRAM_END_S), \
@@ -10208,7 +10282,8 @@ ANSWER_ENDS = {
     "ctrl_c": {"key": CTRL_C, "env": None, "says": GDB_DID_NOT_ANSWER},
     "deadline": {"key": None,
                  "env": {"XWPE_DEBUG_ANSWER_TIMEOUT":
-                         str(GDB_ANSWER_TIMEOUT_S)},
+                         gui_owner.product_duration(
+                             "XWPE_DEBUG_ANSWER_TIMEOUT", GDB_ANSWER_TIMEOUT_S)},
                  "says": GDB_DID_NOT_ANSWER + " within"},
 }
 
@@ -10843,7 +10918,8 @@ PDB_ANSWER_ENDS = {
     "ctrl_c": {"key": CTRL_C, "env": None, "says": PDB_DID_NOT_ANSWER_WATCH},
     "deadline": {"key": None,
                  "env": {"XWPE_DEBUG_ANSWER_TIMEOUT":
-                         str(PDB_ANSWER_TIMEOUT_S)},
+                         gui_owner.product_duration(
+                             "XWPE_DEBUG_ANSWER_TIMEOUT", PDB_ANSWER_TIMEOUT_S)},
                  "says": PDB_DID_NOT_ANSWER_WATCH + " within"},
 }
 
@@ -11440,7 +11516,8 @@ JDB_ANSWER_ENDS = {
     "ctrl_c": {"key": CTRL_C, "env": None, "says": JDB_DID_NOT_ANSWER_WATCH},
     "deadline": {"key": None,
                  "env": {"XWPE_DEBUG_ANSWER_TIMEOUT":
-                         str(JDB_ANSWER_TIMEOUT_S)},
+                         gui_owner.product_duration(
+                             "XWPE_DEBUG_ANSWER_TIMEOUT", JDB_ANSWER_TIMEOUT_S)},
                  "says": JDB_DID_NOT_ANSWER_WATCH + " within"},
 }
 
@@ -11767,7 +11844,7 @@ JDB_SECOND_THREAD_PROG = (
     "        t.setDaemon(true);\n"
     "        t.start();\n"
     "        int x = 3;\n"
-    "        Thread.sleep(300);\n"
+    "        " + program_gate.MARKER + "\n"
     "        System.out.println(\"X \" + x);\n"
     "    }\n"
     "}\n"
@@ -11786,8 +11863,9 @@ def test_jdb_breakpoint_hit_while_a_watch_hangs_is_shown_after_esc(tmp_path):
     the watch; the stop jdb reported is then marked, and a debugger key is
     taken, not refused as "still answering"."""
     _need("jdb", "javac")
-    with WpeSession(str(tmp_path), JDB_SECOND_THREAD_PROG,
-                    filename="P.java", wait=1.5) as w:
+    gate = program_gate.ProgramGate(tmp_path)
+    prog = gate.fill(JDB_SECOND_THREAD_PROG, "java", fixed_pass=1)
+    with WpeSession(str(tmp_path), prog, filename="P.java", wait=1.5) as w:
         _stop_java_on(w, JDB_SECOND_THREAD_STOP_LINE)
         _source_window_on_top(w)
         _go_to_line(w, JDB_SECOND_THREAD_LINE)
@@ -11805,6 +11883,7 @@ def test_jdb_breakpoint_hit_while_a_watch_hangs_is_shown_after_esc(tmp_path):
         assert JDB_STILL_ANSWERING not in _bottom_bar(w), \
             "after the stop is shown a debugger key should be taken:\n%s" \
             % _screen(w)
+        gate.open(1)                     # main may end once the row is done
         _quit_and_see_the_session_gone(w)
 
 
@@ -11968,7 +12047,8 @@ A68G_ANSWER_ENDS = {
     "ctrl_c": {"key": CTRL_C, "env": None, "says": A68G_DID_NOT_ANSWER_WATCH},
     "deadline": {"key": None,
                  "env": {"XWPE_DEBUG_ANSWER_TIMEOUT":
-                         str(A68G_ANSWER_TIMEOUT_S)},
+                         gui_owner.product_duration(
+                             "XWPE_DEBUG_ANSWER_TIMEOUT", A68G_ANSWER_TIMEOUT_S)},
                  "says": A68G_DID_NOT_ANSWER_WATCH + " within"},
 }
 

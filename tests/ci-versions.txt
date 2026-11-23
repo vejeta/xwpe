@@ -23,6 +23,7 @@ bsd-openbsd|8.0|-|https://www.openbsd.org/ and https://github.com/vmactions/open
 # Actions: tag and the commit it points to.
 action:actions/checkout|v7.0.1|3d3c42e5aac5ba805825da76410c181273ba90b1|https://github.com/actions/checkout/releases/latest|2026-11-19|
 action:actions/upload-artifact|v7.0.2|cf430e030ddbb5b0abf93d22962f4752f3646cd9|https://github.com/actions/upload-artifact/releases/latest|2026-11-19|
+action:actions/download-artifact|v8.0.2|9000827ccba6bdab643e8b6fd33ac0654aef8333|https://github.com/actions/download-artifact/releases/latest|2026-11-23|pairs with upload-artifact v7: both use the v4 artifact service
 action:github/codeql-action|v4.39.3|33d7b85da1a04171e211befe2c739303b9a4c066|https://github.com/github/codeql-action/tags|2026-11-19|releases/latest names a bundle, so the newest v4 tag is used
 action:vmactions/freebsd-vm|v1.6.0|811efaaac0668df8bfb8308c3ec997b5ab50037b|https://github.com/vmactions/freebsd-vm/releases/latest|2026-11-19|
 action:vmactions/netbsd-vm|v1.5.3|5957cf330aef2e6ddc63c604364c99ce2e02b91d|https://github.com/vmactions/netbsd-vm/releases/latest|2026-11-19|
@@ -30,6 +31,9 @@ action:vmactions/openbsd-vm|v1.4.9|f1ca8bc8ecc5b6ef7218e5b914836e067e1546d3|http
 #
 # Python tooling.
 pyte|0.8.2|-|https://pypi.org/project/pyte/|2026-11-19|
+pytest|9.1.1|-|https://pypi.org/project/pytest/|2026-11-23|8.2 or newer reads the `@file` argument the shards use
+pytest-xdist|3.8.0|-|https://pypi.org/project/pytest-xdist/|2026-11-23|
+pytest-rerunfailures|16.7|-|https://pypi.org/project/pytest-rerunfailures/|2026-11-23|gives --rerun-except, measured present in 16.7
 #
 # Package names inside the BSD virtual machines, read from each release's own
 # package index.

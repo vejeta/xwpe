@@ -47,8 +47,11 @@ ERR=$WORK/findings
 
 # Names of the record items every tree must have.
 REQUIRED="runner-ubuntu runner-macos-arm runner-macos-intel bsd-freebsd
-bsd-netbsd bsd-openbsd pyte pkg-freebsd-python pkg-openbsd-python
+bsd-netbsd bsd-openbsd pyte pytest pytest-xdist pytest-rerunfailures
+pkg-freebsd-python pkg-openbsd-python
 pkg-openbsd-autoconf pkg-openbsd-automake pkg-netbsd-python"
+# The Python packages a workflow or script pins with "==".
+PINNED="pyte pytest pytest-xdist pytest-rerunfailures"
 
 # fail FILE MESSAGE: record one finding.
 fail() {
@@ -233,12 +236,17 @@ check_bsd_packages() {
   done
 }
 
-# check_pyte FILES: every pyte pin is the recorded version.
+# check_pyte FILES: every pin of pyte and of the pytest packages is the
+# recorded version.  A name is matched up to its "==", so pytest does not
+# match pytest-xdist.
 check_pyte() {
   for y_file in "$@"; do
     [ -f "$y_file" ] || continue
-    grep -oE 'pyte==[0-9.]+' "$y_file" | while read -r y_tok; do
-      judge "$y_file" "pyte" "${y_tok#pyte==}" "$(rec pyte 2)"
+    for y_name in $PINNED; do
+      grep -oE "(^|[^a-z-])${y_name}==[0-9.]+" "$y_file" | while read -r y_tok; do
+        y_tok=${y_tok#[!a-z]}
+        judge "$y_file" "$y_name" "${y_tok#"$y_name"==}" "$(rec "$y_name" 2)"
+      done
     done
   done
 }
@@ -269,7 +277,7 @@ check_tree() {
   judge_actions
   check_bsd_jobs "$T/.github/workflows/bsd.yml"
   check_bsd_packages "$T/.github/workflows/bsd.yml"
-  check_pyte "$T"/.github/workflows/*.yml "$T/tests/run-tests.sh"
+  check_pyte "$T"/.github/workflows/*.yml "$T/tests/run-tests.sh" "$T/tests/ci-venv.sh"
   check_ci_run "$T/contrib/bsd-test/ci-run.sh"
   [ ! -s "$ERR" ]
 }
@@ -336,7 +344,8 @@ selftest() {
   rm -rf "$WORK/base"
   mkdir -p "$WORK/base/.github" "$WORK/base/tests" "$WORK/base/contrib"
   cp -R "$SRCDIR/.github/workflows" "$WORK/base/.github/workflows"
-  cp "$SRCDIR/tests/ci-versions.txt" "$SRCDIR/tests/run-tests.sh" "$WORK/base/tests/"
+  cp "$SRCDIR/tests/ci-versions.txt" "$SRCDIR/tests/run-tests.sh" \
+     "$SRCDIR/tests/ci-venv.sh" "$WORK/base/tests/"
   cp -R "$SRCDIR/contrib/bsd-test" "$WORK/base/contrib/bsd-test"
   if ! check_tree "$WORK/base"; then
     echo "check-ci-versions: the tree itself is refused:" >&2
@@ -355,6 +364,9 @@ selftest() {
   canary old-release $W/bsd.yml 's/release: \["15.1"\]/release: ["14.3"]/' "is older than the record"
   canary old-package $W/bsd.yml 's/autoconf%2.73/autoconf%2.72/' "package autoconf%"
   canary old-pyte tests/run-tests.sh 's/pyte==0.8.2/pyte==0.8.1/' "pyte 0.8.1 is older"
+  canary old-pytest tests/ci-venv.sh 's/pytest==9.1.1/pytest==9.0.0/' "pytest 9.0.0 is older"
+  canary old-xdist tests/ci-venv.sh 's/pytest-xdist==3.8.0/pytest-xdist==3.7.0/' "pytest-xdist 3.7.0 is older"
+  canary old-rerun tests/ci-venv.sh 's/pytest-rerunfailures==16.7/pytest-rerunfailures==16.6/' "pytest-rerunfailures 16.6 is older"
   canary hard-python contrib/bsd-test/ci-run.sh 's/PY=\$(find_python)/PY=python3.12/' "hard-coded python minor"
   canary record-item tests/ci-versions.txt '/^pyte|/d' "no line for pyte"
   canary record-fields tests/ci-versions.txt 's/^bsd-netbsd|11.1|-|/bsd-netbsd|11.1|/' "fields, six are needed"

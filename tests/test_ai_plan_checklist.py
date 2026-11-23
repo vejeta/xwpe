@@ -369,9 +369,12 @@ def test_a_step_longer_than_its_room_is_cut(tmp_path):
     The contract says a longer line is cut, and the room for one step is 200 bytes
     with the last left for the terminator.  Messages wraps a row wider than itself
     over several screen rows, so the step is read by joining the rows under its
-    header back together; the terminal is opened wide enough that the join is the
-    checklist's own cut and not a window border.  The step carries no space, so
-    the join cannot lose one.
+    header back together.  The step has no space of its own, so Messages breaks
+    the line at the only one there is, the space after "[ ]", and the screen
+    row that ends there loses its trailing blank: that is ordinary word wrap,
+    and the join cannot see it.  The row therefore reads the mark and the
+    step apart: the mark is "  [ ]", and what follows it is the contract's cut
+    of the step.
     """
     long = "abcdefghij" * 25                     # 250 bytes
     assert len(long) == 250
@@ -384,12 +387,14 @@ def test_a_step_longer_than_its_room_is_cut(tmp_path):
     assert at >= 0, "Messages holds no checklist:\n%s" % _evidence(
         messages, pane, txt)
     got = "".join(r for r in messages[at + 1:] if r)
-    want = "  [ ] " + long[:199]
+    mark = "  [ ]"
+    assert got.startswith(mark), "the step has no checklist mark:\n%r" % got
+    shown = got[len(mark):].strip()
     print("the 250-byte step is shown as %d bytes over %d screen row(s)"
-          % (len(got) - 6, len([r for r in messages[at + 1:] if r])))
-    assert got == want, \
+          % (len(shown), len([r for r in messages[at + 1:] if r])))
+    assert shown == long[:199], \
         "the step is shown as %d bytes, the contract's cut leaves 199:\n" \
-        "got  %r\nwant %r\n%s" % (len(got) - 6, got, want,
+        "got  %r\nwant %r\n%s" % (len(shown), shown, long[:199],
                                   _evidence(messages, pane, txt))
     assert alive, "a long step ended the editor"
 

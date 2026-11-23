@@ -126,7 +126,9 @@ is marked, the Watches are refreshed, and the status row says
 terminal sends no Ctrl-Break that curses can read, so there use
 @kbd{Ctrl-G I}, the menu or the bar.  With no session, or with the
 program stopped, Pause only says so on the status row: with no session
-it says @samp{No debug session}.  It works under
+it says @samp{No debug session}, and while the program is still being
+compiled for the session it says @samp{The program is still being
+compiled for its debug session}.  It works under
 gdb, sdb, dbx, xdb, pdb, a68g, jdb and the debug adapters (dlv for Go,
 lldb-dap and gdb's adapter for Rust).  The Scala adapter is asked to
 pause like the others; whether it stops the program is up to the

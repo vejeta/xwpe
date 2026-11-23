@@ -34,6 +34,7 @@ if os.path.dirname(HERE) not in sys.path:
     sys.path.insert(0, os.path.dirname(HERE))
 
 import gui_owner  # noqa: E402
+import host_tools  # noqa: E402
 SRC = os.path.join(TOP, "we_gpm.c")
 # Both halves of the decision, in dependency order: the pure per-descriptor
 # test, then the chooser that decides which descriptor to ask about.
@@ -44,7 +45,12 @@ FIND_TIMEOUT = 60
 CPIO_TIMEOUT = 120
 
 REQUIRED = ["qemu-system-x86_64", "gcc", "cpio"]
-_MISSING = [b for b in REQUIRED if shutil.which(b) is None]
+# The device the VM is given to run on.  A row of tests/test_console_layer.py
+# names another file to run the layer without the machine's own.
+KVM_DEVICE = os.environ.get("XWPE_TEST_KVM_DEVICE", "/dev/kvm")
+# The tools the layer cannot use, each with its reason (the machine has none,
+# the tool farm does not give it, it does not run).
+_MISSING = host_tools.layer_unmet("console layer", REQUIRED)
 
 
 def _kernel_image():
@@ -59,24 +65,48 @@ def _kernel_image():
 
 
 def _kvm_usable():
-    return os.access("/dev/kvm", os.R_OK | os.W_OK)
+    return os.access(KVM_DEVICE, os.R_OK | os.W_OK)
 
 
 _KERNEL = _kernel_image()
 if _KERNEL is None:
     _MISSING.append("readable kernel image (/boot/vmlinuz-*, or XWPE_TEST_KERNEL)")
 if not _kvm_usable():
-    _MISSING.append("/dev/kvm (usable by this user)")
+    _MISSING.append("%s (usable by this user)" % KVM_DEVICE)
 if not os.access(SRC, os.R_OK):
     _MISSING.append("we_gpm.c (is this a build with GPM?)")
+
+
+def layer_skip_reason():
+    """Why the layer cannot run on this host, or None.
+
+    A tool the job installed that is not usable stops the session (a skip
+    would hide that the whole layer never ran)."""
+    if not _MISSING:
+        return None
+    host_tools.fail_the_session_on_expected("console layer", _MISSING)
+    return "console layer unavailable, missing: " + ", ".join(_MISSING)
+
+
+def skip_unless_the_layer_can_run():
+    """Skip the running row when the layer cannot run.
+
+    The collection hook below marks every row of the layer; this is the same
+    answer asked again by the fixture that boots the VM, so that no way of
+    reaching the fixture (a marker taken off, a row run by node id) starts
+    qemu where the tool farm denies it: that errors the rows at setup and
+    ends the session with a stray engine hit."""
+    reason = layer_skip_reason()
+    if reason:
+        pytest.skip(reason)
 
 
 def pytest_collection_modifyitems(config, items):
     """A conftest-level pytestmark does not reach sibling modules, so skip the
     whole layer from the collection hook instead (same reason as tests/x11)."""
-    if not _MISSING:
+    reason = layer_skip_reason()
+    if reason is None:
         return
-    reason = "console layer unavailable, missing: " + ", ".join(_MISSING)
     for item in items:
         if os.path.dirname(str(item.fspath)) == HERE:
             item.add_marker(pytest.mark.skip(reason=reason))
@@ -175,6 +205,7 @@ def parse_cases(text):
 @pytest.fixture(scope="session")
 def vt_cases(tmp_path_factory):
     """The predicate's answers on a real VT, a pty, a serial line and a non-tty."""
+    skip_unless_the_layer_can_run()
     workdir = str(tmp_path_factory.mktemp("console-vm"))
     initrd = _build(workdir)
     return parse_cases(_boot(workdir, initrd))

@@ -17,11 +17,10 @@ saves it before it answers.  The assertions are on that saved file.
 """
 import os
 import subprocess
-import time
 
 import pytest
 
-from wpe_driver import WpeSession, ALT, WPE_BIN
+from wpe_driver import WpeSession, ALT, WPE_BIN, wait_until
 
 SEED = "int main(void){return 0;}\n"
 # A task over the 4096 bytes the first write of the user turn used to have.
@@ -71,15 +70,31 @@ def _env(tmp_path, capture):
     }
 
 
+def _request_is_saved(capture):
+    """True once the stub has bytes of the request on disk."""
+    return os.path.exists(capture) and os.path.getsize(capture) > 0
+
+
+def _read_saved_request(capture):
+    """What the stub saved, or "" when it saved nothing."""
+    if not os.path.exists(capture):
+        return ""
+    with open(capture) as saved:
+        return saved.read()
+
+
 def _wait_for_request(s, capture, timeout=20):
-    """Drain the editor until the stub has saved the request, or time runs out."""
-    end = time.time() + timeout
-    while time.time() < end:
-        s._drain(0.5)
-        if os.path.exists(capture) and os.path.getsize(capture) > 0:
-            s._drain(0.5)
-            return open(capture).read()
-    return open(capture).read() if os.path.exists(capture) else ""
+    """Drain the editor until the stub has saved the request, or time runs out.
+
+    The stub is still writing when its file first has bytes in it, so one more
+    turn of the owner's drain follows the first sight of it.  What is on disk
+    is returned either way: a row that got nothing, or only part of a request,
+    says so with the text it did get."""
+    if wait_until(s, lambda: _request_is_saved(capture), timeout,
+                  what="the request the stub saved"):
+        wait_until(s, lambda: _request_is_saved(capture), 1,
+                   what="the stub to finish saving the request")
+    return _read_saved_request(capture)
 
 
 # @scenario SC-ai-plan-request-long-task

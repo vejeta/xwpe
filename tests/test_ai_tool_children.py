@@ -301,8 +301,14 @@ def _host_env(tmp_path, pidf):
 
 
 def _host_build():
-    return b"AIHostAdapter text needs AIHostCommand" in open(
-        os.path.abspath(WPE_BIN), "rb").read()
+    """True when the binary under test has the hosted-engine adapter.  A tree
+    with no binary yet (a collection before the build) answers no, so that
+    collecting the rows never needs the build."""
+    try:
+        with open(os.path.abspath(WPE_BIN), "rb") as fh:
+            return b"AIHostAdapter text needs AIHostCommand" in fh.read()
+    except OSError:
+        return False
 
 
 def _start_host_turn(s, pidf):

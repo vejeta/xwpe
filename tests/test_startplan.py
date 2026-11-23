@@ -210,11 +210,11 @@ def test_startplan_dangling_link_out_of_the_folder_asks(tmp_path):
 
 # @scenario SC-compile-29
 @needs_gcc
-def test_startplan_project_outside_the_start_folder_asks(tmp_path):
-    """The start folder's xwperc names a project in another folder, whose
-    CMP is the user's own gcc -g: F9 says the build reads a project file
-    from outside; after Run it the project builds, and the next F9 in the
-    same folder asks nothing."""
+def test_startplan_project_outside_the_start_folder_is_not_opened_and_says_why(tmp_path):
+    """The start folder's xwperc names a project in another folder: the
+    project is not opened, and the screen says which file named it, that the
+    project is outside this folder and that it was not opened.  F9 then
+    builds nothing of it."""
     folder = Folder(tmp_path)
     other = tmp_path / "other"
     other.mkdir()
@@ -223,20 +223,15 @@ def test_startplan_project_outside_the_start_folder_asks(tmp_path):
     (other / "main.c").write_text(SEED)
     folder.xwperc("[Programming]\nProject : %s\n" % prj)
     with folder.session() as s:
-        box = _f9_box(s, "Command from p.prj")
-        s.key(RUN_IT, delay=0.8)
-        built = _wait(lambda: (other / "demo").exists(), BUILD_WAIT)
-    assert "Reads outside this folder:" in box, box
-    assert "  %s" % os.path.realpath(str(prj)) in _plan_lines(folder), _plan_lines(folder)
-    assert built, "Run it did not build the project"
-    asked = folder.traced().count("startcmd ask")
-    (other / "demo").unlink()
-    with folder.session() as s:
-        s.key(F9, delay=0.8)
-        rebuilt = _wait(lambda: (other / "demo").exists(), BUILD_WAIT)
+        shown = _wait(lambda: "was not opened" in _screen(s), BUILD_WAIT)
         screen = _screen(s)
-    assert rebuilt, "the second F9 did not build:\n" + screen
-    assert folder.traced().count("startcmd ask") == asked, "the second F9 asked again"
+        s.key(F9, delay=0.8)
+        built = _wait(lambda: (other / "demo").exists(), BUILD_WAIT)
+    assert shown, "the refusal was never said:\n" + screen
+    assert "xwperc names the project" in screen, screen
+    assert "outside this folder" in screen, screen
+    assert "It was not opened." in screen, screen
+    assert not built, "F9 built a project that was not opened"
 
 
 MANY = 30

@@ -318,3 +318,16 @@ def test_the_width_follows_the_path_the_row_waits_for():
     width = drv.cols_for(long_path, tail=drv.COMPILER_LINE_TAIL)
     assert width >= len(long_path) + drv.COMPILER_LINE_TAIL
     assert drv.cols_for(long_path, at_least=500) == 500
+
+
+# --- the pane frame, drawn whole ------------------------------------------
+
+def test_a_pane_frame_painted_to_its_corner_is_drawn_and_a_half_painted_one_is_not():
+    """A row that reads the pane right after a wait for its text can catch the
+    title row with no right corner yet: pane_frame then has nothing to find."""
+    whole = _title_row(drv.PANE_NAME)
+    half = whole[:whole.index(" %s " % drv.PANE_NAME) + len(drv.PANE_NAME) + 4]
+    assert drv.FRAME_TOP_RIGHT not in half
+    assert drv.pane_frame_drawn([whole])
+    assert not drv.pane_frame_drawn([half])
+    assert not drv.pane_frame_drawn(["no pane on this screen"])

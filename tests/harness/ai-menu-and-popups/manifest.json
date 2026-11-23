@@ -54,7 +54,7 @@
   {"id": "SC-ai-menu-32", "requirement": "The prompt popup and the composer", "layer": "ncurses", "test": "tests/test_ai_menu_dropdown_contracts.py::test_edit_popup_titles_plain_and_over_a_marked_block", "status": "new"},
   {"id": "SC-ai-menu-32", "requirement": "The prompt popup and the composer", "layer": "ncurses", "test": "tests/test_ai_menu_dropdown_contracts.py::test_upper_case_letter_f_opens_the_multi_file_prompt", "status": "new"},
   {"id": "SC-ai-menu-33", "requirement": "The prompt popup and the composer", "layer": "ncurses", "test": "tests/test_ai_prompt_popup_contracts.py::test_field_scrolls_to_show_the_tail_of_a_long_text", "status": "new"},
-  {"id": "SC-ai-menu-33", "requirement": "The prompt popup and the composer", "layer": "ncurses", "test": "tests/test_ai_prompt_popup_contracts.py::test_send_carries_1999_bytes_and_drops_the_rest", "status": "new"},
+  {"id": "SC-ai-menu-33", "requirement": "The prompt popup and the composer", "layer": "ncurses", "test": "tests/test_ai_prompt_popup_contracts.py::test_send_carries_the_prompt_limit_and_drops_the_rest", "status": "new"},
   {"id": "SC-ai-menu-34", "requirement": "The prompt popup and the composer", "layer": "ncurses", "test": "tests/test_ai_prompt_accelerators.py::test_altm_opens_multiline_composer", "status": "covered"},
   {"id": "SC-ai-menu-34", "requirement": "The prompt popup and the composer", "layer": "ncurses", "test": "tests/test_ai_prompt_accelerators.py::test_altc_cancels_prompt", "status": "covered"},
   {"id": "SC-ai-menu-34", "requirement": "The prompt popup and the composer", "layer": "ncurses", "test": "tests/test_ai_prompt_popup_contracts.py::test_alt_s_is_the_send_button", "status": "new"},

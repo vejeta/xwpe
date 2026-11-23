@@ -610,6 +610,12 @@ void e_cursor(FENSTER *f, int sw);
 #define E_SAY_NO_UNDO "No more Undo"
 #define E_SAY_NO_REDO "No more Redo"
 #define E_SAY_NO_DEBUG_SESSION "No debug session"
+/* What the user is told when a command needs the program of a debug session
+   and the session is still being compiled, so there is no program yet.  The
+   state is the session's, not the command's, so the line is said by the
+   command's entry (e_d_say_no_program) and is the same from every way in. */
+#define E_SAY_DEBUG_COMPILING \
+ "The program is still being compiled for its debug session"
 /* The room for the line that tells how many NUL bytes a read left out, and
    for the question before the Save that would write the file without them. */
 #define E_NUL_SAY_MAX 96
@@ -1218,12 +1224,16 @@ int e_deb_inp(FENSTER *f);
 int e_d_quit_basic(FENSTER *f);
 int e_d_quit(FENSTER *f);
 /* The debugger commands as a user runs them: with no session each says
-   "No debug session" on the status row (the menu and Ctrl-G call these). */
+   "No debug session" on the status row (the menu and Ctrl-G call these).
+   A command that needs the program itself asks e_d_say_no_program, which
+   says why there is none: no session, or a session still being compiled. */
 int e_d_say_no_session(FENSTER *f);
+int e_d_say_no_program(FENSTER *f);
 int e_d_session_runs(void);
 int e_d_compile_busy(void);
 int e_d_quit_entry(FENSTER *f);
 int e_d_pause_command(FENSTER *f);
+int e_d_run_action(FENSTER *f, int action, int from_key);
 int e_edit_watches_command(FENSTER *f);
 int e_delete_watches_command(FENSTER *f);
 int e_remove_all_watches_command(FENSTER *f);

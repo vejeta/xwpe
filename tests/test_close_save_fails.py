@@ -20,6 +20,8 @@ from wpe_driver import ALT, WpeSession  # noqa: E402
 
 CTRL_W = "\x17"          # Close the active window
 SEED = "alpha\n"
+# How long the editor may take to end after Quit, before the scale.
+CLOSE_WAIT_S = 5
 ASK = "NOT saved"        # the question's first line
 FAILED = "Cannot write"  # the write's error box; checked loosely
 
@@ -88,7 +90,7 @@ def test_declined_save_still_closes(tmp_path, how):
         _answer_no(s)
         if how == "quit":
             s.display()
-            assert not s.alive(), "Quit with No should end the editor"
+            s.ended_within(CLOSE_WAIT_S, "Quit with No to end the editor")
         else:
             assert s.alive()
             assert "Xalpha" not in _blob(s), "the window is still open"
@@ -108,4 +110,4 @@ def test_working_save_still_closes(tmp_path, how):
             assert "Xalpha" not in _blob(s), "the window is still open"
         else:
             s.display()
-            assert not s.alive(), "Quit after a good save should end the editor"
+            s.ended_within(CLOSE_WAIT_S, "Quit after a good save to end the editor")

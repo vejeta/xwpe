@@ -35,7 +35,6 @@ display_name(), never by a constant.
 """
 import os
 import pty
-import shutil
 import sys
 import time
 
@@ -52,7 +51,9 @@ from gui_owner import gui_owner, wait_for  # noqa: E402,F401  (the fixture)
 from gui_owner import PreviousRowLeft  # noqa: E402,F401  (rows import it from here)
 
 REQUIRED_BINS = ["Xvfb", "xdotool", "weston"]
-_MISSING = [b for b in REQUIRED_BINS if shutil.which(b) is None]
+# The tools the layer cannot use, each with its reason (the machine has none,
+# the tool farm does not give it, it does not run).
+_MISSING = host_tools.layer_unmet("Wayland GUI layer", REQUIRED_BINS)
 try:
     import PIL  # noqa: F401
 except ImportError:
@@ -66,7 +67,7 @@ import glob as _glob
 def _weston_has(module):
     """True if weston ships `module` in a standard (non-recursive) location.
     Bounded globs only -- a recursive /usr/lib/** walk is pathologically slow."""
-    if not shutil.which("weston"):
+    if host_tools.layer_reason("weston") is not None:
         return False
     for pat in ("/usr/lib/*/libweston-*/" + module,   # libweston-15 multiarch dir
                 "/usr/lib/libweston-*/" + module,
@@ -77,7 +78,7 @@ def _weston_has(module):
     return False
 
 
-if shutil.which("weston"):
+if host_tools.layer_reason("weston") is None:
     if not _weston_has("x11-backend.so"):
         _MISSING.append("weston x11-backend.so")
     if not _weston_has("kiosk-shell.so"):

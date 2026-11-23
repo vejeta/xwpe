@@ -113,6 +113,13 @@ BASELINE_TOOLS = (
     "xterm", "convert", "import", "Xvfb", "Xwayland", "weston", "weston-info",
     "matchbox-window-manager", "wl-copy", "wl-paste", "xauth", "setxkbmap",
     "screen", "tmux", "openssl",
+    # the rest of what the display layers decode a screen dump with, and the
+    # window manager they use where matchbox is not installed
+    "magick", "xwdtopnm", "twm",
+    # the console layer boots a micro-VM and reads its serial port; it is the
+    # one program of the farm that runs a whole machine, so it is listed
+    # apart, with the reason
+    "qemu-system-x86_64",
     # what the graphical editor asks for its font and display, with the
     # row's private HOME: gsettings reads the font name, fc-* the fonts
     "gsettings", "fc-match", "fc-list", "xrdb", "xrandr", "xset", "xdpyinfo",

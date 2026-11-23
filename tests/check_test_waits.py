@@ -45,7 +45,32 @@ import tempfile
 RULE_READ = "WA"
 RULE_LOOP = "WB"
 RULE_DOUBLE = "WC"
-RULES = (RULE_READ, RULE_LOOP, RULE_DOUBLE)
+RULE_CLOCK = "WS"
+RULE_DURATION = "WD"
+RULE_END = "WE"
+RULE_PROGRAM = "WF"
+RULES = (RULE_READ, RULE_LOOP, RULE_DOUBLE, RULE_CLOCK, RULE_DURATION, RULE_END,
+         RULE_PROGRAM)
+# Rule WS: a reference to one of these of the time module is a clock of the
+# row's own, whatever it is called (alias, from-import, getattr).
+CLOCK_NAMES = ("sleep", "time", "monotonic", "perf_counter", "time_ns",
+               "monotonic_ns", "perf_counter_ns")
+# Rule WF: a sleep of a known form inside the text of a program or of a
+# stand-in script: a call in a language (time.sleep, Thread.sleep, usleep,
+# nanosleep, sleep_for, from_secs) and the shell's `sleep N` at the start of
+# a command.
+PROGRAM_SLEEP = re.compile(
+    r"\b(?:time\.sleep|time\.Sleep|Thread\.sleep|thread::sleep|nanosleep|usleep"
+    r"|sleep_for|sleep)\s*\(|"
+    r"\bfrom_secs\s*\(|"
+    r"(?:^|;|&&|\|\||\||\bdo\b|\bthen\b|\bexec\b|\()[ \t]*sleep[ \t]+[\d$]", re.M)
+PROGRAM_GATE = os.path.join("tests", "program_gate.py")
+# The files that own a clock, an end or a duration: the two drivers.  A test
+# file is never an owner; its own sites are counted in the allow file.
+CLOCK_OWNERS = (os.path.join("tests", "gui_owner.py"), os.path.join("tests", "wpe_driver.py"))
+# The allow file: the sites a sweep has not moved yet, counted per file and
+# rule; a count may only fall.
+ALLOW_FILE = os.path.join("tests", "test-waits.allow")
 SCALE_VARIABLE = "XWPE_TEST_WAIT_SCALE"
 SCALE_NAME = "WAIT_SCALE"
 # The functions that stretch a time by the scale, or return the scale itself.
@@ -108,6 +133,76 @@ CANARIES = {
                                    'wait_screen(s, "x", LIMIT_S)\n', RULE_DOUBLE),
     "double_deadline.py": ('A_S = scaled(2)\n'
                            'end = wait_deadline(A_S)\n', RULE_DOUBLE),
+    "clock_alias.py": ('from time import monotonic as m\n'
+                       'x = m()\n', RULE_CLOCK),
+    "clock_module_alias.py": ('import time as t\n'
+                              't.sleep(1)\n', RULE_CLOCK),
+    "clock_getattr.py": ('import time\n'
+                         'getattr(time, "sleep")(1)\n', RULE_CLOCK),
+    "clock_subtraction.py": ('import time\n'
+                             'def f(start):\n'
+                             '    return time.monotonic() - start\n', RULE_CLOCK),
+    "clock_select.py": ('import select\n'
+                        'select.select([], [], [], 1)\n', RULE_CLOCK),
+    "end_alive.py": ('def t(s):\n'
+                     '    assert not s.alive()\n', RULE_END),
+    "end_poll.py": ('def t(s):\n'
+                    '    assert s.proc.poll() is not None\n', RULE_END),
+    "end_exit_code.py": ('def t(s):\n'
+                         '    assert s.exit_code() == 0\n', RULE_END),
+    "clock_select_alias.py": ('import select as sl\n'
+                              'sl.select([], [], [], 5)\n', RULE_CLOCK),
+    "clock_select_from.py": ('from select import select as pick\n'
+                             'pick([], [], [], 5)\n', RULE_CLOCK),
+    "clock_import_by_name.py": ('__import__("time").sleep(1)\n', RULE_CLOCK),
+    "clock_star_import.py": ('from time import *\n'
+                             'sleep(1)\n', RULE_CLOCK),
+    # A test file is never an owner of a clock.
+    "test_wait_owner.py": ('import time\n'
+                           'time.sleep(1)\n', RULE_CLOCK),
+    "end_returncode.py": ('def t(s):\n'
+                          '    assert s.proc.returncode is not None\n', RULE_END),
+    "end_named.py": ('def t(s):\n'
+                     '    ended = not s.alive()\n'
+                     '    assert ended\n', RULE_END),
+    "end_named_poll.py": ('def t(s):\n'
+                          '    gone = s.proc.poll() is not None\n'
+                          '    assert gone\n', RULE_END),
+    "duration_literal.py": ('ENV = {"XWPE_AI_MOCK_DELAY_MS": "5000"}\n', RULE_DURATION),
+    "duration_xwperc_lines.py": ('RC = "Keys : borland\\nAIToolTimeout : 2\\n"\n', RULE_DURATION),
+    "duration_option_tight.py": ('LINE = "AIToolTimeout: 2\\n"\n', RULE_DURATION),
+    "duration_joined.py": ('NAME = "XWPE_AI_MOCK" + "_DELAY_MS"\n', RULE_DURATION),
+    "duration_keyword.py": ('import os\n'
+                            'os.environ.update(XWPE_AI_MOCK_DELAY_MS="5000")\n', RULE_DURATION),
+    "duration_option.py": ('LINE = "AIToolTimeout : 2\\n"\n', RULE_DURATION),
+    "duration_fstring.py": ('kind = "AI"\n'
+                            'name = f"XWPE_{kind}_TIMEOUT"\n', RULE_DURATION),
+    "duration_concat.py": ('kind = "AI"\n'
+                           'name = "XWPE_" + kind + "_MS"\n', RULE_DURATION),
+    "program_percent.py": ('PROG = "while True:\\n    time.sleep(%d)\\n" % 2\n', RULE_PROGRAM),
+    "program_fstring.py": ('n = 2\n'
+                           'PROG = f"  Thread.sleep({n});"\n', RULE_PROGRAM),
+    "program_rust.py": ('PROG = "std::thread::sleep(std::time::Duration::from_secs(8));"\n',
+                        RULE_PROGRAM),
+    "program_shell.py": ('SCRIPT = "#!/bin/sh\\necho up\\nsleep 30\\n"\n', RULE_PROGRAM),
+    "program_shell_chained.py": ('SCRIPT = "trap : TERM; while :; do sleep $N; done"\n',
+                                 RULE_PROGRAM),
+    "program_shell_exec.py": ('SCRIPT = "#!/bin/sh\\nexec sleep 20\\n"\n', RULE_PROGRAM),
+    "program_nanosleep.py": ('PROG = "struct timespec t = {1, 0}; nanosleep(&t, 0);"\n',
+                             RULE_PROGRAM),
+    "program_sleep_for.py": ('PROG = "std::this_thread::sleep_for(std::chrono::seconds(8));"\n',
+                             RULE_PROGRAM),
+    "clean_still_running.py": ('def t(s):\n'
+                               '    assert s.alive()\n'
+                               '    assert s.proc.poll() is None\n'
+                               '    assert s.proc.returncode is None\n', None),
+    "clean_prose.py": ('MSG = "the row should sleep for a while, then go on"\n'
+                       'OPT = "AIToolTimeoutNote : none"\n', None),
+    "clean_api.py": ('from gui_owner import product_duration, product_option_line\n'
+                     'v = product_duration("XWPE_AI_MOCK_DELAY_MS", 5000)\n'
+                     'o = product_option_line("AIToolTimeout", 2)\n'
+                     '"""a docstring that says time.sleep(1) and XWPE_AI_TIMEOUT"""\n',
+                     None),
     "clean.py": ('"""XWPE_TEST_WAIT_SCALE and _wait_screen in a docstring."""\n'
                  'import os, time\n'
                  '# time.time() + tmo in a comment\n'
@@ -115,7 +210,7 @@ CANARIES = {
                  'os.environ["XWPE_TEST_WAIT_SCALE"] = "3"\n'
                  'def f(s, tmo, delay_ms):\n'
                  '    end = wait_deadline(tmo)\n'
-                 '    stop = time.time() + 5\n'
+                 '    stop = 5\n'
                  '    mock = 5000 * WAIT_SCALE\n'
                  '    return wait_screen(s, "x", 10)\n'
                  'MOCK_MS = int(5000 * WAIT_SCALE)\n'
@@ -240,10 +335,256 @@ def _passes_stretched_time(node, stretched, aliases):
     return any(_is_scaling(sub, stretched, aliases) for arg in args for sub in ast.walk(arg))
 
 
+def _time_aliases(tree):
+    """(local names of the time module, {local name: clock name}) a file
+    binds by `import time as t` and `from time import sleep as z`."""
+    modules, names = set(), {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "time":
+                    modules.add(alias.asname or "time")
+        elif isinstance(node, ast.ImportFrom) and node.module == "time":
+            for alias in node.names:
+                if alias.name == "*":
+                    names.update({clock: clock for clock in CLOCK_NAMES})
+                elif alias.name in CLOCK_NAMES:
+                    names[alias.asname or alias.name] = alias.name
+    return modules, names
+
+
+def _select_aliases(tree):
+    """(local names of the select module, local names of select.select) a
+    file binds by `import select as sl` and `from select import select as
+    pick`."""
+    modules, functions = {"select"}, set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "select":
+                    modules.add(alias.asname or "select")
+        elif isinstance(node, ast.ImportFrom) and node.module == "select":
+            for alias in node.names:
+                if alias.name == "select":
+                    functions.add(alias.asname or "select")
+    return modules, functions
+
+
+def _is_star_time_import(node):
+    """True for `from time import *`: every clock of the module, unnamed."""
+    return (isinstance(node, ast.ImportFrom) and node.module == "time"
+            and any(alias.name == "*" for alias in node.names))
+
+
+def _imports_time_by_name(node):
+    """True for __import__("time") and importlib.import_module("time"): the
+    module reached with no import statement to read."""
+    if not isinstance(node, ast.Call) or not node.args:
+        return False
+    first = node.args[0]
+    if not (isinstance(first, ast.Constant) and first.value == "time"):
+        return False
+    func = node.func
+    return (isinstance(func, ast.Name) and func.id == "__import__") or (
+        isinstance(func, ast.Attribute) and func.attr == "import_module")
+
+
+def _has_timeout(node):
+    """True when a select call carries a timeout (a fourth argument or the
+    keyword)."""
+    return len(node.args) >= 4 or any(k.arg == "timeout" for k in node.keywords)
+
+
+def _is_clock_reference(node, modules, names, selects=({"select"}, set())):
+    """True for time.sleep (any alias of time, or the module reached by
+    __import__), a clock name taken from the module (from-import, star
+    import), getattr(time, ...), and a select.select with a timeout (any
+    alias of the module or of the function)."""
+    select_modules, select_functions = selects
+    if isinstance(node, ast.Attribute):
+        if isinstance(node.value, ast.Name) and node.value.id in modules \
+                and node.attr in CLOCK_NAMES:
+            return True
+        if _imports_time_by_name(node.value) and node.attr in CLOCK_NAMES:
+            return True
+    if _is_star_time_import(node):
+        return True
+    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and node.id in names:
+        return True
+    if isinstance(node, ast.Call):
+        func = node.func
+        if isinstance(func, ast.Name) and func.id == "getattr" and node.args \
+                and isinstance(node.args[0], ast.Name) and node.args[0].id in modules:
+            return True
+        if isinstance(func, ast.Attribute) and func.attr == "select" \
+                and isinstance(func.value, ast.Name) and func.value.id in select_modules:
+            return _has_timeout(node)
+        if isinstance(func, ast.Name) and func.id in select_functions:
+            return _has_timeout(node)
+    return False
+
+
+def _docstring_nodes(tree):
+    """The string constants that are docstrings or lone expression strings."""
+    return {id(n.value) for n in ast.walk(tree)
+            if isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant)
+            and isinstance(n.value.value, str)}
+
+
+_DURATIONS = []
+
+
+def _duration_names():
+    """The environment variables and options of the product that hold a
+    duration, read from the sources by the owner (gui_owner), once."""
+    if _DURATIONS:
+        return _DURATIONS[0]
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    try:
+        import gui_owner
+        names = set(gui_owner.product_duration_names())
+    finally:
+        sys.path.pop(0)
+    top = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    with open(os.path.join(top, "we_opt.c"), encoding="utf-8", errors="replace") as fh:
+        names.update(re.findall(r'"(\w+Timeout)"', fh.read()))
+    _DURATIONS.append(names)
+    return names
+
+
+def _is_duration_api_argument(node, parents):
+    """True when @node is the first argument of product_duration or
+    product_option_line."""
+    parent = parents.get(id(node))
+    return (isinstance(parent, ast.Call) and parent.args and parent.args[0] is node
+            and _called_name(parent) in ("product_duration", "product_option_line"))
+
+
+def _folded_string(node):
+    """The text of a string made only of literals joined with + (`"XWPE_AI_MOCK"
+    + "_DELAY_MS"`), or None."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left, right = _folded_string(node.left), _folded_string(node.right)
+        if left is not None and right is not None:
+            return left + right
+    return None
+
+
+def _builds_a_product_name(node, durations):
+    """True for an f-string or a concatenation or %-format whose literal part
+    starts a name with the XWPE_ prefix, and for literals joined into the name
+    of a duration: no alias route around WD."""
+    if isinstance(node, ast.JoinedStr):
+        first = node.values[0] if node.values else None
+        return isinstance(first, ast.Constant) and str(first.value).startswith("XWPE_")
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Mod)):
+        if _folded_string(node) in durations:
+            return True
+        left = node.left
+        return (isinstance(left, ast.Constant) and isinstance(left.value, str)
+                and left.value.startswith("XWPE_") and left.value.endswith("_"))
+    return False
+
+
+def _names_an_option_line(text, durations):
+    """True when a line of @text starts with the name of a duration option and
+    a colon (`AIToolTimeout : 2`, `AIToolTimeout: 2`), in a text of any number
+    of lines (a whole xwperc)."""
+    options = [n for n in durations if n.endswith("Timeout")]
+    return any(re.match(r"\s*%s\s*:" % re.escape(option), line)
+               for line in text.splitlines() for option in options)
+
+
+def _is_duration_keyword(node, durations):
+    """True for a keyword argument spelt as the name of a duration
+    (`os.environ.update(XWPE_AI_MOCK_DELAY_MS="5000")`, `dict(...)`)."""
+    return isinstance(node, ast.keyword) and node.arg in durations
+
+
+def _is_method_call(node, name):
+    """True for `x.<name>(...)`."""
+    return (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == name)
+
+
+def _is_none(node):
+    return isinstance(node, ast.Constant) and node.value is None
+
+
+def _reads_the_end(node):
+    """True when the expression @node reads the END of a session once: `not
+    s.alive()`, `s.proc.poll() is not None`, `x.returncode is not None`, or
+    any use of exit_code().  A "still running" check (`s.alive()`, `poll() is
+    None`) is not a read of the end: the row has not moved past it."""
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+        return _is_method_call(node.operand, "alive")
+    if isinstance(node, ast.Compare) and len(node.ops) == 1 \
+            and isinstance(node.ops[0], ast.IsNot) and _is_none(node.comparators[0]):
+        left = node.left
+        return _is_method_call(left, "poll") or (
+            isinstance(left, ast.Attribute) and left.attr == "returncode")
+    return _is_method_call(node, "exit_code")
+
+
+def _ended_names(tree):
+    """The names a file gives a read of the end (`ended = not s.alive()`):
+    asserting one is the same single read."""
+    return {node.targets[0].id for node in ast.walk(tree)
+            if isinstance(node, ast.Assign) and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and any(_reads_the_end(sub) for sub in ast.walk(node.value))}
+
+
+def _is_end_read_assert(node, ended=frozenset()):
+    """True for an assert whose test reads the end of a session once (see
+    _reads_the_end), directly or through a name set from such a read."""
+    if not isinstance(node, ast.Assert):
+        return False
+    if isinstance(node.test, ast.Name) and node.test.id in ended:
+        return True
+    return any(_reads_the_end(sub) for sub in ast.walk(node.test))
+
+
+def _extra_offences(tree, rel, found, durations):
+    """Rules WS, WD, WE and WF over @tree, added to @found."""
+    modules, names = _time_aliases(tree)
+    selects = _select_aliases(tree)
+    ended = _ended_names(tree)
+    docs = _docstring_nodes(tree)
+    parents = {id(child): parent for parent in ast.walk(tree)
+               for child in ast.iter_child_nodes(parent)}
+    owns_clock = rel in CLOCK_OWNERS
+    for node in ast.walk(tree):
+        line = getattr(node, "lineno", None)
+        if line is None:
+            continue
+        if not owns_clock and _is_duration_keyword(node, durations):
+            found[RULE_DURATION].append(line)
+        if not owns_clock and _is_clock_reference(node, modules, names, selects):
+            found[RULE_CLOCK].append(line)
+        if not owns_clock and _is_end_read_assert(node, ended):
+            found[RULE_END].append(line)
+        if owns_clock:
+            continue
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) \
+                and id(node) not in docs:
+            text = node.value
+            if text in durations or _names_an_option_line(text, durations):
+                if not _is_duration_api_argument(node, parents):
+                    found[RULE_DURATION].append(line)
+            if rel != PROGRAM_GATE and PROGRAM_SLEEP.search(text):
+                found[RULE_PROGRAM].append(line)
+        if _builds_a_product_name(node, durations):
+            found[RULE_DURATION].append(line)
+
+
 def offences(source, rel, name="<source>"):
     """{rule: [line, ...]} for the Python @source of the file @rel."""
     tree = ast.parse(source, filename=name)
     found = {rule: [] for rule in RULES}
+    _extra_offences(tree, rel, found, _duration_names())
     aliases = _import_aliases(tree)
     stretched = _stretched_names(tree, aliases)
     owns_scale = rel == SCALE_OWNER
@@ -293,6 +634,46 @@ def report(found):
             for (rel, rule), lines in sorted(found.items())]
 
 
+# The rules a sweep moves the sites of; their sites that are left are counted
+# in the allow file and the count may only fall.
+SWEPT_RULES = (RULE_CLOCK, RULE_DURATION, RULE_END, RULE_PROGRAM)
+
+
+def read_allow(root):
+    """{(file, rule): count} from the allow file (`file rule count`)."""
+    allowed = {}
+    path = os.path.join(root, ALLOW_FILE)
+    if not os.path.exists(path):
+        return allowed
+    with open(path, encoding="utf-8") as fh:
+        for raw in fh:
+            words = raw.split()
+            if not words or raw.startswith("#"):
+                continue
+            for pair in words[1:]:
+                rule, count = pair.split("=")
+                allowed[(words[0], rule)] = int(count)
+    return allowed
+
+
+def over_the_allowance(found, allowed):
+    """The lines for a swept rule with more sites than the allow file counts
+    (a new one), and for a count above the measurement (stale: lower it)."""
+    lines = []
+    keys = set(allowed) | {k for k in found if k[1] in SWEPT_RULES}
+    for rel, rule in sorted(keys):
+        have = len(found.get((rel, rule), []))
+        count = allowed.get((rel, rule), 0)
+        if have > count:
+            lines.append("%s: rule %s has %d site(s), %d allowed, at line %s"
+                         % (rel, rule, have, count,
+                            ", ".join(map(str, found[(rel, rule)]))))
+        elif have < count:
+            lines.append("%s: rule %s has %d site(s) and %s lists %d: lower it"
+                         % (rel, rule, have, ALLOW_FILE, count))
+    return lines
+
+
 def selftest():
     """Plant the canaries; True when each is named for its rule and the
     clean file is not."""
@@ -311,7 +692,8 @@ def selftest():
                 sys.stderr.write("check_test_waits: clean file %s was named: %s\n"
                                  % (name, sorted(hit)))
                 ok = False
-            if rule is not None and hit != {rule}:
+            # A deadline built on time.time() is also a clock of its own (WS).
+            if rule is not None and (rule not in hit or hit - {rule} - {RULE_CLOCK}):
                 sys.stderr.write("check_test_waits: canary %s named %s, want %s\n"
                                  % (name, sorted(hit), rule))
                 ok = False
@@ -323,19 +705,29 @@ def main(argv):
     parser.add_argument("--srcdir", default=os.path.join(
         os.path.dirname(os.path.abspath(__file__)), ".."))
     parser.add_argument("--selftest", action="store_true")
+    parser.add_argument("--list", action="store_true",
+                        help="print the swept rules' sites as allow lines")
     args = parser.parse_args(argv)
     if not selftest():
         return 1
     if args.selftest:
         print("check_test_waits: the canaries are named, the clean file is not")
         return 0
-    found = scan(os.path.abspath(args.srcdir))
-    if found:
-        for line in report(found):
+    root = os.path.abspath(args.srcdir)
+    found = scan(root)
+    if args.list:
+        for (rel, rule), lines in sorted(found.items()):
+            if rule in SWEPT_RULES:
+                print("%s %s %d" % (rel, rule, len(lines)))
+        return 0
+    problems = report({k: v for k, v in found.items() if k[1] not in SWEPT_RULES})
+    problems += over_the_allowance(found, read_allow(root))
+    if problems:
+        for line in problems:
             sys.stderr.write("check_test_waits: %s\n" % line)
-        sys.stderr.write("check_test_waits: %d file(s) wait on a clock of their "
-                         "own; use wpe_driver.wait_screen / wait_deadline\n"
-                         % len({rel for rel, _rule in found}))
+        sys.stderr.write("check_test_waits: %d problem(s); use wpe_driver.wait_screen / "
+                         "wait_until / wait_deadline and the owner's duration APIs\n"
+                         % len(problems))
         return 1
     print("check_test_waits: one owner decides how long a wait lasts")
     return 0
