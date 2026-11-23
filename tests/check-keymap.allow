@@ -35,7 +35,10 @@ we_ai_ui.c:e_ai_options:* 23 dialog field editing
 we_ai_ui.c:e_ai_opt_pick_model:* 1 dialog field editing
 we_ai_ui.c:e_ai_pick:* 6 dialog field editing
 we_ai_ui.c:e_ai_prompt:* 10 dialog field editing
-we_ai_ws.c:wpe_ai_changeset_review:* 4 dialog field editing
+we_ai_ws.c:ws_review_answer:* 2 dialog field editing
+we_ai_ws.c:ws_ask_file_by_file:* 2 AI pane text keys
+we_ai_ui.c:wpe_ai_pane_browse_key:* 4 AI pane text keys
+we_ai_ckrec.c:wpe_ckrec_header:* 2 AI pane text keys
 we_block.c:e_blck_del:* 1 dialog field editing
 we_block.c:e_blck_read:* 1 dialog field editing
 we_block.c:e_changecase_dialog:* 9 dialog field editing

@@ -143,9 +143,9 @@ CAIRO_SOURCES   = we_render_cairo.c
 GPM_SOURCES     = we_gpm.c
 VTERM_SOURCES   = we_vterm.c
 WAYLAND_SOURCES = we_wayland.c we_render_wayland.c we_wlframe.c
-AI_SOURCES      = we_ai.c we_ai_http.c we_ai_ui.c we_ai_diff.c we_ai_ws.c we_ai_path.c we_ai_session.c we_contain.c
+AI_SOURCES      = we_ai.c we_ai_http.c we_ai_ui.c we_ai_diff.c we_ai_ws.c we_ai_ckrec.c we_ai_path.c we_ai_session.c we_contain.c
 AI_HOST_SOURCES = we_ai_host.c
-AI_TESTS        = test_ai_http test_ai_diff test_ai_path test_ai_scope test_ai_session test_ai_contain test_ai_read_waits test_ai_scan_swap
+AI_TESTS        = test_ai_http test_ai_diff test_ai_path test_ai_scope test_ai_session test_ai_contain test_ai_read_waits test_ai_scan_swap test_ai_ckrec
 AI_TLS_CHECK    = test_ai_tls_live
 
 if HAVE_X11
@@ -313,6 +313,7 @@ noinst_HEADERS = \
   we_lsp.h \
   we_lsp_pos.h \
   we_ai.h \
+  we_ai_ckrec.h \
   we_ai_path.h \
   we_ai_http.h \
   we_ai_http_sync.h \
@@ -1090,6 +1091,18 @@ TESTS += tests/check-write-owner.sh
 # are in tests/read-owner.allow, each with the pass that moves it.
 TESTS += tests/check-read-owner.sh
 
+# One owner of what the assistant's checkpoint knows about each path
+# (we_ai_ckrec.c, tested by test_ai_ckrec): the only code that says a path was
+# created, removed, moved, replaced or stayed, or that nobody can say.
+# tests/check-checkpoint-record.sh fails when the checkpoint's code removes or
+# renames a file outside the one function that takes a created file away, keeps
+# a list of names of its own, decides "new" from a name, walks a folder around
+# the owner, spells the words of a verdict, or drops what the owner returns
+# (tests/checkpoint-record.allow holds what a later pass still moves).
+if WPE_AI
+TESTS += tests/check-checkpoint-record.sh
+endif
+
 # One owner of what the bracket matcher reads (we_brkmatch.c): four readers
 # are the only code that indexes a row, its bytes or the number of rows.
 # tests/check-brk-bounds.sh fails when any other function does, or when a
@@ -1389,6 +1402,12 @@ if HAVE_LD_WRAP
 test_ai_scan_swap_CFLAGS += -DWPE_TEST_LD_WRAP=1
 test_ai_scan_swap_LDFLAGS = -Wl,--wrap=wpe_read_entry_kind
 endif
+# The checkpoint's record (we_ai_ckrec.c): every state of a path at the two
+# moments against the verdict the judge gives, a renamed file or folder, a bound
+# on either side, a folder nobody may read, and the words of every verdict and
+# note, each on a real folder the test makes.
+test_ai_ckrec_SOURCES = tests/test_ai_ckrec.c tests/testdir.h we_ai_ckrec.c we_read.c we_seen.c we_places.c we_path.c
+test_ai_ckrec_CFLAGS = $(TEST_CFLAGS)
 # How the assistant's children are held (we_contain.c): the environment each
 # profile gives its child, the PATH and the program resolved in the parent,
 # the limits and the report, and, through the owner of children (we_child.c,
@@ -1497,6 +1516,10 @@ EXTRA_DIST = \
   tests/check-write-owner.sh \
   tests/check-read-owner.sh \
   tests/read-owner.allow \
+  tests/check-checkpoint-record.sh \
+  tests/checkpoint-record.allow \
+  tests/test_ai_ckrec.c \
+  tests/test_ai_changeset_record.py \
   tests/test_read_owner.c \
   tests/test_read_waits.py \
   tests/test_ai_read_waits.c \

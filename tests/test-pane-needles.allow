@@ -9,6 +9,7 @@ tests/test_ai_agent_tool_contracts.py _run_openai the needles are the caller's p
 tests/test_ai_chat_web.py _chat the needles are the caller's list, each row passes the phrases it asserts
 tests/test_ai_pane_reflow.py test_reply_written_at_full_width_is_whole_after_messages_opens the needles are LONG_WORDS, the words the row counts in the rows it reads
 tests/test_ai_pane_reflow.py test_resize_rewraps_the_reply_and_the_row_count_follows_the_width the needles are RESIZE_WORDS, the words the row counts in the rows it reads
+tests/test_ai_changeset_record.py _pane the needles are the caller's list, each row passes the phrases it asserts
 tests/test_ai_plan_checklist.py _run_plan the needles are the caller's list, each row passes the phrases it asserts
 tests/test_ai_workspace_links.py _agent_write the one needle is OUTSIDE_WORD, the word the rows assert by that name
 tests/test_ai_changeset_bounds.py test_a_workspace_beyond_the_watch_bound_is_said_in_the_pane the needles are the two phrases the row asserts, built once from the test's folder and used for both

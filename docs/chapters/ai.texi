@@ -1034,6 +1034,29 @@ so is one git cannot save as it stands (a merge stopped on a conflict, another
 git process holding the index), so that @kbd{r} never puts the last commit back
 over an edit you had not committed.
 
+The checkpoint and the review keep one record of every path they saw, and
+judge a file by the object behind its name, not by the spelling.  A file of
+yours that the run renamed, alone or with its folder, in a plain folder or in a
+git tree (an untracked or an ignored one), is the same file under a new name:
+its row reads @samp{moved here} and @kbd{r} keeps it.  A file the run removed
+reads @samp{removed} and @kbd{r} writes the checkpoint's copy back, or
+@samp{removed, no copy} when the checkpoint holds none; a file the run made
+unreadable reads @samp{not readable now}, and the pane gives the system's
+reason.  A new file as large as a file the run removed, which the checkpoint
+holds no copy of, reads @samp{new, kept}: it may hold your bytes, so @kbd{r}
+keeps it and the pane names the removed file.  A second name the run gave to a
+file reads @samp{second name}, and a file the run replaced by another one
+@samp{replaced, no copy}.  Whatever the review could not see is said: a folder
+the checkpoint or the review could not read, the bound of the walk, a workspace
+folder the run replaced, a git that did not answer after the run.  Each is a
+pane sentence (the first few, then a count; every one is in the trace) and one
+@samp{Messages} line, @samp{[AI] 2 not seen (the pane says why)}, and the
+header counts them.  The review waits for its key with the pane on screen, and
+@key{PgUp}, @key{PgDn} and the arrows scroll the pane, so the sentence can be
+read before the answer.  The last line after @kbd{r} reads @samp{ALL changes
+reverted to the checkpoint} only when nothing was kept and nothing was left
+unseen; otherwise it counts both.
+
 A review prompt then offers @kbd{a} keep all, @kbd{r} revert everything back to
 the checkpoint, @kbd{f} decide file by file, and (in a git tree) @kbd{c} commit
 the change as one auditable commit.  The keys are spelled on two

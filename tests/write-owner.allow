@@ -48,9 +48,7 @@ we_ai.c|r8:ai_mock_reply_file|1|keep|the mock backend's own reply file
 we_ai_path.c|r8:path_follow_link|1|keep|reads a link to judge a path, writes nothing
 we_ai_ui.c|r8:ai_hook_after_accept|1|keep|the hook's own marker file
 we_ai_ui.c|r8:wpe_ai_test_swap_at|3|keep|the test hook that puts a link where a file or folder was, unset in every real run
-we_ai_ws.c|r8:ws_git_list|2|keep|the temporary lists of the git command it runs, made by mkstemp in the run's private folder
-we_ai_ws.c|r8:ws_git_show|2|keep|the temporary copy of a file's content that git prints, made by mkstemp in the run's private folder and removed once read
-we_ai_ws.c|r8:ws_revert_snapshot|1|keep|the removal of a file the run created, which the review listed as new and no before image holds
+we_ai_ws.c|r8:ws_take_away_snapshot|1|keep|the removal of a file the record proves the run created, which no before image holds
 we_debug.c|r8:e_d_debugger_pid_forget|1|keep|the debugger's own pid file
 we_debug.c|r8:e_d_fifos_make|1|keep|the debugger's own pipes
 we_debug.c|r8:e_d_quit_basic|5|keep|the debugger's own pipes and scripts

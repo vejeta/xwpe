@@ -472,6 +472,10 @@ void wpe_ai_pane_report_save(struct FNST *f);
  * with the pane raised so it is seen, and no dialog in the way.  Code outside
  * the pane's own file reports through it, so every failure reads the same way. */
 void wpe_ai_pane_error(struct FNST *f, const char *line);
+/* A key the changeset review hands to the pane while it waits for its answer:
+ * PgUp, PgDn and the arrows browse the transcript.  Returns 1 when the key
+ * was used, 0 when it is the review's own or no pane is open. */
+int wpe_ai_pane_browse_key(struct FNST *f, int c);
 /* One-shot status-line message (Turbo Vision style): takes the bottom bar row;
  * the next keystroke restores the key hints.  wpe_ai_flash_clear returns 1 if it
  * cleared a flash (called from the editor key loop on every key). */

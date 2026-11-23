@@ -1072,7 +1072,7 @@ REFUSED_SETGID_WORDS = ("it was changed or replaced since the window showed it, 
 
 @contextlib.contextmanager
 def _auto_run(tmp_path, workspace, reply, seed=ORIG, prepare=None, answer=None, sub=None,
-              env_extra=None, review=True, answers=()):
+              env_extra=None, review=True, answers=(), args=()):
     """An unattended run over t.c, stopped at the review's prompt.
 
     Yields (session, t.c, trace).  `workspace` is "git" (a committed t.c, so the
@@ -1090,7 +1090,9 @@ def _auto_run(tmp_path, workspace, reply, seed=ORIG, prepare=None, answer=None, 
     review has nothing to offer: the row waits for the empty review's trace line
     instead of its prompt.  `answers` is a pair of keys for a file with several
     names that the window cannot prove its own: the names question, then the
-    "changed or replaced" box (see _answer_linked_then_changed).
+    "changed or replaced" box (see _answer_linked_then_changed).  `args` are
+    command-line words put before the file name (files opened first, so one
+    outside the workspace is in scope).
     """
     t = tmp_path / "t.c" if sub is None else tmp_path / sub / "t.c"
     if sub is not None:
@@ -1106,7 +1108,7 @@ def _auto_run(tmp_path, workspace, reply, seed=ORIG, prepare=None, answer=None, 
         if isinstance(seed, bytes):
             raise ValueError("a git row seeds its file with the commit's own text")
     filename = "t.c" if sub is None else sub + "/t.c"
-    with WpeSession(str(tmp_path), seed, env_extra=env, filename=filename) as s:
+    with WpeSession(str(tmp_path), seed, env_extra=env, filename=filename, args=args) as s:
         if prepare:
             prepare(t)
         s.key(ALT.AI)

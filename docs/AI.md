@@ -433,7 +433,19 @@ out as "Ask each action", "Auto-accept edits" and "Auto (skip asks)"):
   nothing committed), or one git cannot save as it stands (a merge stopped on
   a conflict, the index held by another git process), is checkpointed by
   snapshot instead; there, files beyond the snapshot's bound are never called
-  new. Each row names the file by
+  new. The checkpoint and the review keep one record of every path they saw,
+  and judge a file by the object behind its name: a file of yours that the run
+  renamed is `moved here` and `r` keeps it, a file the run removed is
+  `removed` (`r` writes the checkpoint's copy back) or `removed, no copy`, a
+  file made unreadable is `not readable now`, a file as large as one the run
+  removed is `new, kept`, and the pane says which file each sentence is about.
+  What the review could not see (a folder the run closed or the checkpoint
+  could not read, a replaced workspace folder, a git that did not answer after
+  the run, the walk's bound) is a pane sentence and a count in Messages
+  (`[AI] 2 not seen (the pane says why)`), and the last line of `r` reads `ALL
+  changes reverted` only when nothing was kept or left unseen; otherwise it
+  counts both. PgUp, PgDn and the arrows scroll the pane while the review waits
+  for its key. Each row names the file by
   its path under the workspace root and
   the first line the hunk changed, where `Alt-T` / `Alt-V` then jump; `Esc`
   keeps, at the top of the review and inside the file-by-file questions,

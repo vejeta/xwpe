@@ -16,6 +16,7 @@
 #include "we_lineend.h"
 #include "we_ai.h"
 #include "we_ai_path.h"
+#include "we_ai_ckrec.h"
 #include "we_read.h"
 
 #include <stdlib.h>
@@ -540,18 +541,14 @@ static char   ck_dir[WPE_PATH_SIZE];
 static char   ck_rdir[WPE_PATH_RESOLVED_MAX];
 static WpeSeenHeld ck_root = WPE_SEEN_HELD_NONE;
 static char   ck_snapdir[WPE_PATH_SIZE];
-static char **ck_files;
-static int    ck_n;
-static char **ck_before;  static int ck_before_n;  /* files present before   */
+static int    ck_n;                    /* before images taken: the next image's number */
 static char **ck_dirs;    static int ck_dirs_n;    /* dirs watched for new   */
-/* git mode: the untracked files that already existed when the checkpoint was
-   taken, as absolute paths under the workspace.  A file in this list is the
-   user's, never the run's, so it is never listed as new and never removed. */
-static char **ck_untracked; static int ck_untracked_n;
-/* git mode: what git ignored when the checkpoint was taken, a whole ignored
-   folder as one entry ending in '/'.  A run that edits .gitignore can make
-   these show up as untracked; they are still the user's. */
-static char **ck_ignored; static int ck_ignored_n;
+/* What the checkpoint knows about each path, at the checkpoint and again when
+   the review opens: the one record (we_ai_ckrec.c) that says a path was
+   created, removed, moved, replaced or stayed, or that nobody can say.  In
+   git mode it holds what git listed as untracked and as ignored, so a file
+   that was the user's is never taken for the run's. */
+static WpeCkRecord *ck_rec;
 /* The checkpoint's folder below the state folder ("checkpoints/<time>": the
    before images, and the modes recorded for them), and what the assistant's
    own writes leave behind: the files whose permission bits were recorded
@@ -587,16 +584,6 @@ static void ws_checkpoint_sub(char *sub, size_t sz, int kind)
  else
   snprintf(sub, sz, "checkpoints/%ld-%ld", now, pid);
 }
-/* snapshot mode: every directory the checkpoint's walk met, and those whose
-   entries it listed to the end.  A name missing from a listed directory was
-   made after the checkpoint; in a directory the bound cut short, nobody can
-   say. */
-static char **ck_met;     static int ck_met_n,    ck_met_cap;
-static char **ck_listed;  static int ck_listed_n, ck_listed_cap;
-/* The sentences for folders the checkpoint's walk could not read ("not
-   watched: <dir>: <reason>"), said once the walk is over. */
-static char **ck_unwatched; static int ck_unwatched_n, ck_unwatched_cap;
-
 int wpe_ai_checkpoint_active(void) { return ck_mode != 0; }
 
 /**
@@ -612,29 +599,21 @@ static void ws_root_forget(void)
  ck_rdir[0] = '\0';
 }
 
+static void ws_sentences_forget(void);
+
 static void ck_clear(void)
 {
- wpe_ai_free_list(ck_files, ck_n);
- wpe_ai_free_list(ck_before, ck_before_n);
+ wpe_ckrec_free(ck_rec);
+ ck_rec = NULL;
+ ws_sentences_forget();
  wpe_ai_free_list(ck_dirs, ck_dirs_n);
- wpe_ai_free_list(ck_untracked, ck_untracked_n);
- wpe_ai_free_list(ck_ignored, ck_ignored_n);
- wpe_ai_free_list(ck_met, ck_met_n);
- wpe_ai_free_list(ck_listed, ck_listed_n);
- wpe_ai_free_list(ck_unwatched, ck_unwatched_n);
- ck_unwatched = NULL; ck_unwatched_n = ck_unwatched_cap = 0;
  wpe_ai_free_list(ck_mode_paths, ck_mode_n);
  wpe_ai_free_list(ck_baks, ck_baks_n);
  ck_mode_paths = NULL; ck_mode_n = ck_mode_cap = 0;
  ck_baks = NULL; ck_baks_n = ck_baks_cap = 0;
  ck_leaf[0] = '\0';
- ck_files = NULL; ck_n = 0;
- ck_before = NULL; ck_before_n = 0;
+ ck_n = 0;
  ck_dirs = NULL; ck_dirs_n = 0;
- ck_untracked = NULL; ck_untracked_n = 0;
- ck_ignored = NULL; ck_ignored_n = 0;
- ck_met = NULL; ck_met_n = ck_met_cap = 0;
- ck_listed = NULL; ck_listed_n = ck_listed_cap = 0;
  ck_mode = 0; ck_ref[0] = '\0';
  ws_root_forget();
 }
@@ -663,222 +642,164 @@ static int ws_root_unchanged(void)
 static void ws_strip_slash(char *d);
 
 /**
- * ws_note_unwatched - Record a folder the checkpoint's walk could not read.
- * @dir: the folder; @ro: why the read owner refused it; @record: the
- * checkpoint's own walk (nothing is recorded for the walk after the run).
- *
- * What the user gains: a folder that could not be read at the checkpoint (it
- * had become a link, or no permission) holds files nobody saw; they must not
- * be called new when it can be read later, or a revert would remove files that
- * were there before the run.  The folder is noted as met without being
- * listed, which makes everything under it "nobody can say", and a sentence
- * for the pane is kept ("not watched: <dir>: <reason>").
+ * ws_trace_line - Hand the record's trace lines to the run's trace.
+ * @line: one line of the walk's own words.
  */
-static void ws_note_unwatched(const char *dir, const WpeReadOutcome *ro, int record)
+static void ws_trace_line(const char *line)
 {
- char reason[WPE_PATH_MSG_MAX], line[WPE_AI_REFUSAL_LINE_MAX];
- if (!record) return;
- ws_list_push(&ck_met, &ck_met_n, &ck_met_cap, ws_strdup(dir));
- (void)wpe_read_reason(reason, sizeof reason, ro);
- snprintf(line, sizeof line, "not watched: %s: %s", dir, reason);
- ws_list_push(&ck_unwatched, &ck_unwatched_n, &ck_unwatched_cap, ws_strdup(line));
+ wpe_ai_trace("%s", line);
 }
 
 /**
- * ws_say_unwatched - Tell the user which folders the checkpoint could not watch.
+ * ws_before_enter - The test seam of the walk: a test may swap a folder here.
+ *
+ * Does nothing unless the test names the hook, so a real run is not changed.
+ */
+static void ws_before_enter(void)
+{
+ wpe_ai_test_swap_at(WS_TEST_SWAP_BEFORE_ENTER);
+}
+
+/** The record's pane lines for one side's notes, and how many are said before "and n more". */
+static int ws_notes_shown(int total)
+{
+ return total > WPE_CK_NOTES_SHOWN ? WPE_CK_NOTES_SHOWN : total;
+}
+
+/**
+ * ws_say_notes - Tell the user every place that was not reached, and why.
+ * @f: any window of the editor; @side: the checkpoint or the review;
+ * @stage: "checkpoint" or "changeset", the first word of each trace line.
+ *
+ * What the user gets: a folder that could not be read, a bound that stopped the
+ * walk, a replaced workspace, a git that did not answer, are each one
+ * sentence in the pane, and a line in the trace.  The pane shows the first
+ * few; the others are counted, and every one is in the trace.
+ * Return: how many places there are.
+ */
+static int ws_say_notes(FENSTER *f, WpeCkSide side, const char *stage)
+{
+ const WpeCkNote *notes;
+ char line[WPE_CK_SENTENCE_MAX];
+ int total = wpe_ckrec_notes(ck_rec, side, &notes), shown = ws_notes_shown(total), i;
+ for (i = 0; i < total; i++) {
+  wpe_ckrec_note_trace(line, sizeof line, &notes[i], stage);
+  wpe_ai_trace("%s", line);
+  if (i >= shown) continue;
+  wpe_ckrec_note_sentence(line, sizeof line, &notes[i]);
+  wpe_ai_pane_error(f, line);
+ }
+ if (total > shown) {
+  wpe_ckrec_more_notes(line, sizeof line, total - shown);
+  wpe_ai_pane_error(f, line);
+ }
+ return total;
+}
+
+/* The pane sentences of the files the run moved, replaced or removed that r
+   leaves alone or cannot put back, kept while the review's rows are built and
+   said once after them. */
+static char **ws_sentences;
+static int    ws_sentences_n, ws_sentences_cap;
+
+/** ws_sentences_forget - Let go of the sentences of the last review. */
+static void ws_sentences_forget(void)
+{
+ wpe_ai_free_list(ws_sentences, ws_sentences_n);
+ ws_sentences = NULL;
+ ws_sentences_n = ws_sentences_cap = 0;
+}
+
+/**
+ * ws_keep_sentence - Keep the sentence the pane says for one verdict, if it has one.
+ * @v: the verdict.
+ */
+static void ws_keep_sentence(const WpeCkVerdict *v)
+{
+ char line[WPE_CK_SENTENCE_MAX];
+ if (wpe_ckrec_sentence(line, sizeof line, v) <= 0) return;
+ ws_list_push(&ws_sentences, &ws_sentences_n, &ws_sentences_cap, ws_strdup(line));
+}
+
+/**
+ * ws_say_sentences - Say the kept sentences in the pane: the first few, and a count.
  * @f: any window of the editor.
  *
- * One pane line per folder, then the list is let go.
+ * Every sentence is in the trace, so a run that moved a hundred files does
+ * not fill the pane and nothing is lost.
  */
-static void ws_say_unwatched(FENSTER *f)
+static void ws_say_sentences(FENSTER *f)
 {
- int i;
- for (i = 0; i < ck_unwatched_n; i++) wpe_ai_pane_error(f, ck_unwatched[i]);
- wpe_ai_free_list(ck_unwatched, ck_unwatched_n);
- ck_unwatched = NULL; ck_unwatched_n = ck_unwatched_cap = 0;
+ char line[WPE_CK_SENTENCE_MAX];
+ int shown = ws_notes_shown(ws_sentences_n), i;
+ for (i = 0; i < ws_sentences_n; i++) {
+  wpe_ai_trace("changeset %s", ws_sentences[i]);
+  if (i < shown) wpe_ai_pane_error(f, ws_sentences[i]);
+ }
+ if (ws_sentences_n > shown) {
+  wpe_ckrec_more_sentences(line, sizeof line, ws_sentences_n - shown);
+  wpe_ai_pane_error(f, line);
+ }
 }
 
-/* The most files the snapshot watches for new ones, over every watched
-   directory together.  When the walk stops here the pane says so, so a run that
-   creates a file beyond the bound is never silently unreviewed. */
-#define WS_WATCH_MAX 2000
-
 /**
- * ws_walk_files - List the regular files under a directory, as far down as it goes.
- * @dir: where to start; @l/@n/@cap: the list the paths are added to.
+ * ws_new_record - Make the record of a checkpoint.
  *
- * What the user gains: a file the run creates in a deeper directory of the
- * workspace, through a command or a tool, is listed by the review and removed
- * by r, the same as one created beside the open file; the git mode sees the
- * whole tree, and the snapshot mode now watches the same set.  Hidden entries
- * are skipped, which keeps `.git` and the editor's own folders out; a symbolic
- * link is listed as one entry and never followed, as git lists an untracked
- * link without descending into it, so a link the run makes is reviewed and
- * removable while a link to a tree outside the workspace does not spend the
- * bound on files the review could not revert; and the walk stops at
- * WS_WATCH_MAX entries in all, so a workspace holding a built tree does not
- * stall the checkpoint.
- * @skip: one directory left out of the walk, the editor's own state directory
- * in its resolved spelling: the session files and the checkpoint's copies it
- * writes there are the editor's bookkeeping, never the run's changes, and a
- * workspace that holds that directory would otherwise see them listed as new
- * files.  Each directory met is resolved the same way before the comparison,
- * so the spelling of the environment variable does not decide the match.
- * A directory's own entries are all read before any of its subdirectories is
- * entered, so a deep tree spends the bound below it and not the files beside
- * the open one.
- * @record: the checkpoint's own walk; each directory met goes into ck_met and,
- * when its entries were read to the end, into ck_listed, so the review can
- * tell a file the run made from one the bound kept out of sight.
- * @below: 0 for a folder the scope names (a link at its name is followed, as
- * the user's own folder may be one), 1 for a folder met while walking, which
- * is opened without following a link, so a folder swapped for a link after
- * it was listed is not entered.  (A folder on the way swapped after that is
- * the walk owner's concern.)
- * Return: 1 when the bound stopped the walk, 0 when everything was seen.
+ * The walk's bound, its trace and its test seam are the editor's; the folder
+ * the walks leave out is named before each walk (ws_leave_state_folder_out).
  */
-static int ws_walk_files(const char *dir, const char *skip, char ***l, int *n, int *cap,
-                         int record, int below)
+static WpeCkRecord *ws_new_record(void)
 {
- WpeReadAsk ask = below ? WPE_READ_ASK_FOLDER_ENTRY(WS_READ_WHAT)
-                        : WPE_READ_ASK_FOLDER(WS_READ_WHAT);
- WpeReadOutcome ro;
- DIR *d = wpe_read_folder(dir, &ask, &ro);
- struct dirent *de;
- char **subs = NULL;
- int nsubs = 0, scap = 0, stopped = 0, k;
- if (!d) {
-  if (below && ro.why == WPE_READ_IS_A_LINK)
-   wpe_ai_trace("walk refused a folder that became a link: %s", dir);
-  ws_note_unwatched(dir, &ro, record);
-  return 0;
- }
- while ((de = readdir(d))) {
-  char *p, real[WPE_PATH_SIZE];
-  size_t L;
-  mode_t kind;
-  if (*n >= WS_WATCH_MAX) { stopped = 1; break; }
-  if (de->d_name[0] == '.') continue;
-  kind = wpe_read_entry_kind(d, de->d_name);
-  if (kind == 0) continue;
-  L = strlen(dir) + strlen(de->d_name) + 2;
-  p = malloc(L);
-  if (!p) continue;
-  snprintf(p, L, "%s/%s", dir, de->d_name);
-  if (kind == S_IFLNK) {
-   /* one entry, whatever it points at: the run may have made it, and r
-      removes the link itself, never what it points at */
-   if (!ws_list_has(*l, *n, p)) ws_list_push(l, n, cap, p);
-   else free(p);
-   continue;
-  }
-  if (kind == S_IFDIR) {
-   if (skip && realpath(p, real) && !strcmp(real, skip)) { free(p); continue; }
-   ws_list_push(&subs, &nsubs, &scap, p);
-  } else if (kind == S_IFREG && !ws_list_has(*l, *n, p)) {
-   ws_list_push(l, n, cap, p);
-  } else free(p);
- }
- closedir(d);
- if (record) {
-  ws_list_push(&ck_met, &ck_met_n, &ck_met_cap, ws_strdup(dir));
-  if (!stopped) ws_list_push(&ck_listed, &ck_listed_n, &ck_listed_cap, ws_strdup(dir));
- }
- if (nsubs > 0) wpe_ai_test_swap_at(WS_TEST_SWAP_BEFORE_ENTER);
- for (k = 0; k < nsubs; k++) {
-  if (stopped) {
-   /* never read, but met: a file in it is not the run's for that */
-   if (record) ws_list_push(&ck_met, &ck_met_n, &ck_met_cap, ws_strdup(subs[k]));
-  } else if (ws_walk_files(subs[k], skip, l, n, cap, record, 1)) stopped = 1;
- }
- wpe_ai_free_list(subs, nsubs);
- return stopped;
+ WpeCkAsk ask;
+ memset(&ask, 0, sizeof ask);
+ ask.bound = WPE_CK_WALK_MAX;
+ ask.trace = ws_trace_line;
+ ask.before_enter = ws_before_enter;
+ return wpe_ckrec_new(&ask);
 }
 
 /**
- * ws_list_watched_files - The files under every watched directory, now.
- * @l/@n: receives the list.
- * @record: the checkpoint's own walk; it also notes which directories it met
- * and which it read to the end (ck_met, ck_listed).
- * Return: 1 when the bound stopped the walk before every file was seen.
+ * ws_leave_state_folder_out - Tell the record which folder is the editor's own bookkeeping.
+ *
+ * What the user gets: the session files and the checkpoint's copies the editor
+ * writes in its state folder are never listed as the run's changes, even when
+ * the workspace holds that folder.  The folder is looked at, never made: a walk
+ * leaves nothing behind.  It is resolved, so "state/", "state//" and a path
+ * through a link all name the one folder; one that is not there cannot be met
+ * by the walk.
  */
-static int ws_list_watched_files(char ***l, int *n, int record)
+static void ws_leave_state_folder_out(void)
 {
  char real[WPE_PATH_SIZE];
- const char *skip;
  WpeOwnDir own;
  WpeWriteOutcome o;
- int cap = 0, k, stopped = 0;
- /* the state folder is looked at, never made: a walk leaves nothing behind.
-    Resolved, so "state/", "state//" and a path through a link all name the
-    one directory the walk compares against; one that is not there cannot be
-    met by the walk */
- skip = NULL;
  if (wpe_own_dir(WPE_OWN_STATE, NULL, WPE_OWN_LOOK, &own, &o) == 0 && realpath(own.path, real))
-  skip = real;
- *l = NULL; *n = 0;
- /* a workspace folder replaced since the checkpoint lists nothing: whatever
-    the name leads to now is not the run's work */
- if (!record && !ws_root_unchanged()) return 0;
- if (record) {
-  wpe_ai_free_list(ck_met, ck_met_n);
-  wpe_ai_free_list(ck_listed, ck_listed_n);
-  wpe_ai_free_list(ck_unwatched, ck_unwatched_n);
-  ck_met = NULL; ck_met_n = ck_met_cap = 0;
-  ck_listed = NULL; ck_listed_n = ck_listed_cap = 0;
-  ck_unwatched = NULL; ck_unwatched_n = ck_unwatched_cap = 0;
- }
- for (k = 0; k < ck_dirs_n; k++)
-  if (ws_walk_files(ck_dirs[k], skip, l, n, &cap, record, 0)) stopped = 1;
- return stopped;
+  wpe_ckrec_set_skip(ck_rec, real);
+ else
+  wpe_ckrec_set_skip(ck_rec, NULL);
 }
 
 /**
- * ws_snapshot_run_created - Can the snapshot say the run made this file?
- * @path: a file the walk sees now.
+ * ws_record_side - Fill one side of the record from every watched folder.
+ * @side: the checkpoint or the review.
  *
- * A file is the run's when the checkpoint did not see it and the directory
- * that should have shown it was read to the end: its own directory, or, for a
- * directory the run made, the nearest one the checkpoint met.  In a workspace
- * larger than the bound, the files the checkpoint never reached were there all
- * along: the review does not call them new and `r` does not remove them,
- * whatever the run deleted to bring them into view.
- * Return: 1 when the file is the run's, 0 when it was there or nobody can say.
+ * What the user gets: the checkpoint and the review look at the workspace the
+ * same way.  A workspace folder replaced since the checkpoint is not walked
+ * at all, because whatever its name leads to now is not the run's work, and
+ * the record says so instead of listing nothing.
  */
-static int ws_snapshot_run_created(const char *path)
+static void ws_record_side(WpeCkSide side)
 {
- char dir[WPE_PATH_SIZE];
- char *sl;
- if (ws_list_has(ck_before, ck_before_n, path)) return 0;
- if (strlen(path) >= sizeof dir) return 0;
- strcpy(dir, path);
- for (;;) {
-  sl = strrchr(dir, '/');
-  if (!sl) return 0;
-  if (sl == dir) sl[1] = '\0';
-  else           sl[0] = '\0';
-  if (ws_list_has(ck_listed, ck_listed_n, dir)) return 1;
-  if (ws_list_has(ck_met, ck_met_n, dir)) return 0;
-  if (ws_list_has(ck_dirs, ck_dirs_n, dir) || sl == dir) return 0;
+ int k;
+ if (side == WPE_CK_NOW) {
+  wpe_ckrec_now_begin(ck_rec);
+  if (!ws_root_unchanged()) {
+   wpe_ckrec_unreached(ck_rec, WPE_CK_NOW, WPE_CK_WHY_ROOT_REPLACED, ck_dir, NULL);
+   return;
+  }
  }
-}
-
-/**
- * ws_say_watch_bound - Tell the user the snapshot could not watch the whole workspace.
- * @f: any window of the editor; @seen: how many files it watches.
- *
- * The review lists new files by comparing what exists now with what existed at
- * the checkpoint; a file beyond the bound is in neither list, so it would be
- * kept without ever being shown.  Saying the bound is what keeps "ALL changes
- * reverted" honest in a workspace too large to walk.
- */
-static void ws_say_watch_bound(FENSTER *f, int seen)
-{
- char line[1300];
- snprintf(line, sizeof line,
-          "the snapshot watches %d files under %s; a file the run creates beyond them is unseen",
-          seen, ck_dir);
- wpe_ai_pane_error(f, line);
+ ws_leave_state_folder_out();
+ for (k = 0; k < ck_dirs_n; k++) wpe_ckrec_walk(ck_rec, side, ck_dirs[k]);
 }
 
 /* Drop trailing slashes so the same directory always has ONE spelling (the
@@ -1066,7 +987,8 @@ static void ws_parse_nul_list(const char *buf, size_t len, char ***l, int *n)
 
 /**
  * ws_run_temp_file - Make a file of a name nobody chose, in the run's private folder.
- * @stem: what the name starts with; @file/@sz: receive its path.
+ * @stem: what the name starts with; @file/@sz: receive its path; @leaf/@lsz:
+ * receive its name inside the folder, for the write owner to remove it by.
  * Return: 0 with the path of an empty file made, -1 with errno when not.
  *
  * What the user gets: the answer of a git command goes through a file only
@@ -1074,7 +996,7 @@ static void ws_parse_nul_list(const char *buf, size_t len, char ***l, int *n)
  * at a known name, never decide where it is written.  The folder is the one
  * the editor made for this run and removes at its end.
  */
-static int ws_run_temp_file(const char *stem, char *file, size_t sz)
+static int ws_run_temp_file(const char *stem, char *file, size_t sz, char *leaf, size_t lsz)
 {
  WpeOwnDir d;
  WpeWriteOutcome o;
@@ -1087,6 +1009,7 @@ static int ws_run_temp_file(const char *stem, char *file, size_t sz)
  fd = mkstemp(file);
  if (fd < 0) return -1;
  close(fd);
+ if (wpe_path_copy(leaf, lsz, strrchr(file, '/') + 1) != 0) { errno = ENAMETOOLONG; return -1; }
  return 0;
 }
 
@@ -1106,24 +1029,24 @@ static int ws_run_temp_file(const char *stem, char *file, size_t sz)
  */
 static int ws_git_list(const char *git_args, char ***l, int *n)
 {
- char file[WPE_PATH_SIZE], q[WS_QUOTED_PATH_SIZE], qf[WS_QUOTED_PATH_SIZE];
+ char file[WPE_PATH_SIZE], q[WS_QUOTED_PATH_SIZE], qf[WS_QUOTED_PATH_SIZE], leaf[WS_LEAF_MAX];
  char cmd[WS_TWO_PATHS_COMMAND_SIZE], *out, *buf;
  WpeReadAsk ask = WPE_READ_ASK_FOLDER_BOUNDED(WS_READ_WHAT, (size_t)WS_GIT_LIST_MAX);
  WpeReadOutcome ro;
  int status = 0;
  size_t len = 0;
  *l = NULL; *n = 0;
- if (ws_run_temp_file(WS_GIT_LIST_STEM, file, sizeof file) != 0) return -1;
+ if (ws_run_temp_file(WS_GIT_LIST_STEM, file, sizeof file, leaf, sizeof leaf) != 0) return -1;
  if (ws_quote_whole(q, sizeof q, ck_dir) != 0 || ws_quote_whole(qf, sizeof qf, file) != 0 ||
      ws_format_whole(cmd, sizeof cmd, "cd %s && git --literal-pathspecs %s > %s 2>/dev/null",
                      q, git_args, qf) != 0) {
-  unlink(file);
+  wpe_write_own_remove(WPE_OWN_RUN, NULL, leaf);
   return -1;
  }
  out = wpe_ai_run_capture_git_status(cmd, &status);
  free(out);
  buf = status == 0 ? wpe_read_text(file, &ask, &len, &ro) : NULL;
- unlink(file);
+ wpe_write_own_remove(WPE_OWN_RUN, NULL, leaf);
  if (!buf) return -1;
  ws_parse_nul_list(buf, len, l, n);
  free(buf);
@@ -1201,38 +1124,66 @@ static int ws_git_stash_ref(const char *q)
 }
 
 /**
- * ws_git_was_there - Was this file already in the workspace, untracked, at the checkpoint?
- * @path: the full path of a file git calls untracked now.
- *
- * True for a file git listed as untracked then, and for one git ignored then,
- * alone or inside an ignored folder: a run that edits .gitignore can make
- * those show up as untracked, and they are still the user's.
+ * ws_git_name_is_folder - Did git print this ignored entry as a whole folder?
+ * @name: a name from `ls-files --directory`, which ends in a slash for a folder.
  */
-static int ws_git_was_there(const char *path)
+static int ws_git_name_is_folder(const char *name)
 {
- int i;
- if (ws_list_has(ck_untracked, ck_untracked_n, path)) return 1;
- for (i = 0; i < ck_ignored_n; i++) {
-  size_t l = strlen(ck_ignored[i]);
-  if (!strcmp(ck_ignored[i], path)) return 1;
-  if (l && ck_ignored[i][l - 1] == '/' && !strncmp(ck_ignored[i], path, l)) return 1;
+ size_t l = strlen(name);
+ return l > 0 && name[l - 1] == '/';
+}
+
+/**
+ * ws_git_record_untracked - Put the files git does not track into the record.
+ * @side: the checkpoint or the review.
+ *
+ * What the user gets: every untracked file is looked at where it stands, so a
+ * file of the user's renamed by the run is the same object under its new name
+ * and is never called new.  At the checkpoint git's ignored files go in too, a
+ * whole ignored folder as a place nobody read: a run that edits .gitignore
+ * can make them show up as untracked, and they are still the user's.  The
+ * list is complete for the whole workspace, so what it does not name is not
+ * there.  When git cannot list them the review could not tell them from the
+ * run's: the checkpoint does not take git mode, and the review says so.
+ * Both moments are filled from the same two lists (untracked, and ignored), so
+ * an ignored file is reached on both sides and a user's `*.o` is never "removed".
+ * An ignored file the run makes is never offered for removal, as before.
+ * Return: 0 when git answered, -1 otherwise.
+ */
+static int ws_git_record_untracked(WpeCkSide side)
+{
+ char **names;
+ int n, i;
+ wpe_ckrec_tool_begin(ck_rec, side, ck_dir);
+ if (ws_git_list("ls-files --others --exclude-standard -z -- .", &names, &n) != 0) return -1;
+ for (i = 0; i < n; i++) wpe_ckrec_listed(ck_rec, side, names[i]);
+ wpe_ai_free_list(names, n);
+ if (ws_git_list("ls-files --others --ignored --exclude-standard --directory -z -- .",
+                 &names, &n) != 0) return -1;
+ for (i = 0; i < n; i++) {
+  if (ws_git_name_is_folder(names[i])) wpe_ckrec_unread(ck_rec, side, names[i]);
+  else                                 wpe_ckrec_listed_ignored(ck_rec, side, names[i]);
  }
+ wpe_ai_free_list(names, n);
+ wpe_ckrec_complete(ck_rec, side, ck_dir);
  return 0;
 }
 
 /**
- * ws_git_record_untracked - Note the files git does not track, before the run.
+ * ws_record_side_git - Fill the review's side of the record from git's list.
  *
- * Every one of them is the user's.  When git cannot list them the review
- * could not tell them from the run's, so the caller does not take git mode.
- * Return: 0 when both lists were taken, -1 otherwise.
+ * What the user gets: a git that does not answer after the run is a sentence
+ * in the pane and a trace line, never a review that lists nothing.
  */
-static int ws_git_record_untracked(void)
+static void ws_record_side_git(void)
 {
- if (ws_git_list("ls-files --others --exclude-standard -z -- .",
-                 &ck_untracked, &ck_untracked_n) != 0) return -1;
- return ws_git_list("ls-files --others --ignored --exclude-standard --directory -z -- .",
-                    &ck_ignored, &ck_ignored_n);
+ wpe_ckrec_now_begin(ck_rec);
+ if (!ws_root_unchanged()) {
+  wpe_ckrec_unreached(ck_rec, WPE_CK_NOW, WPE_CK_WHY_ROOT_REPLACED, ck_dir, NULL);
+  return;
+ }
+ if (ws_git_record_untracked(WPE_CK_NOW) != 0)
+  wpe_ckrec_unreached(ck_rec, WPE_CK_NOW, WPE_CK_WHY_TOOL, ck_dir, NULL);
 }
 
 /**
@@ -1265,11 +1216,115 @@ static int ws_record_root(void)
  return 0;
 }
 
+/**
+ * ws_checkpoint_try_git - Take a git checkpoint when git keeps this workspace.
+ * @q/@qsz: room for the shell-quoted workspace.
+ *
+ * Git mode needs the workspace tracked, the user's untracked and ignored
+ * files on record, and an image of the worktree to go back to; short of any
+ * of them the caller takes snapshot copies, and what git left in the record
+ * is forgotten.
+ * Return: 1 when the checkpoint is a git one, 0 when it is not.
+ */
+static int ws_checkpoint_try_git(FENSTER *f, char *q, size_t qsz)
+{
+ if (ws_quote_whole(q, qsz, ck_dir) == 0 && ws_git_tracks_workspace(q) &&
+     ws_git_record_untracked(WPE_CK_THEN) == 0 && ws_git_stash_ref(q) == 0) {
+  ck_mode = WS_CK_GIT;
+  wpe_ai_trace("checkpoint git ref=%s dir=%s", ck_ref, ck_dir);
+  ws_say_notes(f, WPE_CK_THEN, "checkpoint");
+  return 1;
+ }
+ wpe_ckrec_then_begin(ck_rec);
+ ck_ref[0] = '\0';
+ return 0;
+}
+
+/** How one scope file's before image ended. */
+enum { WS_IMAGE_SAVED, WS_IMAGE_UNREADABLE, WS_IMAGE_NOT_SAVED };
+
+/**
+ * ws_take_before_image - Keep one scope file as it is, for a revert to put back.
+ * @f: any window of the editor; @path: the file; @told: set once the pane
+ * has said that a copy could not be written.
+ * Return: WS_IMAGE_SAVED, WS_IMAGE_UNREADABLE (it is left out and said, and
+ * the record keeps why) or WS_IMAGE_NOT_SAVED (the state folder refused it).
+ *
+ * What the user gets: a file the checkpoint holds a copy of is put back as it
+ * was, the very file; a file it could not read is named, and the record
+ * knows it is a place nobody read or a name that was not there.
+ */
+static int ws_take_before_image(FENSTER *f, const char *path, int *told)
+{
+ size_t tlen = 0;
+ WpeReadOutcome ro;
+ WpeWriteOutcome wo;
+ char dst[WS_LEAF_MAX];
+ char *text = ws_read_before_image(path, &tlen, &ro);
+ int err;
+ if (!text) {
+  ws_say_left_out(f, path, &ro);
+  wpe_ckrec_then_asked(ck_rec, path, &ro);
+  return WS_IMAGE_UNREADABLE;
+ }
+ snprintf(dst, sizeof dst, "%d", ck_n);
+ if (ws_write_state_bytes(ck_leaf, dst, text, tlen, &wo) == 0) {
+  wpe_ckrec_then_image(ck_rec, path, ck_n, &ro.seen);
+  ck_n++;
+  free(text);
+  return WS_IMAGE_SAVED;
+ }
+ err = errno;
+ free(text);
+ /* one line for the whole loop: a full disk fails every copy alike, and the
+    first path plus the reason is all the user can act on */
+ if (!*told) { ws_write_failed(f, "save the before image of", path, err); *told = 1; }
+ return WS_IMAGE_NOT_SAVED;
+}
+
+/**
+ * ws_checkpoint_snapshot - Take a snapshot checkpoint: copies of the scope files, and the record.
+ * @f: any window of the editor; @scope/@nscope: the files the run may touch.
+ * Return: 0 when the checkpoint is taken, -1 when it is not (said in the pane).
+ *
+ * A checkpoint with no before image in it can put nothing back, so it is not
+ * taken: leaving it active would open a review that offers a revert over
+ * files it could only restore nothing from, and the review's word is what the
+ * user believes about the workspace.  Files that were never readable are not
+ * counted as wanted: there was nothing of theirs to save, and a run that only
+ * creates files still gets a working revert, which needs no before image.
+ */
+static int ws_checkpoint_snapshot(FENSTER *f, char **scope, int nscope)
+{
+ int failed = 0, told = 0, readable = 0, have_dir, i;
+ ws_checkpoint_sub(ck_leaf, sizeof ck_leaf, WS_CK_IMAGES);
+ ck_snapdir[0] = '\0';
+ /* without the folder no copy can exist, and the folder's own failure has
+    just been reported: the loop stays out rather than repeat it per file */
+ have_dir = ws_state_folder_make(f, ck_leaf, ck_snapdir, sizeof ck_snapdir) == 0;
+ if (!have_dir) failed = nscope;
+ for (i = 0; have_dir && i < nscope; i++) {
+  int how = ws_take_before_image(f, scope[i], &told);
+  if (how != WS_IMAGE_UNREADABLE) readable++;
+  if (how == WS_IMAGE_NOT_SAVED) failed++;
+ }
+ ws_watch_dirs(scope, nscope);
+ ws_record_side(WPE_CK_THEN);
+ ws_say_notes(f, WPE_CK_THEN, "checkpoint");
+ if (!have_dir || (readable && ck_n == 0)) {
+  ws_root_forget();                 /* no checkpoint: no folder to keep open */
+  wpe_ai_trace("checkpoint refused n=%d failed=%d dir=%s", ck_n, failed, ck_snapdir);
+  return -1;
+ }
+ wpe_ai_trace("checkpoint snapshot n=%d failed=%d dir=%s", ck_n, failed, ck_snapdir);
+ ck_mode = WS_CK_SNAPSHOT;
+ return 0;
+}
+
 int wpe_ai_checkpoint_create(FENSTER *f, char **scope, int nscope)
 {
  char *root = ws_root(f);
  char q[1100];
- int i;
 
  ck_clear();
  if (wpe_path_copy(ck_dir, sizeof ck_dir, root)) {
@@ -1282,75 +1337,15 @@ int wpe_ai_checkpoint_create(FENSTER *f, char **scope, int nscope)
  ws_strip_slash(ck_dir);
  free(root);
  if (ws_record_root() != 0) return -1;
-
- /* git mode needs the workspace tracked, the user's untracked and ignored
-    files on record, and an image of the worktree to go back to; short of any
-    of them, the snapshot copies. */
- if (ws_quote_whole(q, sizeof q, ck_dir) == 0 && ws_git_tracks_workspace(q) &&
-     ws_git_record_untracked() == 0 && ws_git_stash_ref(q) == 0) {
-  ck_mode = 1;
-  wpe_ai_trace("checkpoint git ref=%s dir=%s", ck_ref, ck_dir);
-  return 0;
+ ck_rec = ws_new_record();
+ if (ck_rec) wpe_ckrec_hold_root(ck_rec, ck_dir);
+ if (!ck_rec) {
+  ws_root_forget();
+  wpe_ai_trace("checkpoint refused: no memory for the record");
+  return -1;
  }
- wpe_ai_free_list(ck_untracked, ck_untracked_n);
- wpe_ai_free_list(ck_ignored, ck_ignored_n);
- ck_untracked = NULL; ck_untracked_n = 0;
- ck_ignored = NULL; ck_ignored_n = 0;
- ck_ref[0] = '\0';
-
- /* snapshot copies */
- {
-  int failed = 0, told = 0, readable = 0, have_dir;
-  ws_checkpoint_sub(ck_leaf, sizeof ck_leaf, WS_CK_IMAGES);
-  ck_snapdir[0] = '\0';
-  /* without the folder no copy can exist, and the folder's own failure has
-     just been reported: the loop stays out rather than repeat it per file */
-  have_dir = ws_state_folder_make(f, ck_leaf, ck_snapdir, sizeof ck_snapdir) == 0;
-  if (have_dir) {
-   for (i = 0; i < nscope; i++) {
-    size_t tlen = 0;
-    WpeReadOutcome ro;
-    char *text = ws_read_before_image(scope[i], &tlen, &ro), dst[WS_LEAF_MAX];
-    WpeWriteOutcome wo;
-    if (!text) { ws_say_left_out(f, scope[i], &ro); continue; }
-    readable++;
-    snprintf(dst, sizeof dst, "%d", ck_n);
-    if (ws_write_state_bytes(ck_leaf, dst, text, tlen, &wo) == 0) {
-     int cap = ck_n;
-     ws_list_push(&ck_files, &ck_n, &cap, ws_strdup(scope[i]));
-    } else {
-     int err = errno;
-     failed++;
-     /* one line for the whole loop: a full disk fails every copy alike, and
-        the first path plus the reason is all the user can act on */
-     if (!told) { ws_write_failed(f, "save the before image of", scope[i], err); told = 1; }
-    }
-    free(text);
-   }
-  } else failed = nscope;
-  /* remember what exists now, so files the run CREATES are detected too */
-  ws_watch_dirs(scope, nscope);
-  wpe_ai_free_list(ck_before, ck_before_n);
-  if (ws_list_watched_files(&ck_before, &ck_before_n, 1))
-   ws_say_watch_bound(f, ck_before_n);
-  ws_say_unwatched(f);
-  /* A checkpoint with no before image in it can put nothing back, so it is not
-     taken: leaving it active would open a review that offers a revert over
-     files it could only restore nothing from, and the review's word is what
-     the user believes about the workspace.  The reason is already in the pane,
-     from the folder or from the first copy that failed, so this says it to the
-     record only.  Files that were never readable are not counted as wanted:
-     there was nothing of theirs to save, and a run that only CREATES files
-     still gets a working revert, which needs no before image. */
-  if (!have_dir || (readable && ck_n == 0)) {
-   ws_root_forget();                 /* no checkpoint: no folder to keep open */
-   wpe_ai_trace("checkpoint refused n=%d failed=%d dir=%s", ck_n, failed, ck_snapdir);
-   return -1;
-  }
-  wpe_ai_trace("checkpoint snapshot n=%d failed=%d dir=%s", ck_n, failed, ck_snapdir);
- }
- ck_mode = 2;
- return 0;
+ if (ws_checkpoint_try_git(f, q, sizeof q)) return 0;
+ return ws_checkpoint_snapshot(f, scope, nscope);
 }
 
 /* ===================== the assistant's writes ============================ */
@@ -1566,7 +1561,9 @@ int wpe_ai_write_judged_file(FENSTER *f, const char *real, const char *text,
 
 /* ===================== changeset ========================================= */
 
-typedef struct { char *path; int line; char *text; int is_new; } ws_change;
+/** One row of the review.  @kind is what the record says about the path
+    (STAYED for an edit, whose rows come from a diff). */
+typedef struct { char *path; int line; char *text; WpeCkVerdictKind kind; } ws_change;
 
 /* Collapse runs of '/' to a single '/' in place, so paths built from a scope
    list (which may carry a "dir//name" from a trailing-slash join) compare equal
@@ -1606,7 +1603,7 @@ static int ws_is_run_backup(const char *path)
 }
 
 static void ws_add_change(ws_change **c, int *n, int *cap, const char *path,
-                          int line, const char *text, int is_new)
+                          int line, const char *text, WpeCkVerdictKind kind)
 {
  char *np = ws_strdup(path);
  int i;
@@ -1619,7 +1616,7 @@ static void ws_add_change(ws_change **c, int *n, int *cap, const char *path,
  (*c)[*n].path = np ? np : ws_strdup(path);
  (*c)[*n].line = line;
  (*c)[*n].text = ws_strdup(text);
- (*c)[*n].is_new = is_new;
+ (*c)[*n].kind = kind;
  (*n)++;
 }
 
@@ -1639,7 +1636,7 @@ static void ws_changes_from_gitdiff(const char *diff, const char *path,
    char text[64];
    if (start >= 0) {
     snprintf(text, sizeof text, "[AI] +%d -%d", plus, minus);
-    ws_add_change(c, n, cap, path, start, text, 0);
+    ws_add_change(c, n, cap, path, start, text, WPE_CK_STAYED);
    }
    pl = strchr(p, '+');
    start = pl ? atoi(pl + 1) : 1;
@@ -1655,7 +1652,7 @@ static void ws_changes_from_gitdiff(const char *diff, const char *path,
  if (start >= 0) {
   char text[64];
   snprintf(text, sizeof text, "[AI] +%d -%d", plus, minus);
-  ws_add_change(c, n, cap, path, start, text, 0);
+  ws_add_change(c, n, cap, path, start, text, WPE_CK_STAYED);
  }
 }
 
@@ -1683,6 +1680,18 @@ static int ws_hidden_path(const char *rel)
 /* The row for a changed file whose path is too long to hand to git diff. */
 #define WS_CHANGED_UNREAD "[AI] changed"
 
+/**
+ * ws_row_of_unread_git_edit - The row of a changed file that git diff was not asked about.
+ * @path: the file; its name is too long to hand to git whole.
+ *
+ * Still the run's change: it is listed, so the user sees it and r says why it
+ * cannot put this one back.
+ */
+static void ws_row_of_unread_git_edit(ws_change **c, int *n, int *cap, const char *path)
+{
+ ws_add_change(c, n, cap, path, 1, WS_CHANGED_UNREAD, WPE_CK_STAYED);
+}
+
 static void ws_collect_git_edits(ws_change **c, int *n, int *cap)
 {
  char **names, q[1100], cmd[2800];
@@ -1691,6 +1700,7 @@ static void ws_collect_git_edits(ws_change **c, int *n, int *cap)
  snprintf(args, sizeof args, "diff --relative --name-only -z %s -- .", ck_ref);
  if (ws_git_list(args, &names, &nn) != 0) {
   wpe_ai_trace("changeset git edit list failed dir=%s", ck_dir);
+  wpe_ckrec_unreached(ck_rec, WPE_CK_NOW, WPE_CK_WHY_TOOL, ck_dir, NULL);
   return;
  }
  if (ws_quote_whole(q, sizeof q, ck_dir) != 0) {
@@ -1709,9 +1719,7 @@ static void ws_collect_git_edits(ws_change **c, int *n, int *cap)
       ws_format_whole(cmd, sizeof cmd,
                       "cd %s && git --literal-pathspecs diff -U0 --relative %s -- %s 2>/dev/null",
                       q, ck_ref, qf) != 0) {
-   /* still the run's change: listed, so the user sees it and r says why it
-      cannot put this one back */
-   ws_add_change(c, n, cap, names[i], 1, WS_CHANGED_UNREAD, 0);
+   ws_row_of_unread_git_edit(c, n, cap, names[i]);
    continue;
   }
   d = wpe_ai_run_capture_git(cmd);
@@ -1722,29 +1730,60 @@ static void ws_collect_git_edits(ws_change **c, int *n, int *cap)
 }
 
 /**
- * ws_collect_git_new_files - Add a row for each file the run created.
- * @c/@n/@cap: the changeset being built.
+ * ws_verdict_is_hidden - Is this verdict about a path the review never lists?
+ * @v: the verdict.
  *
- * A file is the run's only when it is untracked now and was neither untracked
- * nor ignored when the checkpoint was taken.  The notes or build output the
- * user already had lying in the workspace are therefore never offered for
- * removal, even when the run's edit to .gitignore uncovers them.
+ * A path with a hidden part below the workspace (the project's sidecar, `.git`,
+ * the editor's own folders) is no part of a reviewable changeset.  A file the
+ * checkpoint holds a copy of is listed whatever its name: the run was allowed
+ * to write it.
  */
-static void ws_collect_git_new_files(ws_change **c, int *n, int *cap)
+static int ws_verdict_is_hidden(const WpeCkVerdict *v)
 {
- char **now;
- int nn, i;
- if (ws_git_list("ls-files --others --exclude-standard -z -- .", &now, &nn) != 0) {
-  wpe_ai_trace("changeset git new-file list failed dir=%s", ck_dir);
-  return;
+ const char *rel;
+ if (v->image != WPE_CK_NO_IMAGE) return 0;
+ rel = ws_workspace_rel(v->path);
+ return rel && ws_hidden_path(rel);
+}
+
+/**
+ * ws_rows_of_verdict - The review's row for what the record says about one path.
+ * @c/@n/@cap: the changeset being built; @v: the verdict.
+ *
+ * What the user gets: a created, removed, moved, replaced or unreadable path is
+ * a row with its own words, and a path nobody can say anything about is no row
+ * but is in the pane (ws_say_verdicts).  A folder is not a row: its files
+ * are.  The one place a verdict becomes a row.
+ */
+static void ws_rows_of_verdict(ws_change **c, int *n, int *cap, const WpeCkVerdict *v)
+{
+ const char *text = wpe_ckrec_row_text(v);
+ if (ws_verdict_is_hidden(v) || ws_is_run_backup(v->path)) return;
+ if (!v->under_folder) ws_keep_sentence(v);
+ if (!text || v->is_folder) return;
+ ws_add_change(c, n, cap, v->path, 1, text, v->kind);
+}
+
+/**
+ * ws_rows_of_edit - The review's rows for a file the checkpoint holds a copy of.
+ * @path: the file; @old/@now: the copy and the file as it is now.
+ *
+ * One row per hunk, at the line the hunk starts in the new text.
+ */
+static void ws_rows_of_edit(ws_change **c, int *n, int *cap, const char *path,
+                            const char *old, const char *now)
+{
+ wpe_ai_seg *segs;
+ int ns = wpe_ai_diff_segments(old, now, &segs), k, newline = 1;
+ for (k = 0; k < ns; k++) {
+  if (segs[k].is_change) {
+   char text[64];
+   snprintf(text, sizeof text, "[AI] +%d -%d", segs[k].bn, segs[k].an);
+   ws_add_change(c, n, cap, path, newline, text, WPE_CK_STAYED);
+   newline += segs[k].bn;
+  } else newline += segs[k].an;
  }
- for (i = 0; i < nn; i++) {
-  const char *rel = ws_workspace_rel(now[i]);
-  if (!rel || ws_hidden_path(rel)) continue;
-  if (ws_git_was_there(now[i])) continue;
-  ws_add_change(c, n, cap, now[i], 1, "[AI] new file", 1);
- }
- wpe_ai_free_list(now, nn);
+ wpe_ai_segs_free(segs, ns);
 }
 
 /** The room for the file number that names a snapshot copy ("12"). */
@@ -1767,51 +1806,90 @@ static int ws_snapshot_path(char *out, size_t sz, int i)
  return wpe_path_join(out, sz, ck_snapdir, number);
 }
 
+/**
+ * ws_rows_of_held_file - The rows for a file the checkpoint holds a copy of.
+ * @v: the verdict (STAYED, with the copy's number).
+ *
+ * What the user gets: an edit is a row per hunk; a file the run removed or
+ * made unreadable is a row that says so, never silence; a copy that cannot be
+ * read back is said, because r could not put it back.
+ */
+static void ws_rows_of_held_file(ws_change **c, int *n, int *cap, const WpeCkVerdict *v)
+{
+ char snap[WPE_PATH_SIZE], *old, *now;
+ WpeCkVerdict now_v;
+ WpeReadOutcome ro;
+ size_t len;
+ now = wpe_ckrec_now_text(ck_rec, v->image, &len, &now_v);
+ if (!now) { ws_rows_of_verdict(c, n, cap, &now_v); return; }
+ if (ws_snapshot_path(snap, sizeof snap, v->image) != 0) {
+  wpe_read_outcome_errno(&ro, ENAMETOOLONG);
+  old = NULL;
+ } else old = ws_read_before_image(snap, &len, &ro);
+ if (!old) {
+  wpe_ckrec_image_lost(ck_rec, v->path, &ro);
+  free(now);
+  return;
+ }
+ ws_rows_of_edit(c, n, cap, v->path, old, now);
+ free(old); free(now);
+}
+
+/**
+ * ws_collect_snapshot - The review's rows for a snapshot checkpoint.
+ *
+ * Looks at the workspace the way the checkpoint did, and turns what the record
+ * says about each path into rows.
+ */
+static void ws_collect_snapshot(ws_change **c, int *n, int *cap)
+{
+ const WpeCkVerdict *v;
+ int nv, i;
+ ws_record_side(WPE_CK_NOW);
+ nv = wpe_ckrec_judge_all(ck_rec, &v);
+ for (i = 0; i < nv; i++) {
+  if (v[i].kind == WPE_CK_STAYED && v[i].image != WPE_CK_NO_IMAGE) ws_rows_of_held_file(c, n, cap, &v[i]);
+  else ws_rows_of_verdict(c, n, cap, &v[i]);
+ }
+}
+
+/**
+ * ws_collect_git_new_files - Add the rows for what the run made, moved or removed among the untracked files.
+ * @c/@n/@cap: the changeset being built.
+ *
+ * What the user gets: a file is the run's only when the record proves it:
+ * the notes or build output the user already had lying in the workspace, and
+ * a file of theirs that the run renamed, are never called new, even when the
+ * run's edit to .gitignore uncovers them.
+ */
+static void ws_collect_git_new_files(ws_change **c, int *n, int *cap)
+{
+ const WpeCkVerdict *v;
+ int nv, i;
+ nv = wpe_ckrec_judge_all(ck_rec, &v);
+ for (i = 0; i < nv; i++) ws_rows_of_verdict(c, n, cap, &v[i]);
+}
+
+/**
+ * ws_collect_changes - Build the review's rows from the record.
+ * @c/@n: receive the rows.
+ * Return: how many rows.
+ *
+ * Both modes fill the one record and read its verdicts; git mode adds the
+ * tracked files git says changed.  The record's notes (a place not reached) are
+ * what the caller says next.
+ */
 static int ws_collect_changes(ws_change **c, int *n)
 {
  int cap = 0;
  *c = NULL; *n = 0;
- if (ck_mode == 1) {
+ ws_sentences_forget();
+ if (ck_mode == WS_CK_GIT) {
+  ws_record_side_git();
   ws_collect_git_edits(c, n, &cap);
   ws_collect_git_new_files(c, n, &cap);
-  return *n;
- }
- if (ck_mode == 2) {
-  int i;
-  for (i = 0; i < ck_n; i++) {
-   char snap[WPE_PATH_SIZE];
-   char *old, *now;
-   wpe_ai_seg *segs;
-   int ns, k, newline = 1;
-   if (ws_snapshot_path(snap, sizeof snap, i) != 0) continue;
-   old = ws_read_file(snap, 4000000);
-   now = ws_read_file(ck_files[i], 4000000);
-   if (!old || !now) { free(old); free(now); continue; }
-   ns = wpe_ai_diff_segments(old, now, &segs);
-   for (k = 0; k < ns; k++) {
-    if (segs[k].is_change) {
-     char text[64];
-     snprintf(text, sizeof text, "[AI] +%d -%d", segs[k].bn, segs[k].an);
-     ws_add_change(c, n, &cap, ck_files[i], newline, text, 0);
-     newline += segs[k].bn;
-    } else newline += segs[k].an;
-   }
-   wpe_ai_segs_free(segs, ns);
-   free(old); free(now);
-  }
-  /* files that did not exist at checkpoint time = new files */
-  {
-   char **nowl;
-   int nn, k;
-   ws_list_watched_files(&nowl, &nn, 0);
-   for (k = 0; k < nn; k++)
-    if (ws_snapshot_run_created(nowl[k]))
-     ws_add_change(c, n, &cap, nowl[k], 1, "[AI] new file", 1);
-   wpe_ai_free_list(nowl, nn);
-  }
-  return *n;
- }
- return 0;
+ } else if (ck_mode == WS_CK_SNAPSHOT) ws_collect_snapshot(c, n, &cap);
+ return *n;
 }
 
 static void ws_free_changes(ws_change *c, int n)
@@ -2423,9 +2501,9 @@ int wpe_ai_window_hook_copy(FENSTER *w, char *tmp, size_t sz)
 
 /* What a revert says for a file the checkpoint holds no copy of: there is no
  * errno and no command to quote, since nothing was attempted that could fail.
- * The lookup that misses compares the changeset's normalized spelling against
- * ck_files' own, so a scope path carrying "//" lands here too; saying the copy
- * is missing is still the truth the user acts on, since nothing was restored. */
+ * The record spells every path one way, so a scope path carrying "//" finds its
+ * copy; a copy that cannot be found or read lands here, and saying so is the
+ * truth the user acts on, since nothing was restored. */
 #define WS_NO_BEFORE_IMAGE "the checkpoint holds no before image of it"
 
 /**
@@ -2488,12 +2566,12 @@ static int ws_revert_command(char *cmd, size_t sz, const char *rel)
  */
 static int ws_git_show(const char *rel, char **buf, size_t *len, char *reason, size_t rsz)
 {
- char file[WPE_PATH_SIZE + 24], q[1100], spec[1300], qs[2700], qf[1300];
+ char file[WPE_PATH_SIZE + 24], q[1100], spec[1300], qs[2700], qf[1300], leaf[WS_LEAF_MAX];
  char cmd[4200], *out;
  WpeReadOutcome ro;
  int status = 0;
  *buf = NULL; *len = 0;
- if (ws_run_temp_file(WS_GIT_SHOW_STEM, file, sizeof file) != 0) {
+ if (ws_run_temp_file(WS_GIT_SHOW_STEM, file, sizeof file, leaf, sizeof leaf) != 0) {
   snprintf(reason, rsz, "%s", strerror(errno));
   return -1;
  }
@@ -2502,7 +2580,7 @@ static int ws_git_show(const char *rel, char **buf, size_t *len, char *reason, s
      ws_quote_whole(qs, sizeof qs, spec) != 0 ||
      ws_format_whole(cmd, sizeof cmd, "cd %s && git --literal-pathspecs show %s 2>&1 >%s",
                      q, qs, qf) != 0) {
-  unlink(file);
+  wpe_write_own_remove(WPE_OWN_RUN, NULL, leaf);
   snprintf(reason, rsz, "%s", WS_NAME_TOO_LONG);
   return -1;
  }
@@ -2510,29 +2588,9 @@ static int ws_git_show(const char *rel, char **buf, size_t *len, char *reason, s
  if (status != 0) ws_output_reason(out, status, reason, rsz);
  else *buf = ws_read_before_image(file, len, &ro);
  free(out);
- unlink(file);
+ wpe_write_own_remove(WPE_OWN_RUN, NULL, leaf);
  if (status == 0 && !*buf) snprintf(reason, rsz, "%s", "git's copy could not be read");
  return *buf ? 0 : -1;
-}
-
-/**
- * ws_git_run_created - Did the run create this file, as far as git can tell?
- * @path: the full path of a file a review row calls new.
- *
- * Removing a file is the one revert that cannot be undone, so it is allowed
- * only for a file that is untracked now and was not there when the checkpoint
- * was taken.  A file the user had before the run, or one git tracks, stays.
- * Return: 1 when it is the run's, 0 when it is not or git could not say.
- */
-static int ws_git_run_created(const char *path)
-{
- char **now;
- int nn, yes;
- if (ws_git_was_there(path)) return 0;
- if (ws_git_list("ls-files --others --exclude-standard -z -- .", &now, &nn) != 0) return 0;
- yes = ws_list_has(now, nn, path);
- wpe_ai_free_list(now, nn);
- return yes;
 }
 
 /* Why a revert refused a path whose folders now lead outside the tree.  Git
@@ -2692,73 +2750,88 @@ static int ws_name_is_link(const char *path)
 }
 
 /**
- * ws_revert_git - Put one git-mode file back, or take away one the run created.
- * @f: any window of the editor; @path: the file; @is_new: the run created it.
+ * ws_take_away_git - Take away one untracked file the record proves the run made.
+ * @f: any window of the editor; @path: the file; @rel: relative to the workspace.
+ *
+ * Only a CREATED verdict, judged from a fresh look at the name, gets here:
+ * "not in the before list" is no longer enough.
+ * Return: 0 when the file is gone, -1 when it kept the change.
+ */
+static int ws_take_away_git(FENSTER *f, const char *path, const char *rel)
+{
+ WpeCkVerdict v;
+ char cmd[2800], *out, reason[600];
+ int status = 0;
+ if (!wpe_ckrec_may_remove(ck_rec, path, &v)) return ws_revert_failed(f, "remove", path, WS_NOT_RUN_CREATED);
+ if (!ws_folders_stay_in_tree(path)) return ws_revert_failed(f, "remove", path, WS_FOLDER_LINK);
+ if (ws_revert_command(cmd, sizeof cmd, rel) != 0)
+  return ws_revert_failed(f, "remove", path, WS_NAME_TOO_LONG);
+ out = wpe_ai_run_capture_git_status(cmd, &status);
+ if (status != 0) ws_output_reason(out, status, reason, sizeof reason);
+ free(out);
+ return status != 0 ? ws_revert_failed(f, "remove", path, reason) : 0;
+}
+
+/**
+ * ws_restore_git - Put one tracked file back from git's copy of it.
+ * @f: any window of the editor; @path: the file; @rel: relative to the workspace.
  *
  * A file that existed comes back from git's copy of it (git show) through
  * ws_restore_before_image, never from a checkout that would unlink it and make
  * a new file with the umask's mode.  The one exception is a link, in git's ref
- * or at the name now, which a checkout puts back (ws_revert_by_checkout); a
- * path in the run's .bak list never gets here (ws_revert_path skips it).  A
- * file the run created is removed by the
- * one shell command left, and only when it is untracked now and was not there
- * at the checkpoint.
+ * or at the name now, which a checkout puts back (ws_revert_by_checkout).
  * Return: 0 when the file is back, -1 when it kept the change.
  */
-static int ws_revert_git(FENSTER *f, const char *path, int is_new)
+static int ws_restore_git(FENSTER *f, const char *path, const char *rel)
 {
- const char *what = is_new ? "remove" : "restore";
- const char *rel = ws_workspace_rel(path);
- char cmd[2800], *out, reason[600], *text;
+ char reason[600], *text;
  size_t len;
- int status = 0, rc;
- if (!rel) return ws_revert_failed(f, what, path, WS_OUTSIDE_WORKSPACE);
- if (ws_revert_root_refused(f, what, path) != 0) return -1;
- if (!is_new) {
-  if (!ws_folders_stay_in_tree(path))
-   return ws_revert_failed(f, what, path, WS_FOLDER_LINK);
-  if (ws_git_entry_is_link(rel) || ws_name_is_link(path))
-   return ws_revert_by_checkout(f, path, rel);
-  if (ws_git_show(rel, &text, &len, reason, sizeof reason) != 0)
-   return ws_revert_failed(f, what, path, reason);
-  rc = ws_restore_before_image(f, path, text, len);
-  free(text);
-  return rc;
- }
- if (!ws_git_run_created(path)) return ws_revert_failed(f, what, path, WS_NOT_RUN_CREATED);
- if (!ws_folders_stay_in_tree(path)) return ws_revert_failed(f, what, path, WS_FOLDER_LINK);
- if (ws_revert_command(cmd, sizeof cmd, rel) != 0)
-  return ws_revert_failed(f, what, path, WS_NAME_TOO_LONG);
- out = wpe_ai_run_capture_git_status(cmd, &status);
- if (status != 0) ws_output_reason(out, status, reason, sizeof reason);
- free(out);
- return status != 0 ? ws_revert_failed(f, what, path, reason) : 0;
+ int rc;
+ if (!ws_folders_stay_in_tree(path))
+  return ws_revert_failed(f, "restore", path, WS_FOLDER_LINK);
+ if (ws_git_entry_is_link(rel) || ws_name_is_link(path))
+  return ws_revert_by_checkout(f, path, rel);
+ if (ws_git_show(rel, &text, &len, reason, sizeof reason) != 0)
+  return ws_revert_failed(f, "restore", path, reason);
+ rc = ws_restore_before_image(f, path, text, len);
+ free(text);
+ return rc;
 }
 
 /**
- * ws_revert_snapshot - Put one snapshot-mode file back, or take away one the run created.
- * @f: any window of the editor; @path: the file; @is_new: the run created it.
+ * ws_revert_git - Put one git-mode file back, or take away one the run created.
+ * @f: any window of the editor; @path: the file; @take_away: the record says
+ * the run created it.
+ *
+ * A path in the run's .bak list never gets here (ws_revert_path skips it).
+ * Return: 0 when the file is back, -1 when it kept the change.
+ */
+static int ws_revert_git(FENSTER *f, const char *path, int take_away)
+{
+ const char *what = take_away ? "remove" : "restore";
+ const char *rel = ws_workspace_rel(path);
+ if (!rel) return ws_revert_failed(f, what, path, WS_OUTSIDE_WORKSPACE);
+ if (ws_revert_root_refused(f, what, path) != 0) return -1;
+ if (take_away) return ws_take_away_git(f, path, rel);
+ return ws_restore_git(f, path, rel);
+}
+
+/**
+ * ws_restore_snapshot - Put the checkpoint's copy of one file back.
+ * @f: any window of the editor; @path: the file.
  *
  * The before image is the copy the checkpoint made; it goes back through
  * ws_restore_before_image whole, a NUL byte included.
  * Return: 0 when the file is back, -1 when it kept the change.
  */
-static int ws_revert_snapshot(FENSTER *f, const char *path, int is_new)
+static int ws_restore_snapshot(FENSTER *f, const char *path)
 {
  char snap[WPE_PATH_SIZE], *text;
  WpeReadOutcome ro;
  size_t len;
- int i, rc;
- if (ws_revert_root_refused(f, is_new ? "remove" : "restore", path) != 0) return -1;
- if (is_new) {
-  if (!ws_snapshot_run_created(path)) return ws_revert_failed(f, "remove", path, WS_NOT_RUN_CREATED);
-  if (!ws_folders_stay_in_tree(path)) return ws_revert_failed(f, "remove", path, WS_FOLDER_LINK);
-  if (unlink(path) != 0) return ws_revert_failed(f, "remove", path, strerror(errno));
-  return 0;
- }
- for (i = 0; i < ck_n; i++) if (!strcmp(ck_files[i], path)) break;
- if (i == ck_n) return ws_revert_failed(f, "restore", path, WS_NO_BEFORE_IMAGE);
- if (ws_snapshot_path(snap, sizeof snap, i) != 0) return ws_revert_failed(f, "restore", path, WS_NO_BEFORE_IMAGE);
+ int image, rc;
+ if (!wpe_ckrec_may_restore(ck_rec, path, &image)) return ws_revert_failed(f, "restore", path, WS_NO_BEFORE_IMAGE);
+ if (ws_snapshot_path(snap, sizeof snap, image) != 0) return ws_revert_failed(f, "restore", path, WS_NO_BEFORE_IMAGE);
  text = ws_read_before_image(snap, &len, &ro);
  if (!text) return ws_revert_failed(f, "restore", path, WS_NO_BEFORE_IMAGE);
  rc = ws_restore_before_image(f, path, text, len);
@@ -2767,46 +2840,76 @@ static int ws_revert_snapshot(FENSTER *f, const char *path, int is_new)
 }
 
 /**
+ * ws_take_away_snapshot - Take away one file the record proves the run made.
+ * @f: any window of the editor; @path: the file.
+ * Return: 0 when the file is gone, -1 when it kept the change.
+ */
+static int ws_take_away_snapshot(FENSTER *f, const char *path)
+{
+ WpeCkVerdict v;
+ if (!wpe_ckrec_may_remove(ck_rec, path, &v)) return ws_revert_failed(f, "remove", path, WS_NOT_RUN_CREATED);
+ if (!ws_folders_stay_in_tree(path)) return ws_revert_failed(f, "remove", path, WS_FOLDER_LINK);
+ if (unlink(path) != 0) return ws_revert_failed(f, "remove", path, strerror(errno));
+ return 0;
+}
+
+/**
+ * ws_revert_snapshot - Put one snapshot-mode file back, or take away one the run created.
+ * @f: any window of the editor; @path: the file; @take_away: the record says
+ * the run created it.
+ * Return: 0 when the file is back, -1 when it kept the change.
+ */
+static int ws_revert_snapshot(FENSTER *f, const char *path, int take_away)
+{
+ if (ws_revert_root_refused(f, take_away ? "remove" : "restore", path) != 0) return -1;
+ if (take_away) return ws_take_away_snapshot(f, path);
+ return ws_restore_snapshot(f, path);
+}
+
+/** What a revert answers for a file that the record says r leaves where the run put it. */
+#define WS_REVERT_KEPT 1
+
+/**
  * ws_revert_path - Put one file back the way the checkpoint found it.
  * @f: any window of the editor; @path: the file to put back;
- * @is_new: the run created it, so putting it back means taking it away.
+ * @kind: what the record says about it.
  *
  * Every way this can fail is said, because a revert that reports success over a
  * file that kept the change leaves the user believing the workspace is clean:
  * the workspace's own tool refusing the restore (git's sentence is the reason,
  * not an errno), a directory that will not let a created file go, a copy that
  * could not be written back, and a checkpoint that holds no before image of the
- * file at all.
- * Return: 0 when the file is back, -1 when it kept the change.
+ * file at all.  A file the record says was moved, linked, replaced or removed
+ * with no copy is not touched: it is WS_REVERT_KEPT, and the pane has said why.
+ * Return: 0 when the file is back, -1 when it kept the change, WS_REVERT_KEPT
+ * when it was left alone on purpose.
  */
-static int ws_revert_path(FENSTER *f, const char *path, int is_new)
+static int ws_revert_path(FENSTER *f, const char *path, WpeCkVerdictKind kind)
 {
- int rc = 0;
+ int rc = 0, take_away = kind == WPE_CK_CREATED;
  if (ws_is_run_backup(path)) return 0;       /* the price of a write, not the run's work */
- if (ck_mode == WS_CK_GIT) rc = ws_revert_git(f, path, is_new);
- else if (ck_mode == WS_CK_SNAPSHOT) rc = ws_revert_snapshot(f, path, is_new);
+ if (wpe_ckrec_kind_is_kept(kind)) return WS_REVERT_KEPT;
+ if (ck_mode == WS_CK_GIT) rc = ws_revert_git(f, path, take_away);
+ else if (ck_mode == WS_CK_SNAPSHOT) rc = ws_revert_snapshot(f, path, take_away);
  if (rc != 0) return rc;
- if (!is_new) ws_reload_window(f, path);
+ if (!take_away) ws_reload_window(f, path);
  wpe_ai_trace("changeset revert %s", path);
  return 0;
 }
 
 /**
- * ws_say_kept_changes - Say how many files a revert left changed.
- * @f: any window of the editor; @failed: how many files kept the change.
+ * ws_say_last_line - Say what a revert did, in the window the review speaks through.
+ * @f: any window of the editor; @failed: files that could not be put back;
+ * @kept: files left where the run put them on purpose; @unseen: places not seen.
  *
- * The review's last line is what the user believes about the workspace, so a
- * revert that could not write a file is counted here, in the window the review
- * has been speaking through; the pane holds each file's name and the reason.
- * Nothing is printed when every file went back, which the caller says in its
- * own words.
+ * The review's last line is what the user believes about the workspace, so it
+ * says "ALL changes reverted" only when nothing failed, nothing was kept and
+ * nothing was left unseen; the pane holds each file's name and the reason.
  */
-static void ws_say_kept_changes(FENSTER *f, int failed)
+static void ws_say_last_line(FENSTER *f, int failed, int kept, int unseen)
 {
- char line[200];
- if (failed <= 0) return;
- snprintf(line, sizeof line, "[AI] %d file%s kept the change (the pane says why)",
-          failed, failed == 1 ? "" : "s");
+ char line[WPE_CK_SENTENCE_MAX];
+ wpe_ckrec_last_line(line, sizeof line, failed, kept, unseen);
  e_d_p_message(line, f, 0);
 }
 
@@ -3115,43 +3218,159 @@ static void ws_commit_changeset(FENSTER *f, ws_change *c, int n, const char *msg
  wpe_ai_trace("changeset commit");
 }
 
-int wpe_ai_changeset_review(FENSTER *f)
+/**
+ * ws_say_review_header - The first Messages line of a review.
+ * @f: any window of the editor; @n: the rows; @unseen: the places not seen.
+ */
+static void ws_say_review_header(FENSTER *f, int n, int unseen)
 {
- ws_change *c = NULL;
- int n = 0, i, kept = 0;
- char line[1400];
- char **files; int *lines; char **texts;
-
- wpe_ai_messages_run_output_begins(f);   /* the run's first Messages rows */
- if (!ck_mode) { e_d_p_message("[AI] no checkpoint - nothing to review", f, 1); return 0; }
- ws_collect_changes(&c, &n);
- if (n == 0) {
-  e_d_p_message("=== AI changeset: no files changed ===", f, 1);
-  ws_free_changes(c, n);
-  wpe_ai_trace("changeset empty");
-  return 0;
- }
-
- snprintf(line, sizeof line, "=== AI changeset: %d change%s (Alt-T / Alt-V to step) ===", n, n == 1 ? "" : "s");
+ char line[WPE_CK_SENTENCE_MAX];
+ wpe_ckrec_header(line, sizeof line, n, unseen);
  e_d_p_message(line, f, 1);
- files = malloc((size_t)n * sizeof *files);
- lines = malloc((size_t)n * sizeof *lines);
- texts = malloc((size_t)n * sizeof *texts);
+}
+
+/**
+ * ws_show_rows - Put the review's rows in Messages and make them Alt-T / Alt-V's list.
+ * @f: any window of the editor; @c/@n: the rows.
+ *
+ * Each row is spelled from the root so its line and counts survive a narrow
+ * Messages window; what Alt-T opens stays absolute.  A row for a file that is
+ * not there now (removed by the run) is in Messages but not in the list Alt-T
+ * steps, so a jump never opens an empty window under a removed name.
+ */
+static void ws_show_rows(FENSTER *f, ws_change *c, int n)
+{
+ char line[1400];
+ char **files = malloc((size_t)n * sizeof *files);
+ int *lines = malloc((size_t)n * sizeof *lines), nj = 0, i;
+ char **texts = malloc((size_t)n * sizeof *texts);
  for (i = 0; i < n; i++) {
-  /* the row is spelled from the root so its line and counts survive a narrow
-     Messages window; files[i] is what Alt-T opens, so it stays absolute */
   snprintf(line, sizeof line, "%s:%d: %s",
            ws_path_under_root(c[i].path, ck_dir), c[i].line, c[i].text);
   e_d_p_message(line, f, 0);
-  files[i] = c[i].path; lines[i] = c[i].line; texts[i] = c[i].text;
+  if (wpe_ckrec_kind_is_gone(c[i].kind)) continue;
+  files[nj] = c[i].path; lines[nj] = c[i].line; texts[nj] = c[i].text;
+  nj++;
  }
- e_set_error_list(n, files, lines, NULL, texts);   /* Alt-T / Alt-V now step these */
+ e_set_error_list(nj, files, lines, NULL, texts);   /* Alt-T / Alt-V now step these */
+ wpe_ai_trace("changeset jump list n=%d", nj);
  free(files); free(lines); free(texts);
- wpe_ai_trace("changeset n=%d", n);
+}
 
- ws_show_review_keys(f);
+/**
+ * ws_say_unseen - Tell the user what the review could not see, and where the words are.
+ * @f: any window of the editor; @unseen: the places not seen.
+ *
+ * What the user gets, after the rows and just before the keys: one pane
+ * sentence per place of the checkpoint and of the review that was not reached,
+ * one per file the run moved or removed that r leaves alone, and one Messages
+ * line that counts the places not seen.  The pane shows the first few and
+ * counts the others; every one is in the trace.
+ */
+static void ws_say_unseen(FENSTER *f, int unseen)
+{
+ char line[WPE_CK_SENTENCE_MAX];
+ ws_say_notes(f, WPE_CK_THEN, "changeset");
+ ws_say_notes(f, WPE_CK_NOW, "changeset");
+ ws_say_sentences(f);
+ if (unseen <= 0) return;
+ wpe_ckrec_unseen_line(line, sizeof line, unseen);
+ e_d_p_message(line, f, 0);
+}
+
+/**
+ * ws_review_key - The next key of the review that is the review's own.
+ * @f: any window of the editor.
+ *
+ * PgUp, PgDn and the arrows browse the pane, so the user can read every
+ * sentence at the moment of the decision; the answer keys come back upper case.
+ */
+static int ws_review_key(FENSTER *f)
+{
  for (;;) {
-  int k = e_toupper(wpe_paint_modal_getch());
+  int raw = wpe_paint_modal_getch();
+  if (!wpe_ai_pane_browse_key(f, raw)) return e_toupper(raw);
+ }
+}
+
+/**
+ * ws_revert_all - Revert every row of the review.
+ * @f: any window of the editor; @c/@n: the rows; @unseen: the places not seen.
+ *
+ * One file is one count, whatever number of hunks it has.
+ */
+static void ws_revert_all(FENSTER *f, ws_change *c, int n, int unseen)
+{
+ char **bad = NULL, **kept = NULL;
+ int nb = 0, bc = 0, nk = 0, kc = 0, i;
+ for (i = 0; i < n; i++) {
+  int rc = ws_revert_path(f, c[i].path, c[i].kind);
+  if (rc == WS_REVERT_KEPT && !ws_list_has(kept, nk, c[i].path))
+   ws_list_push(&kept, &nk, &kc, ws_strdup(c[i].path));
+  else if (rc != 0 && rc != WS_REVERT_KEPT && !ws_list_has(bad, nb, c[i].path))
+   ws_list_push(&bad, &nb, &bc, ws_strdup(c[i].path));
+ }
+ ws_say_last_line(f, nb, nk, unseen);
+ wpe_ai_free_list(bad, nb);
+ wpe_ai_free_list(kept, nk);
+ wpe_ai_trace("changeset revert all failed=%d kept=%d", nb, nk);
+}
+
+/**
+ * ws_ask_file_by_file - Ask about each file in turn: keep it or revert it.
+ * @f: any window of the editor; @c/@n: the rows; @unseen: the places not seen.
+ * Return: how many files were kept or never asked about.
+ */
+static int ws_ask_file_by_file(FENSTER *f, ws_change *c, int n, int unseen)
+{
+ char **seen = NULL, line[1400];
+ int ns = 0, sc = 0, bad = 0, nk = 0, left = 0, kept = 0, i;
+ for (i = 0; i < n; i++) {
+  if (ws_list_has(seen, ns, c[i].path)) continue;
+  ws_list_push(&seen, &ns, &sc, ws_strdup(c[i].path));
+  if (wpe_ckrec_kind_is_kept(c[i].kind)) {
+   wpe_ckrec_kept_question(line, sizeof line, c[i].kind, ws_path_under_root(c[i].path, ck_dir));
+   e_d_p_message(line, f, 0);
+   nk++;
+   if (ws_review_key(f) == WPE_ESC) { left = ws_files_left(c, n, i, seen, ns); break; }
+   continue;
+  }
+  /* the question names the file the way its row does, so it fits the
+     Messages window at its narrowest and the y/n hint stays visible */
+  snprintf(line, sizeof line, "keep %s ?  y = keep  n = revert",
+           ws_path_under_root(c[i].path, ck_dir));
+  e_d_p_message(line, f, 0);
+  for (;;) {
+   int kk = ws_review_key(f);
+   if (kk == 'Y' || kk == 13 || kk == '\r' || kk == '\n') { kept++; break; }
+   if (kk == 'N') {
+    if (ws_revert_path(f, c[i].path, c[i].kind) != 0) bad++;
+    break;
+   }
+   /* Esc backs out of the question the way it backs out of the review: the
+      files stay as the run wrote them, and no further file is asked about. */
+   if (kk == WPE_ESC) { left = ws_files_left(c, n, i, seen, ns); break; }
+  }
+  if (left) break;
+ }
+ wpe_ai_free_list(seen, ns);
+ if (left) ws_say_kept_unseen(f, left);
+ if (bad > 0 || nk > 0) ws_say_last_line(f, bad, nk, unseen);
+ e_d_p_message("[AI] file-by-file review done", f, 0);
+ wpe_ai_trace("changeset file-by-file failed=%d", bad);
+ return kept + left;
+}
+
+/**
+ * ws_review_answer - Wait for the user's answer to the review and carry it out.
+ * @f: any window of the editor; @c/@n: the rows; @unseen: the places not seen.
+ * Return: how many changes were kept.
+ */
+static int ws_review_answer(FENSTER *f, ws_change *c, int n, int unseen)
+{
+ int kept = 0;
+ for (;;) {
+  int k = ws_review_key(f);
   if (k == 'A' || k == WPE_ESC || k == 13 || k == '\r' || k == '\n') {
    kept = n;
    e_d_p_message("[AI] changes kept", f, 0);
@@ -3159,45 +3378,11 @@ int wpe_ai_changeset_review(FENSTER *f)
    break;
   }
   if (k == 'R') {
-   char **bad = NULL; int nb = 0, bc = 0;
-   for (i = 0; i < n; i++)
-    if (ws_revert_path(f, c[i].path, c[i].is_new) != 0 && !ws_list_has(bad, nb, c[i].path))
-     ws_list_push(&bad, &nb, &bc, ws_strdup(c[i].path));   /* one file, one count */
-   if (nb) ws_say_kept_changes(f, nb);
-   else    e_d_p_message("[AI] ALL changes reverted to the checkpoint", f, 0);
-   wpe_ai_free_list(bad, nb);
-   wpe_ai_trace("changeset revert all failed=%d", nb);
+   ws_revert_all(f, c, n, unseen);
    break;
   }
   if (k == 'F') {
-   char **seen = NULL; int ns = 0, sc = 0, bad = 0, left = 0;
-   for (i = 0; i < n; i++) {
-    if (ws_list_has(seen, ns, c[i].path)) continue;
-    ws_list_push(&seen, &ns, &sc, ws_strdup(c[i].path));
-    /* the question names the file the way its row does, so it fits the
-       Messages window at its narrowest and the y/n hint stays visible */
-    snprintf(line, sizeof line, "keep %s ?  y = keep  n = revert",
-             ws_path_under_root(c[i].path, ck_dir));
-    e_d_p_message(line, f, 0);
-    for (;;) {
-     int kk = e_toupper(wpe_paint_modal_getch());
-     if (kk == 'Y' || kk == 13 || kk == '\r' || kk == '\n') { kept++; break; }
-     if (kk == 'N') {
-      if (ws_revert_path(f, c[i].path, c[i].is_new) != 0) bad++;
-      break;
-     }
-     /* Esc backs out of the question the way it backs out of the review: the
-        files stay as the run wrote them, and no further file is asked about. */
-     if (kk == WPE_ESC) { left = ws_files_left(c, n, i, seen, ns); break; }
-    }
-    if (left) break;
-   }
-   wpe_ai_free_list(seen, ns);
-   if (left) ws_say_kept_unseen(f, left);
-   ws_say_kept_changes(f, bad);
-   e_d_p_message("[AI] file-by-file review done", f, 0);
-   kept += left;
-   wpe_ai_trace("changeset file-by-file failed=%d", bad);
+   kept += ws_ask_file_by_file(f, c, n, unseen);
    break;
   }
   if (k == 'C' && ck_mode == WS_CK_GIT) {
@@ -3209,6 +3394,31 @@ int wpe_ai_changeset_review(FENSTER *f)
    break;
   }
  }
+ return kept;
+}
+
+int wpe_ai_changeset_review(FENSTER *f)
+{
+ ws_change *c = NULL;
+ int n = 0, unseen, kept;
+
+ wpe_ai_messages_run_output_begins(f);   /* the run's first Messages rows */
+ if (!ck_mode) { e_d_p_message("[AI] no checkpoint - nothing to review", f, 1); return 0; }
+ ws_collect_changes(&c, &n);
+ unseen = wpe_ckrec_unseen(ck_rec);
+ ws_say_review_header(f, n, unseen);
+ if (n == 0) {
+  ws_say_unseen(f, unseen);
+  ws_free_changes(c, n);
+  if (unseen) wpe_ai_trace("changeset empty unknown=%d", unseen);
+  else        wpe_ai_trace("changeset empty");
+  return 0;
+ }
+ ws_show_rows(f, c, n);
+ ws_say_unseen(f, unseen);
+ wpe_ai_trace("changeset n=%d unknown=%d", n, unseen);
+ ws_show_review_keys(f);
+ kept = ws_review_answer(f, c, n, unseen);
  ws_free_changes(c, n);
  return kept;
 }

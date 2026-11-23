@@ -7,8 +7,7 @@
 #
 # Bounded by a check or a size just before, or a fixed text into a larger
 # array; remove the line when the site is moved onto a bounded writer.
-R1|we_ai_ws.c|wpe_ai_changeset_review|1|fixed text into a 256 byte array
-R1|we_ai_ws.c|ws_snapshot_run_created|1|length checked against the array just before
+R1|we_ai_ws.c|ws_review_answer|1|fixed text into a 256 byte array
 R1|we_block.c|e_replace_report|3|two numbers and a fixed text into 80 bytes
 R1|we_debug.c|e_d_dap_start|1|adapter name from a fixed table into 160 bytes
 R1|we_debug.c|e_deb_run|10|command words into a line buffer sized for them, not audited site by site

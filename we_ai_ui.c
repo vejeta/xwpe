@@ -5270,6 +5270,41 @@ int e_ai_chat_wheel(FENSTER *f, int c)
  return 0;
 }
 
+/**
+ * wpe_ai_pane_browse_key - Let a key browse the pane while a question waits for its answer.
+ * @f: any window of the editor; @c: the key.
+ * Return: 1 when the key browsed the pane and the caller must read the next
+ * one, 0 when the key is not a browsing key or no pane is open.
+ *
+ * What the user gets: the changeset review waits for a key with the pane on
+ * screen, and PgUp, PgDn and the arrows scroll the transcript to the sentence
+ * that explains what was not seen, before the user answers.  It goes through
+ * the same scroller as the pane's own keys, so the view locks the same way.
+ */
+int wpe_ai_pane_browse_key(FENSTER *f, int c)
+{
+ FENSTER *wf = ai_pane_existing(f->ed);
+ if (!wf)
+  return 0;
+ if (c == BUP) {
+  ai_pane_scroll(wf, -ai_pane_page_rows(wf));
+  return 1;
+ }
+ if (c == BDO) {
+  ai_pane_scroll(wf, +ai_pane_page_rows(wf));
+  return 1;
+ }
+ if (c == CUP) {
+  ai_pane_scroll(wf, -1);
+  return 1;
+ }
+ if (c == CDO) {
+  ai_pane_scroll(wf, +1);
+  return 1;
+ }
+ return 0;
+}
+
 /* What a key does to the input row.  The one list of the keys the chat takes
    from the editor: the key handler reads it to act, and a key not in it goes
    back to the editor with the browsed view left where the user put it. */

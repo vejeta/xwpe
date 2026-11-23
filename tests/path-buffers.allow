@@ -103,10 +103,9 @@ COPY|we_ai_ui.c|e_ai_compose|1|sized|the destination is allocated at its sources
 COPY|we_ai_ui.c|ai_enqueue|1|checked|the goal text cut at its array's size, not a path
 COPY|we_ai_ui.c|e_ai_opt_pick_model|1|text|a menu label into the widget's header, which is as long as the longest label
 COPY|we_ai_ui.c|ai_opt_sync_widgets|2|text|a menu label into the widget's header, which is as long as the longest label
-COPY|we_ai_ws.c|ws_snapshot_run_created|1|checked|the path's length was tested against the array just before
 COPY|we_ai_ws.c|ws_git_stash_ref|2|checked|the length is tested against the array before the copy
 COPY|we_ai_ws.c|wpe_ai_window_hook_copy|1|checked|the path was refused above when it does not fit the caller's size
-COPY|we_ai_ws.c|wpe_ai_changeset_review|1|text|a fixed text into a 256 byte array
+COPY|we_ai_ws.c|ws_review_answer|1|text|a fixed text into a 256 byte array
 COPY|we_bindings.c|wpe_binding_key_text|2|checked|each piece is tested against the buffer's size first
 COPY|we_block.c|e_blck_dup|1|checked|a selection of 80 bytes or more is refused above
 COPY|we_block.c|e_find|1|text|the selected text of under 80 bytes into the Find text of 129

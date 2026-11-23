@@ -1,0 +1,34 @@
+# Uses of a removing, renaming or walking call that tests/check-checkpoint-record.sh
+# allows, one line each:
+#
+#   file|clause:function|count|pass|reason
+#
+# The count is how many names the clause finds in that function.  A count that is
+# exceeded is an offender; a line whose count is higher than what is found, or
+# whose function names nothing any more, fails as stale, so the file only shrinks.
+# The pass says when the use goes: "keep" is a use that stays, "B" is a use the
+# revert actions of the next pass replace by a move to the wastebasket.
+we_ai_ws.c|a:ws_take_away_snapshot|1|B|takes away a file the record proves the run made, in a snapshot checkpoint
+we_ai_ws.c|a:ws_revert_command|1|B|the shell command that takes away such a file in a git checkpoint
+we_ai_ws.c|a:ws_before_enter|1|keep|the walk's test seam: renames a folder only when a test names the hook
+# Leaves: owner entry points that the checkpoint's code may call.  Each is in the
+# closure of the removing calls (it reaches one) and is declared once here, so the
+# closure does not spread through it.  The file is the one that defines it, and the
+# count is how many removing or exec calls its own body names (exact; it may only
+# fall), so a removal added to a leaf's body is named.  Their contracts are guarded
+# by their own owners' checks.
+we_write.c|leaf:wpe_write_own_remove|1|keep|the write owner's removal of the editor's own temporary and session files
+we_write.c|leaf:wpe_write_own_bytes|0|keep|the write owner's replacement of the editor's own state files
+we_write.c|leaf:wpe_write_save_text|0|keep|the write owner's Save of a file the user approved
+we_write.c|leaf:wpe_write_save_text_ask|0|keep|the write owner's Save with the question for a replaced window file
+we_write.c|leaf:wpe_write_restore_text|0|keep|the write owner's put-back of a before image, into the same file
+we_write.c|leaf:wpe_write_copy|0|keep|the write owner's copy of a window to the hook's own file
+we_prog.c|leaf:e_d_p_message|0|keep|puts a line in the Messages window; its chain reaches the screen dump's file by name
+we_ai_ui.c|leaf:wpe_ai_pane_error|0|keep|puts a line in the pane; same chain as a Messages line
+we_ai_ui.c|leaf:wpe_ai_pane_browse_key|0|keep|scrolls the pane; same chain
+we_ai_ui.c|leaf:wpe_ai_messages_run_output_begins|0|keep|opens the Messages window; same chain
+we_opt.c|leaf:e_add_arguments|0|keep|asks for the commit message in a dialog; same chain
+we_ai_ws.c|e:wpe_ai_scope_files|3|keep|lists what the assistant may read, through the read owner: not the checkpoint
+we_ai_ws.c|e:wpe_ai_scope_count_skipped_links|1|keep|counts the links the scope scan did not follow: the scope's, not the checkpoint's
+we_ai_ws.c|e:ws_folders_stay_in_tree|1|keep|looks at one name through the path owner; the closure by name also reaches the scope scan
+we_ai_ws.c|e:ws_restore_before_image|1|keep|looks at one name through the path owner; the closure by name also reaches the scope scan

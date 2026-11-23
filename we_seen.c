@@ -76,6 +76,18 @@ nlink_t wpe_seen_nlink(const WpeSeen *s)
 }
 
 /**
+ * wpe_seen_size - How many bytes the object had when the look was made.
+ *
+ * Lets the checkpoint tell that a new file cannot be a byte copy of a file the
+ * run removed (the sizes differ) without reading the record's members.  The
+ * size proves nothing about identity: it only rules a copy out, never in.
+ */
+off_t wpe_seen_size(const WpeSeen *s)
+{
+ return(s->seen_size);
+}
+
+/**
  * seen_test_drops_birth - Does the test hook ask every look to drop the birth?
  *
  * XWPE_TEST_FAIL=seen-no-birth lets a row on Linux play a system without a

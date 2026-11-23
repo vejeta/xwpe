@@ -20,6 +20,24 @@ Cannot reproduce:
      past the limit stays alive).
 
 Bugs fixed in 1.6.x:
+* The assistant's changeset review knows what became of every file the
+  checkpoint saw, not only which names it listed.  A file of yours that a run
+  renamed (alone, with its folder, or in a git workspace an untracked or
+  ignored one) is the same file under a new name: the review says "moved here"
+  and `r` keeps it, where it used to call it new and delete the only copy.  A
+  file the run removed is a row ("removed", or "removed, no copy" when the
+  checkpoint holds none) and `r` writes the checkpoint's copy back; a file the
+  run made unreadable says "not readable now" with the system's reason.  A new
+  file as large as a file the run removed is kept ("new, kept") and the pane
+  names the removed one, since it may hold your bytes.  A place the review
+  could not see (a folder the run closed or the checkpoint could not read, a
+  workspace folder the run replaced, a git that did not answer after the run,
+  new files beyond the walk's bound) is a sentence in the pane and a count in
+  Messages, and `r` says "ALL changes reverted" only when nothing was left
+  unseen.  The checkpoint's own bound is said again when the review opens, and
+  PgUp, PgDn and the arrows scroll the pane while the review waits for its key,
+  so the sentence can be read before you answer.  New files after the run are
+  found even in a workspace that already held the bound.
 * The editor no longer waits, fills the memory or reads your keys when a name
   it reads is not a regular file.  An xwperc in the folder you started in that
   is a link to /dev/zero or a pipe, a project file that is a pipe, and a
