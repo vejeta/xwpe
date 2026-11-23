@@ -47,7 +47,7 @@
 #include <curses.h>
 #endif
 
-extern int MAXSLNS, MAXSCOL, MENOPT;
+extern int MENOPT;
 #define MAXEDT 35
 
 /* Set by the active backend's getch when the value it just returned is a text
@@ -1183,7 +1183,14 @@ extern void (*e_u_raise_editor)(void);
 int e_shell_run(struct WpeStartPlan *plan, char *const argv[]);
 int e_t_system(struct WpeStartPlan *plan);
 int e_t_keyboard_fd(void);
-extern int (*e_u_ini_size)(void);
+/* The display's reset of the screen at the size in use: forget the cursor,
+   blank the grid's planes (wpe_grid_wipe) and fit the display's own buffer.
+   It allocates nothing for the grid, so it has no result to ignore. */
+extern void (*e_u_screen_reset)(void);
+/* The editor's side of the grid owner (we_grid_desk.c). */
+WpeGridTake e_screen_take(int cols, int rows, int *old_cols, int *old_rows);
+int e_screen_start(int cols, int rows);
+void e_screen_say_pending(void);
 extern int (*e_u_s_sys_end)(void);
 extern int (*e_u_s_sys_ini)(void);
 extern void (*e_u_setlastpic)(PIC *pic);

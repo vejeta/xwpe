@@ -47,7 +47,7 @@ static void e_clip_t_os_set(const char *utf8, int len)
 char *init_key(char *key);
 char *init_kkey(char *key);
 int init_cursor(void);
-int e_begscr(void);
+int e_begscr(int *cols, int *rows);
 int fk_t_cursor(int x);
 int fk_t_putchar(int c);
 int fk_attrset(int a);
@@ -198,9 +198,6 @@ int e_t_deb_out(FENSTER *f);
 int e_s_sys_end();
 int e_s_sys_ini();
 
-extern int MAXSLNS;
-extern int MAXSCOL;
-
 
 #ifndef NCURSES
 char *key_f[KEYFN], *key_key;
@@ -209,7 +206,6 @@ char *cur_rc, *cur_vs, *cur_nvs, *cur_vvs, cur_attr;
 char *att_so, *att_ul, *att_rv, *att_bl, *att_dm, *att_bo;
 char *ratt_no, *ratt_so, *ratt_ul, *ratt_rv, *ratt_bl, *ratt_dm, *ratt_bo;
 char *beg_scr, *swt_scr, *sav_cur, *res_cur; 
-extern SCREENCELL *altschirm;
 extern char *att_no;
 char *col_fg, *col_bg, *spc_st, *spc_in, *spc_bg, *spc_nd;
 
@@ -694,6 +690,252 @@ static void e_t_adopt_tty_modes(void)
 #endif
 }
 
+#if !defined(TERMCAP) && defined(NCURSES)
+/* The largest size curses takes from the environment: it cuts anything
+   larger to this per side, so a bigger terminal is reached by growing the
+   screen after the start, never by the environment. */
+#define E_T_ENV_SIZE_MAX 512
+
+/* Room for the digits of a screen size in the environment. */
+#define E_T_SIZE_TEXT 16
+
+/* The environment variables ncurses reads for a terminal's size, as the
+   user had them: set while the editor tells curses the size to start on,
+   put back after, so no program the editor starts inherits that size and a
+   later resize of the terminal is followed again. */
+typedef struct {
+ char *user_lines;
+ char *user_columns;
+} E_T_SIZE_ENV;
+
+/**
+ * e_t_tty_size - The size of the terminal as the kernel reports it.
+ * @cols: @rows: receive the columns and rows.
+ * Return: 1 when a terminal answered, 0 otherwise.
+ */
+static int e_t_tty_size(int *cols, int *rows)
+{
+ struct winsize ws;
+
+ if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) != 0 &&
+     ioctl(STDIN_FILENO, TIOCGWINSZ, &ws) != 0)
+  return 0;
+ if (ws.ws_col == 0 || ws.ws_row == 0)
+  return 0;
+ *cols = ws.ws_col;
+ *rows = ws.ws_row;
+ return 1;
+}
+
+/**
+ * e_t_size_env_save - Remember the user's LINES and COLUMNS.
+ */
+static void e_t_size_env_save(E_T_SIZE_ENV *saved)
+{
+ const char *env_lines = getenv("LINES");
+ const char *env_columns = getenv("COLUMNS");
+
+ saved->user_lines = env_lines ? strdup(env_lines) : NULL;
+ saved->user_columns = env_columns ? strdup(env_columns) : NULL;
+}
+
+/**
+ * e_t_size_env_put_back - Give LINES and COLUMNS back as they were,
+ * unset when the user had not set them.
+ */
+static void e_t_size_env_put_back(E_T_SIZE_ENV *saved)
+{
+ if (saved->user_lines)
+  setenv("LINES", saved->user_lines, 1);
+ else
+  unsetenv("LINES");
+ if (saved->user_columns)
+  setenv("COLUMNS", saved->user_columns, 1);
+ else
+  unsetenv("COLUMNS");
+ free(saved->user_lines);
+ free(saved->user_columns);
+ saved->user_lines = saved->user_columns = NULL;
+}
+
+/**
+ * e_t_asked_size - The size the terminal asks the editor for.
+ * @cols: @rows: receive it: the user's LINES and COLUMNS when they set both,
+ * the kernel's terminal size when it answers, the usual 80 x 24 otherwise.
+ */
+static void e_t_asked_size(int *cols, int *rows)
+{
+ const char *env_lines = getenv("LINES");
+ const char *env_columns = getenv("COLUMNS");
+ int env_rows = env_lines ? atoi(env_lines) : 0;
+ int env_cols = env_columns ? atoi(env_columns) : 0;
+
+ *cols = WPE_GRID_START_COLS;
+ *rows = WPE_GRID_START_ROWS;
+ if (env_rows > 0 && env_cols > 0)
+ {
+  *cols = env_cols;
+  *rows = env_rows;
+ }
+ else if (!e_t_tty_size(cols, rows))
+ {
+  *cols = WPE_GRID_START_COLS;
+  *rows = WPE_GRID_START_ROWS;
+ }
+}
+
+/**
+ * e_t_env_size - A size curses takes from the environment.
+ */
+static int e_t_env_size(int size)
+{
+ return size > E_T_ENV_SIZE_MAX ? E_T_ENV_SIZE_MAX : size;
+}
+
+/**
+ * e_t_newterm_at - Start curses on a size named by the environment.
+ * @cols: @rows: the size to start on.
+ *
+ * The user's own LINES and COLUMNS are put back before this returns, so no
+ * compiler or shell the editor starts inherits them, and a later resize of
+ * the terminal is followed again.
+ * Return: 1 when curses runs, 0 when even this size was refused.
+ */
+static int e_t_newterm_at(int cols, int rows)
+{
+ E_T_SIZE_ENV saved;
+ char rows_text[E_T_SIZE_TEXT];
+ char cols_text[E_T_SIZE_TEXT];
+ int started;
+
+ e_t_size_env_save(&saved);
+ if (WPE_FMT_WHOLE(rows_text, "%d", rows) != WPE_FMT_OK ||
+     WPE_FMT_WHOLE(cols_text, "%d", cols) != WPE_FMT_OK)
+ {
+  e_t_size_env_put_back(&saved);
+  return 0;
+ }
+ setenv("LINES", rows_text, 1);
+ setenv("COLUMNS", cols_text, 1);
+ started = newterm(NULL, stdout, stdin) != NULL;
+ e_t_size_env_put_back(&saved);
+ return started;
+}
+
+/**
+ * e_t_halve_towards - Half of a size, never below the size curses has.
+ */
+static int e_t_halve_towards(int size, int held)
+{
+ size /= 2;
+ return size < held ? held : size;
+}
+
+/**
+ * e_t_grow_to - Grow curses towards a size it did not start on.
+ * @cols: @rows: the size asked for.
+ * @held_cols: @held_rows: the size curses has, which it keeps when it refuses
+ * every rung.
+ *
+ * Asks for the size, then half of it, and so on: a refusal leaves curses as
+ * it was.  What the user gets: an editor on the largest screen the machine
+ * holds, instead of the library's own refusal to start at all.
+ */
+static void e_t_grow_to(int cols, int rows, int held_cols, int held_rows)
+{
+ while (cols > held_cols || rows > held_rows)
+ {
+  if (resizeterm(rows, cols) == OK)
+   return;
+  cols = e_t_halve_towards(cols, held_cols);
+  rows = e_t_halve_towards(rows, held_rows);
+ }
+}
+
+/**
+ * e_t_open_screen - Start curses, also on a terminal too large for it.
+ *
+ * curses holds three screens of its own, so a very large terminal can be more
+ * than the memory holds: asked for that size straight away, curses refuses to
+ * start and the editor ends with the library's own sentence.  Starting on a
+ * size curses always takes and growing it from there leaves the user with an
+ * editor on the largest screen the machine holds.  A screen that ends up
+ * smaller than the terminal is cut by curses, and the editor says so once.
+ *
+ * A refused start is never asked for.  The first newterm names a size cut to
+ * the largest one curses reads from the environment (E_T_ENV_SIZE_MAX a
+ * side), and curses always holds that: its own three screens of it are a few
+ * megabytes on a machine that runs the editor at all.  There is therefore no
+ * smaller second start to fall back on, and nobody reads curses' "cannot
+ * initialize terminal type" because of a size: the worst a large terminal
+ * gives is an editor on a smaller screen that says so, and a terminal that
+ * grows later is followed again.
+ *
+ * Return: 0 when curses runs.  When it cannot start at all (no terminal of
+ * this name, no memory for its own tables), the library's own sentence is
+ * printed and the editor ends, as it always did.
+ */
+static int e_t_open_screen(void)
+{
+ int asked_cols, asked_rows, cols, rows;
+
+ e_t_asked_size(&asked_cols, &asked_rows);
+ cols = asked_cols;
+ rows = asked_rows;
+ wpe_grid_fit(&cols, &rows);
+ if (!e_t_newterm_at(e_t_env_size(cols), e_t_env_size(rows)))
+ {
+  initscr();           /* fails the same way and ends with curses' sentence */
+  return 0;
+ }
+ if (cols > COLS || rows > LINES)
+  e_t_grow_to(cols, rows, COLS, LINES);
+ if (COLS < asked_cols || LINES < asked_rows)
+  wpe_grid_note_clamp(asked_cols, asked_rows, COLS, LINES);
+ return 0;
+}
+
+/**
+ * e_t_curses_size - The size curses really has.
+ * @cols: @rows: the size the terminal reported, replaced by curses' own: a
+ * start curses had to cut down leaves the terminfo numbers naming the
+ * terminal, not the screen the editor draws on.
+ */
+static void e_t_curses_size(int *cols, int *rows)
+{
+ if (COLS > 0 && LINES > 0)
+ {
+  *cols = COLS;
+  *rows = LINES;
+ }
+}
+#endif
+
+/**
+ * e_t_start_grid - Give the editor its first grid, the terminal's size.
+ *
+ * What the user gets: the editor starts on the terminal's size, or a smaller
+ * one it says so about; if there is no memory even for 80 x 24 it ends with
+ * a sentence on the restored terminal.
+ */
+static void e_t_start_grid(void)
+{
+ int cols, rows;
+
+ e_begscr(&cols, &rows);
+#if !defined(TERMCAP) && defined(NCURSES)
+ e_t_curses_size(&cols, &rows);
+#endif
+ if (e_screen_start(cols, rows) == 0)
+  return;
+#if !defined(TERMCAP) && defined(NCURSES)
+ endwin();
+#endif
+ fprintf(stderr, "xwpe: no memory for a screen of %d x %d\n",
+         WPE_GRID_START_COLS, WPE_GRID_START_ROWS);
+ exit(1);
+}
+
 int e_t_initscr()
 {
  int ret, i, k;
@@ -720,7 +962,11 @@ int e_t_initscr()
 #ifndef TERMCAP
  /* initscr() sets the global stdscr itself; do not assign to it -- a
     reentrant-built ncursesw (e.g. openSUSE) makes stdscr a non-lvalue macro. */
+#ifdef NCURSES
+ e_t_open_screen();
+#else
  if (initscr()==(WINDOW *)ERR) exit(27);
+#endif
 #ifdef NCURSES
  cbreak();
  noecho();
@@ -760,12 +1006,7 @@ int e_t_initscr()
   e_t_truecolor_detect();
  }
 #endif
- e_begscr();
- schirm = calloc(MAXSCOL * MAXSLNS, sizeof(SCREENCELL));
- altschirm = calloc(MAXSCOL * MAXSLNS, sizeof(SCREENCELL));
-#if !defined(NO_XWINDOWS) && defined(NEWSTYLE)
- extbyte = MALLOC(MAXSCOL * MAXSLNS);
-#endif
+ e_t_start_grid();
  if(init_cursor())
  {
   printf("Terminal Not in the right mode\n");
@@ -788,28 +1029,37 @@ int e_t_initscr()
 
 int svflgs, kbdflgs;
 
-int e_begscr()
+/**
+ * e_begscr - The size of the terminal.
+ * @cols: receives the columns (the usual 80 when the terminal says nothing).
+ * @rows: receives the rows (24 likewise).
+ *
+ * The grid owner takes the size; this only reads it.
+ */
+int e_begscr(int *cols, int *rows)
 {
- int cols, lns;
+ int lns, col;
 
+ *cols = WPE_GRID_START_COLS;
+ *rows = WPE_GRID_START_ROWS;
  kbdflgs = fcntl( 0, F_GETFL, 0 );
 #ifndef TERMCAP
 #ifndef NCURSES
  setupterm((char *)0, 1, (int *)0);
 #endif
  if ((lns = tigetnum("lines")) > 0)
-  MAXSLNS = lns;
- if ((cols = tigetnum("cols")) > 0)
-  MAXSCOL = cols;
+  *rows = lns;
+ if ((col = tigetnum("cols")) > 0)
+  *cols = col;
 #else
  if ((tc_screen = getenv("TERM")) == NULL)
   e_exitm("Environment variable TERM not defined!", 1);
  if ((tgetent(tcbuf, tc_screen)) != 1)
   e_exitm("Unknown terminal type!", 1);
  if ((lns = tgetnum("li")) > 0)
-  MAXSLNS = lns;
- if ((cols = tgetnum("co")) > 0)
-  MAXSCOL = cols;
+  *rows = lns;
+ if ((col = tgetnum("co")) > 0)
+  *cols = col;
 #endif
  return(0);
 }
@@ -2336,6 +2586,41 @@ static int e_t_curses_key(int ch, unsigned extra_mods)
 }
 
 /**
+ * e_t_drain_resizes - Swallow the KEY_RESIZE events queued behind one.
+ *
+ * A resize often arrives in a burst; only the last size matters.  Same
+ * technique as dialog(1) dlg_will_resize().  The first byte that is not a
+ * resize is pushed back for the next read.
+ */
+static void e_t_drain_resizes(void)
+{
+ int next;
+
+ while ((next = e_t_next_byte(INPUT_NO_WAIT_MS)) == KEY_RESIZE)
+  ;
+ if (next != E_T_NO_BYTE)
+  e_t_push_back(next);
+}
+
+/**
+ * e_t_take_resize - Take the terminal's new size for the editor.
+ *
+ * ncurses has already called resizeterm() and updated LINES and COLS.  The
+ * grid owner takes the size with its planes; only when it changed does the
+ * layout owner lay the desk out again.  If memory is refused the editor stays
+ * at the size it had, with its text, and the owner's notice is said at the
+ * next key read.
+ */
+static void e_t_take_resize(void)
+{
+ int old_scol, old_slns;
+
+ e_t_drain_resizes();
+ if (e_screen_take(COLS, LINES, &old_scol, &old_slns) == WPE_GRID_CHANGED)
+  wpe_layout_screen_resized(old_scol, old_slns);
+}
+
+/**
  * e_t_decode_key - The editor's key for a byte or curses code just read.
  * @c: what e_t_read_raw returned (never E_T_NO_BYTE).
  * @mode: the E_T_READ_* mode of the read, for a bracketed paste's next key.
@@ -2356,34 +2641,8 @@ static int e_t_decode_key(int c, int mode)
   switch (c)
   {
    case KEY_RESIZE:
-   {
-    int i, old_scol = MAXSCOL, old_slns = MAXSLNS;
-    /* Drain any queued KEY_RESIZE events (resize often arrives in
-       bursts).  Same technique as dialog(1) dlg_will_resize(). */
-    { int _ch;
-      while ((_ch = e_t_next_byte(INPUT_NO_WAIT_MS)) == KEY_RESIZE)
-       ;
-      if (_ch != E_T_NO_BYTE)
-       e_t_push_back(_ch);
-    }
-    /* ncurses already called resizeterm() and updated LINES/COLS */
-    MAXSCOL = COLS;
-    MAXSLNS = LINES;
-    if (MAXSLNS < 6) MAXSLNS = 6;
-    if (MAXSCOL < 30) MAXSCOL = 30;
-    if (MAXSCOL != old_scol || MAXSLNS != old_slns)
-    {
-     schirm = REALLOC(schirm, sizeof(SCREENCELL) * MAXSCOL * MAXSLNS);
-     altschirm = REALLOC(altschirm, sizeof(SCREENCELL) * MAXSCOL * MAXSLNS);
-     memset(schirm, 0, sizeof(SCREENCELL) * MAXSCOL * MAXSLNS);
-     memset(altschirm, 0, sizeof(SCREENCELL) * MAXSCOL * MAXSLNS);
-#if !defined(NO_XWINDOWS) && defined(NEWSTYLE)
-     extbyte = REALLOC(extbyte, MAXSCOL * MAXSLNS);
-#endif
-     wpe_layout_screen_resized(old_scol, old_slns);
-    }
+    e_t_take_resize();
     return WPE_RESIZE;
-   }
 #if MOUSE
    case KEY_MOUSE:
    {
@@ -2548,6 +2807,7 @@ static int e_t_read_key(int mode)
 
 int e_t_getch()
 {
+ e_screen_say_pending();
  return(e_t_read_key(E_T_READ_WAIT));
 }
 

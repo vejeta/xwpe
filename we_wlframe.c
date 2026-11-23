@@ -28,6 +28,7 @@
 #include <sys/mman.h>
 #include <stdint.h>
 #include "we_path.h"         /* how long a path the editor holds may be */
+#include "we_grid.h"         /* the grid's floor and ceiling */
 #include "we_platform.h"     /* memfd_create where the system has it */
 
 #include "we_render.h"       /* WpeRender: the renderer to re-point */
@@ -42,6 +43,10 @@
 #define WLF_TEMP_LEAF "xwpe-wl-XXXXXX"   /* the name mkostemp makes the buffer's file from */
 #define WLF_BYTES_PER_PIXEL 4
 #define WLF_COMPOSITOR_DAMAGE_BUFFER 4   /* wl_surface.damage_buffer since v4 */
+
+/* The largest count the wl_shm protocol carries: a pool's size and a
+   buffer's stride are both an int32 on the wire. */
+#define WLF_MAX_WIRE_COUNT INT32_MAX
 
 /* The owner's state. */
 static struct {
@@ -210,8 +215,11 @@ void wpe_wlframe_fit_size(int bound_w, int bound_h, unsigned states,
  * wlf_grid_of - The grid a buffer of a size carries.
  * @w: buffer width.
  * @h: buffer height.
- * @cols: receives the columns, at least the floor.
- * @rows: receives the rows, at least the floor.
+ * @cols: receives the columns, within the grid owner's floor and ceiling.
+ * @rows: receives the rows, likewise.
+ *
+ * A buffer larger than the ceiling carries the ceiling's grid; the strip the
+ * editor will not draw on is the remainder, painted black.
  */
 static void wlf_grid_of(int w, int h, int *cols, int *rows)
 {
@@ -223,10 +231,24 @@ static void wlf_grid_of(int w, int h, int *cols, int *rows)
  }
  *cols = w / F.cell_w;
  *rows = h / F.cell_h;
- if (*cols < WPE_WLFRAME_MIN_COLS)
-  *cols = WPE_WLFRAME_MIN_COLS;
- if (*rows < WPE_WLFRAME_MIN_ROWS)
-  *rows = WPE_WLFRAME_MIN_ROWS;
+ wpe_grid_fit(cols, rows);
+}
+
+/**
+ * wpe_wlframe_keep_grid - Tell the frame the grid the editor really uses.
+ * @cols: @rows: the grid in use.
+ *
+ * After the editor kept its grid because memory for a larger one was
+ * refused, the buffer is larger than the grid.  The frame takes the grid in
+ * use, so the strip past the last cell is black and the next configure is
+ * compared with the truth.
+ */
+void wpe_wlframe_keep_grid(int cols, int rows)
+{
+ F.cols = cols;
+ F.rows = rows;
+ wlf_trace("keep grid=%dx%d", cols, rows);
+ wpe_wlframe_paint_remainder();
 }
 
 /**
@@ -314,19 +336,53 @@ static void wlf_release_buffer(void)
 }
 
 /**
+ * wlf_buffer_size - The stride and bytes of a buffer the wire can carry.
+ * @w: width in pixels.
+ * @h: height in pixels.
+ * @stride: receives the bytes of one row.
+ * @bytes: receives the bytes of the whole buffer.
+ *
+ * Both counts are size_t, so a window the protocol cannot carry is named
+ * instead of shortened: the pool's size and the stride go on the wire as an
+ * int32, and a size past that would reach the compositor as a smaller
+ * buffer than the window it answers.
+ *
+ * Return: 0 when a wl_shm buffer can carry the size, -1 when it cannot (and
+ * the two out-parameters are left alone).
+ */
+static int wlf_buffer_size(int w, int h, size_t *stride, size_t *bytes)
+{
+ size_t row, total;
+
+ if (w < 0 || h < 0)
+  return -1;
+ row = (size_t)w * WLF_BYTES_PER_PIXEL;
+ if (row > WLF_MAX_WIRE_COUNT)
+  return -1;
+ total = row * (size_t)h;
+ if (total > WLF_MAX_WIRE_COUNT)
+  return -1;
+ *stride = row;
+ *bytes = total;
+ return 0;
+}
+
+/**
  * wlf_shm_alloc - (Re)allocate the single shm frame buffer at w x h.
  * @w: width in pixels.
  * @h: height in pixels.
  *
  * Maps it and creates the wl_buffer; the pixels start black.
- * Return: 0 on success, -1 when the system refuses.
+ * Return: 0 on success, -1 when the system refuses, or when no wl_shm buffer
+ * can carry the size (see wlf_buffer_size).
  */
 static int wlf_shm_alloc(int w, int h)
 {
  struct wl_shm_pool *pool;
- int stride = w * WLF_BYTES_PER_PIXEL;
- size_t size = (size_t)stride * h;
+ size_t stride, size;
 
+ if (wlf_buffer_size(w, h, &stride, &size) != 0)
+  return -1;
  wlf_release_buffer();
  WpeWl.shm_fd = wlf_anon_file(size);
  if (WpeWl.shm_fd < 0)
@@ -339,12 +395,12 @@ static int wlf_shm_alloc(int w, int h)
   return -1;
  }
  pool = wl_shm_create_pool(WpeWl.shm, WpeWl.shm_fd, (int32_t)size);
- WpeWl.buffer = wl_shm_pool_create_buffer(pool, 0, w, h, stride,
+ WpeWl.buffer = wl_shm_pool_create_buffer(pool, 0, w, h, (int32_t)stride,
                                           WL_SHM_FORMAT_XRGB8888);
  wl_shm_pool_destroy(pool);
  WpeWl.width = w;
  WpeWl.height = h;
- WpeWl.stride = stride;
+ WpeWl.stride = (int)stride;
  WpeWl.shm_size = size;
  return 0;
 }
@@ -787,15 +843,37 @@ void wpe_wlframe_paint_remainder(void)
 }
 
 /**
+ * wlf_wire_refuses - Whether no wl_shm buffer can carry a size.
+ * @w: width in pixels.
+ * @h: height in pixels.
+ *
+ * What the user sees: the window keeps the frame it has and the compositor
+ * gets no answer, as when the system refuses the memory for a buffer; the
+ * next top-level point asks again.  The trace names the size refused.
+ */
+static int wlf_wire_refuses(int w, int h)
+{
+ size_t stride, bytes;
+
+ if (wlf_buffer_size(w, h, &stride, &bytes) == 0)
+  return 0;
+ wlf_trace("refuse buffer=%dx%d: no wl_shm buffer carries it", w, h);
+ return 1;
+}
+
+/**
  * wlf_resize_buffer - Replace the buffer by one of a size and re-point the renderer.
  * @w: width.
  * @h: height.
  *
- * Return: 0 on success; on failure the old buffer is gone and the owner
- * stays PENDING so the next top-level point tries again.
+ * Return: 0 on success; on failure the owner stays PENDING so the next
+ * top-level point tries again.  A size the wire cannot carry leaves the
+ * buffer in use alone; a size the system refuses leaves the owner without one.
  */
 static int wlf_resize_buffer(int w, int h)
 {
+ if (wlf_wire_refuses(w, h))
+  return -1;
  if (F.ops->alloc_buffer(w, h) != 0)
   return -1;
  F.w = w;

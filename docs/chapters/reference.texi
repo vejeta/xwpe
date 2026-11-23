@@ -41,7 +41,9 @@ output (see Compiler Options).  (Documented since v1.4, German manpage.)
 default: @code{8x13}).
 @item @option{-g @var{g}} @tab Synonym for @option{-geometry}.  (Documented since v1.4.)
 @item @option{-geometry @var{g}} @tab Set window size/position (X11 only;
-minimum 80x25; e.g.@: @option{-g 80x20+4+4}).
+minimum 80x25; e.g.@: @option{-g 80x20+4+4}).  A size larger than the
+screen starts the window at the screen's size, and the editor says what it
+asked for and what it uses.
 @item @option{-iconic} @tab Start minimised (X11 only).
 @item @option{-pcmap} @tab Use a private colourmap (X11 only).  For a
 palette (8-bit) display whose shared colourmap other programs have filled:

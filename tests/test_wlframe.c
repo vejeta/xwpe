@@ -22,6 +22,10 @@
  *   new buffer       a buffer replaced without a grid change is re-drawn
  *                    before it is shown
  *   no buffer        a refused allocation leaves the configure pending
+ *   wire size        a window whose pixels no wl_shm buffer can carry is
+ *                    refused before any memory is asked for
+ *   ceiling          a window wider than the grid's ceiling carries the
+ *                    ceiling's grid, and the rest is remainder
  *   lone event       a read that brings only a frame-queue event returns at
  *                    once (a real libwayland connection over a socket pair)
  */
@@ -35,6 +39,7 @@
 #include "../we_wayland.h"
 #include "../we_render.h"
 #include "../we_wlframe.h"
+#include "../we_grid.h"
 #include "test_watchdog.h"
 
 #define CELL_W 9
@@ -76,6 +81,7 @@ struct ev {
 static struct ev log_[MAX_EV];
 static int nlog;
 static int refuse_alloc;
+static int promise_pixels;
 
 static void rec(int kind, int a, int b)
 {
@@ -112,6 +118,15 @@ static int fake_alloc(int w, int h)
 {
 	if (refuse_alloc)
 		return -1;
+	if (promise_pixels) {
+		/* The sizes the wire-size row asks for are ones no system would
+		   map: answer yes without asking, so what the row sees is the
+		   owner's own refusal and not the system's. */
+		WpeWl.width = w;
+		WpeWl.height = h;
+		rec(EV_ALLOC, w, h);
+		return 0;
+	}
 	free(WpeWl.pixels);
 	WpeWl.pixels = calloc((size_t)w * h, sizeof(uint32_t));
 	WpeWl.width = w;
@@ -213,6 +228,7 @@ static void fresh(void)
 	nlog = 0;
 	nqueue = 0;
 	refuse_alloc = 0;
+	promise_pixels = 0;
 	wpe_wlframe_init(OWN_W, OWN_H, CELL_W, CELL_H);
 	wpe_wlframe_use_ops(&recorder);
 }
@@ -442,6 +458,93 @@ static void test_below_the_floor(void)
 	chk("the grid keeps its floor, rows", rows, WPE_WLFRAME_MIN_ROWS);
 }
 
+/* ---- a buffer the wire protocol cannot carry ---- */
+
+/* The pool's size and the buffer's stride are an int32 on the wire, so a
+   window of 46341 x 46341 pixels (8590320684 bytes) has no buffer, and one
+   600000000 pixels wide has no stride either (2400000000).  What the user
+   sees when such a size is asked for: the window keeps the frame it has, the
+   compositor is never answered with a buffer that does not fit its
+   configure, and the next top-level point asks again -- the way of a buffer
+   the system refused.  Before the size was counted in size_t the owner asked
+   for the buffer and put a truncated count on the wire. */
+#define WIRE_BYTES_W 46341
+#define WIRE_BYTES_H 46341
+#define WIRE_STRIDE_W 600000000
+#define WIRE_STRIDE_H 100
+#define WIRE_FITTING_W 20000
+#define WIRE_FITTING_H 20000
+
+static void check_oversize_is_refused(const char *what, int w, int h)
+{
+	int cols, rows;
+	char name[96];
+
+	fresh();
+	promise_pixels = 1;
+	queue_configure(w, h, FULLSCREEN_ACTIVE, 1);
+	snprintf(name, sizeof name, "%s: the size is refused", what);
+	chk(name, wpe_wlframe_apply(&cols, &rows), 0);
+	snprintf(name, sizeof name, "%s: no memory was asked for", what);
+	chk(name, count(EV_ALLOC), 0);
+	snprintf(name, sizeof name, "%s: the configure stays pending", what);
+	chk(name, wpe_wlframe_pending(), 1);
+	snprintf(name, sizeof name, "%s: nothing was committed", what);
+	chk(name, count(EV_COMMIT), 0);
+	snprintf(name, sizeof name, "%s: nothing was acknowledged", what);
+	chk(name, count(EV_ACK), 0);
+}
+
+static void test_a_buffer_the_protocol_cannot_carry_is_refused(void)
+{
+	int cols, rows;
+
+	check_oversize_is_refused("the byte count passes int32",
+	                          WIRE_BYTES_W, WIRE_BYTES_H);
+	check_oversize_is_refused("the stride alone passes int32",
+	                          WIRE_STRIDE_W, WIRE_STRIDE_H);
+
+	/* A large buffer the wire does carry is still made: what is refused is
+	   the protocol's limit, not a large window. */
+	fresh();
+	promise_pixels = 1;
+	queue_configure(WIRE_FITTING_W, WIRE_FITTING_H, FULLSCREEN_ACTIVE, 1);
+	chk("a buffer inside int32 is taken", wpe_wlframe_apply(&cols, &rows), 1);
+	chk("a buffer inside int32 was asked for", count(EV_ALLOC), 1);
+	chk("a buffer inside int32: the width asked for",
+	    log_[nth(EV_ALLOC, 0)].a, WIRE_FITTING_W);
+	chk("a buffer inside int32: the height asked for",
+	    log_[nth(EV_ALLOC, 0)].b, WIRE_FITTING_H);
+}
+
+/* ---- the ceiling a buffer carries ---- */
+
+/* A window wide enough for 4200 cells: the grid the editor lays out stops at
+   the grid owner's ceiling and the strip past it is the frame's remainder.
+   No live row can show this in the Wayland suite, whose compositor runs a
+   kiosk shell on the X11 backend: the output is then an X window on a
+   1024 x 768 screen, and a fullscreen surface larger than its output is a
+   protocol error the compositor answers by disconnecting the editor. */
+#define CEILING_ROWS 6
+#define CEILING_BUFFER_W ((WPE_GRID_MAX_COLS + 104) * CELL_W)
+#define CEILING_BUFFER_H (CEILING_ROWS * CELL_H)
+
+static void test_a_buffer_wider_than_the_ceiling_carries_the_ceiling(void)
+{
+	int cols = -1, rows = -1;
+
+	fresh();
+	queue_configure(CEILING_BUFFER_W, CEILING_BUFFER_H, FULLSCREEN_ACTIVE, 1);
+	chk("a window wider than the ceiling is applied",
+	    wpe_wlframe_apply(&cols, &rows), 1);
+	chk("the grid stops at the ceiling, columns", cols, WPE_GRID_MAX_COLS);
+	chk("the grid keeps the rows that fit", rows, CEILING_ROWS);
+	chk("the buffer is the window's own width", WpeWl.width,
+	    CEILING_BUFFER_W);
+	chk("the buffer is the window's own height", WpeWl.height,
+	    CEILING_BUFFER_H);
+}
+
 /* ---- the pump: a configure that comes alone ---- */
 
 #define PUMP_DEADLINE_S 5
@@ -533,6 +636,8 @@ int main(void)
 	test_new_buffer_is_redrawn();
 	test_refused_buffer_stays_pending();
 	test_below_the_floor();
+	test_a_buffer_the_protocol_cannot_carry_is_refused();
+	test_a_buffer_wider_than_the_ceiling_carries_the_ceiling();
 	test_lone_frame_event_is_read_without_blocking();
 	if (fails)
 		printf("%d failure(s)\n", fails);

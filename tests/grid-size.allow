@@ -1,0 +1,9 @@
+# Allocations that name SCREENCELL without sizing anything from the grid.
+# Checked by tests/check-grid-size.sh.
+#
+#   file|fragment of the statement|reason
+#
+# A line that matches nothing is stale and fails the check.
+
+we_mouse.c|file = MALLOC(MLEN * sizeof(SCREENCELL))|the cells of one dragged file name, MLEN long
+we_mouse.c|bgrd = MALLOC(MLEN * sizeof(SCREENCELL))|the cells behind one dragged file name, MLEN long

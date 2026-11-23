@@ -273,7 +273,7 @@ static void e_w_render_dirty_cells(int force);   /* full repaint after a realloc
  * Called only by the layout owner's walk.  Do NOT e_free_all_pics here: this
  * is a WpeIsXwin backend, so e_repaint_desk dereferences e_X_l_pic (the last
  * view's backing pic) and reallocates the views itself via
- * e_change_pic/e_u_ini_size.  Freeing the pics first leaves e_X_l_pic
+ * e_change_pic/e_u_screen_reset.  Freeing the pics first leaves e_X_l_pic
  * dangling, a use after free.  X11 likewise repaints without freeing pics;
  * only the terminal frees them, and it can because it is not WpeIsXwin
  * (e_repaint_desk skips the pic block).
@@ -314,12 +314,22 @@ static int wl_apply_pending_resize(void)
 {
  int old_scol, old_slns, cols, rows;
 
+ e_screen_say_pending();
  if (!wpe_wlframe_apply(&cols, &rows))
   return 0;
- old_scol = MAXSCOL;
- old_slns = MAXSLNS;
- MAXSCOL = cols;
- MAXSLNS = rows;
+ if (e_screen_take(cols, rows, &old_scol, &old_slns) == WPE_GRID_KEPT)
+ {
+  /* No memory for the larger grid: the editor keeps the one it has, and the
+     frame is told, so the strip past it is black and the next configure is
+     compared with the grid in use. */
+  wpe_wlframe_keep_grid(MAXSCOL, MAXSLNS);
+  wpe_wlframe_finish();
+  /* Said at the pass that took the size and not at a later one, which waits
+     for another event to reach the input loop: a configure from the
+     compositor hands the editor no key of its own. */
+  e_screen_say_pending();
+  return 0;
+ }
  wpe_layout_screen_resized(old_scol, old_slns);
  wpe_wlframe_finish();
  return 1;
@@ -1567,16 +1577,17 @@ static void wl_selftest_fill_grid(void)
  const char *msg = "XWPE WAYLAND OK";
  int cols = WpeWl.width / WpeRender.font_width;
  int rows = WpeWl.height / WpeRender.font_height;
- int total, n, i;
+ size_t total, n;
+ int i;
 
- if (cols < 1) cols = 1;
- if (rows < 1) rows = 1;
- MAXSCOL = cols;
- MAXSLNS = rows;
- total = cols * rows;
-
- schirm = calloc((size_t)total, sizeof(SCREENCELL));
- altschirm = calloc((size_t)total, sizeof(SCREENCELL));
+ if (wpe_grid_take(cols, rows) == WPE_GRID_KEPT)
+ {
+  fprintf(stderr, "wayland selftest: no memory for a grid of %d x %d\n",
+          cols, rows);
+  exit(1);
+ }
+ cols = MAXSCOL;
+ total = wpe_grid_cells();
  for (n = 0; n < total; n++)
  {
   schirm[n].ch = ' ';
@@ -1806,33 +1817,43 @@ static int e_w_getch(void)
  }
 }
 
-/* Allocate the screen-cell grid for MAXSCOL x MAXSLNS and match the wl_shm
-   buffer to it.  Called once at init and again on resize (the e_u_ini_size
-   slot), mirroring e_ini_size minus the X pixmap. */
-static int e_w_ini_size(void)
+/**
+ * e_w_screen_reset - Start the screen again at the size in use.
+ *
+ * The slot the desk's repaint calls (e_u_screen_reset): forget the cursor,
+ * blank the grid's four planes (the owner's, already at this size) and match
+ * the wl_shm buffer to the grid.  Mirrors e_x_screen_reset minus the X
+ * pixmap.  It allocates nothing for the grid, so nothing here can be refused.
+ */
+static void e_w_screen_reset(void)
 {
  old_cursor_x = cur_x;
  old_cursor_y = cur_y;
- if (schirm)    free(schirm);
- if (altschirm) free(altschirm);
- schirm    = malloc(sizeof(SCREENCELL) * MAXSCOL * MAXSLNS);
- altschirm = malloc(sizeof(SCREENCELL) * MAXSCOL * MAXSLNS);
- if (!schirm || !altschirm)
-  return -1;
-#ifdef NEWSTYLE
- /* The border/extension byte-plane (window frames, e_make_xrect): the graphical
-    builds use it unconditionally, so it must exist exactly like e_ini_size. */
- if (extbyte)    free(extbyte);
- if (altextbyte) free(altextbyte);
- extbyte    = calloc((size_t)MAXSCOL * MAXSLNS, 1);
- altextbyte = calloc((size_t)MAXSCOL * MAXSLNS, 1);
- if (!extbyte || !altextbyte)
-  return -1;
-#endif
+ wpe_grid_wipe();
 
  if (WpeWl.shm && WpeRender.font_width > 0)
   wpe_wlframe_fit_buffer(MAXSCOL, MAXSLNS);
- return 0;
+}
+
+/**
+ * e_w_note_grid_clamp - Note a surface that holds more cells than the grid.
+ * @cols: @rows: the grid the frame owner gives, inside the owner's ceiling.
+ *
+ * What the user gets: a window wider or taller than the editor's ceiling
+ * shows the cells past it as the frame's own remainder colour, and the editor
+ * says once, at the next key read, what the surface asked for and what it
+ * uses.
+ */
+static void e_w_note_grid_clamp(int cols, int rows)
+{
+ int asked_cols, asked_rows;
+
+ if (WpeRender.font_width <= 0 || WpeRender.font_height <= 0)
+  return;
+ asked_cols = WpeWl.width / WpeRender.font_width;
+ asked_rows = WpeWl.height / WpeRender.font_height;
+ if (asked_cols > cols || asked_rows > rows)
+  wpe_grid_note_clamp(asked_cols, asked_rows, cols, rows);
 }
 
 /**
@@ -2146,13 +2167,16 @@ int WpeWaylandInit(int *argc, char **argv)
   wpe_wlframe_set_cell(WpeRender.font_width, WpeRender.font_height);
  wpe_wlframe_set_repaint(e_w_repaint_frame);
  wpe_wlframe_grid(&cols, &rows);
- MAXSCOL = cols;
- MAXSLNS = rows;
- if (e_w_ini_size() != 0)
+ e_w_note_grid_clamp(cols, rows);
+ if (e_screen_start(cols, rows) != 0)
  {
+  WPE_TRACE("wayland", "no memory for a screen; falling back to X11\n");
   wl_teardown();
   return 1;
  }
+ if (MAXSCOL != cols || MAXSLNS != rows)
+  wpe_wlframe_keep_grid(MAXSCOL, MAXSLNS);
+ e_w_screen_reset();
  wpe_wlframe_paint_remainder();
 
  /* Publish the backend.  Reuse the audited schirm-only X functions; override
@@ -2180,7 +2204,7 @@ int WpeWaylandInit(int *argc, char **argv)
  e_u_repaint_resized = e_w_repaint_resized;
  e_u_focus_editor  = e_w_focus_editor;
  e_u_raise_editor  = e_w_raise_editor;
- e_u_ini_size      = e_w_ini_size;
+ e_u_screen_reset = e_w_screen_reset;
  e_u_setlastpic    = e_setlastpic;
  WpeMouseChangeShape  = (void (*)(WpeMouseShape))WpeNullFunction;
  WpeMouseRestoreShape = (void (*)(WpeMouseShape))WpeNullFunction;

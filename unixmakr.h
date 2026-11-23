@@ -43,20 +43,11 @@ extern char *ctree[5];
  * Screen buffer: cchar_t based (Gold Standard UTF-8 support).
  * Each cell stores one wide character + attributes.
  * 1 cell = 1 visual column on screen.
+ * The grid's size and planes (SCREENCELL, MAXSCOL, MAXSLNS, schirm,
+ * altschirm, extbyte, altextbyte) belong to we_grid.c.
  */
 #include <wchar.h>
-
-typedef struct {
- int ch;    /* character (wchar_t or special char code) */
- int attr;  /* color/attribute byte (xwpe format) */
- int flags; /* CELL_WIDE, CELL_WIDE_SPACER */
-} SCREENCELL;
-
-#define CELL_WIDE        0x01  /* first cell of a wide character (wcwidth=2) */
-#define CELL_WIDE_SPACER 0x02  /* second cell, continuation of wide char */
-
-extern SCREENCELL *schirm;
-extern SCREENCELL *altschirm;
+#include "we_grid.h"
 
 #define SCHIRM_INBOUNDS(x, y) \
  ((unsigned)(x) < (unsigned)MAXSCOL && (unsigned)(y) < (unsigned)MAXSLNS)
@@ -138,10 +129,6 @@ extern SCREENCELL *altschirm;
 #define REALLOC(p, n) realloc((p), (n))
 #define MALLOC(n) malloc(n)
 #define FREE(n) free(n)
-
-#ifdef NEWSTYLE
-extern char *extbyte, *altextbyte;
-#endif
 
 #define sc_txt_1(f) { if(f->c_sw) f->c_sw = e_sc_txt(f->c_sw, f->b); }
 

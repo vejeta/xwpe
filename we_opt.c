@@ -377,7 +377,7 @@ int e_repaint_desk(FENSTER *f)
    nw_pic = e_open_view(e_X_l_pic->a.x, e_X_l_pic->a.y,
      e_X_l_pic->e.x, e_X_l_pic->e.y, 0, 2);
   }
-  (*e_u_ini_size)();
+  (*e_u_screen_reset)();
  }
 #endif
  if (cn->mxedt < 1)

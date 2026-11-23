@@ -366,7 +366,6 @@ void e_fd_key_wait(int keyboard_watched)
  */
 static void e_status_bar_row_sync(void)
 {
- extern SCREENCELL *altschirm;
  int j;
 
  for (j = 0; j < MAXSCOL; ++j)

@@ -416,7 +416,6 @@ static void cr_direct_present(int x, int y, int w, int h)
 static void cr_direct_present_all(void)
 {
 #ifndef NO_XWINDOWS
- extern int MAXSLNS, MAXSCOL;
  cr_direct_present(0, 0, WpeRender.font_width * MAXSCOL,
    WpeRender.font_height * MAXSLNS);
 #endif
@@ -1591,7 +1590,6 @@ void wpe_render_cairo_start_threads(void)
 int wpe_render_cairo_init(void)
 {
 #ifndef NO_XWINDOWS
- extern int MAXSLNS, MAXSCOL;
  PangoContext *pg_ctx;
  PangoFontMetrics *metrics;
 

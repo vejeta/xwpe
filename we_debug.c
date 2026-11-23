@@ -58,8 +58,6 @@ int e_d_error(char *s);
 static int e_e_line_read(int n, signed char *s, int max);
 
 
-#define MAXOUT  2 * MAXSCOL * MAXSLNS
-
 char *e_debugger, *e_deb_swtch = NULL, *e_d_save_schirm;
 int e_d_swtch = 0, rfildes[2], ofildes;
 

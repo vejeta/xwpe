@@ -705,7 +705,8 @@ Default: @code{8x13}.
 
 @item geometry (class Geometry)
 Preferred window size and position.  Sizes smaller than 80x25 are
-ignored.
+ignored.  A size larger than the screen starts the window at the screen's
+size, and the editor says what it asked for and what it uses.
 
 @item iconic (class Iconic)
 Start as an icon if set to @code{yes}.  Equivalent to the @option{-iconic}

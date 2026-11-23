@@ -103,7 +103,6 @@ char *e_lib_file(const char *name)
  return p;
 }
 
-SCREENCELL *schirm = NULL;
 char e_we_sw = 0;
 WpeGfxBackend e_gfx_backend = WPE_GFX_X11;
 
@@ -141,7 +140,7 @@ int (*e_u_palette_rgb)(int idx, unsigned char rgb[3]) = e_palette_rgb_unknown;
 void (*e_u_serve_display)(void) = WpeNullFunction;
 void (*e_u_focus_editor)(void) = WpeNullFunction;
 void (*e_u_raise_editor)(void) = WpeNullFunction;
-int (*e_u_ini_size)(void);
+void (*e_u_screen_reset)(void);
 int (*e_u_s_sys_end)(void);
 int (*e_u_s_sys_ini)(void);
 void (*e_u_setlastpic)(PIC *pic);
@@ -153,18 +152,12 @@ char MCI, MCA, RD1, RD2, RD3, RD4, RD5, RD6, WBT;
 char RE1, RE2, RE3, RE4, RE5, RE6;
 char *ctree[5];
 
-int MAXSLNS = 24;
-int MAXSCOL = 80;
 int col_num = 0;
 char *att_no;
 struct termios otermio, ntermio, ttermio;
 int cur_x = -1, cur_y = -1;
 void *libxwpe;
 
-#ifdef NEWSTYLE
-char *extbyte = NULL, *altextbyte = NULL;
-#endif
-SCREENCELL *altschirm = NULL;
 PIC *e_X_l_pic = NULL;
 
 void WpeNullFunction(void)
@@ -547,7 +540,7 @@ int e_ini_unix(int *argc, char **argv)
 
 int e_abs_refr()
 {
- memset(altschirm, 0, sizeof(SCREENCELL) * MAXSCOL * MAXSLNS);
+ wpe_grid_forget_shown();
  return(0);
 }
 

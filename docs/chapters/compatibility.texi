@@ -257,6 +257,40 @@ never cover the status line.  The reason: at a fixed place the About box
 ran over the status line on a screen of fewer than 22 rows.
 @end table
 
+@section The size of the screen
+
+@table @asis
+@item A terminal too large for curses
+@cindex start, terminal too large
+@cindex curses, screen too large
+The original asked curses for a screen of the terminal's size and, when the
+library could not hold it, ended with the library's own sentence, so a
+terminal of a few thousand columns gave you no editor at all.  xwpe starts
+curses on a size the library always holds and grows the screen from there
+as far as the machine's memory allows, then says what it asked for and what
+it uses.  The reason: a screen the machine cannot hold is a size to cut
+down, not a reason to end, and vim has always done the same.
+
+@item @option{-geometry} larger than the screen
+@cindex geometry, larger than the screen
+The original asked the X server for a window, and a picture to draw on, of
+the size you named; a size the server could not give ended the program
+before it painted anything (@samp{BadAlloc} from the server, or a window
+manager's own idea of the size when there was one).  xwpe starts the window
+at the screen's size and says what it asked for and what it uses.  The
+reason: what a window manager does for you on a desktop should not depend
+on there being one.
+
+@item A screen with no floor and no ceiling
+@cindex grid, floor and ceiling
+The original took any size a display reported, from zero columns to
+whatever the machine gave, and counted the cells of a screen in one machine
+integer.  xwpe keeps the grid between 30 x 6 and 4096 x 4096 cells on every
+display and says so when it cuts a size down.  The reason: below the floor
+the menu bar, a window's frame and the status line no longer fit, and above
+the ceiling the editor's own counts of cells overflow.
+@end table
+
 @section Undo and breakpoints
 
 @table @asis

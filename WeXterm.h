@@ -69,6 +69,7 @@ extern WpeXStruct WpeXInfo;
 
 
 void WpeXInit(int *argc, char **argv);
+void e_x_grid_of_pixels(int pixel_w, int pixel_h, int *cols, int *rows);
 void WpeXMouseChangeShape(WpeMouseShape new_shape);
 void WpeXMouseRestoreShape();
 

@@ -32,7 +32,6 @@
 #include "../we_xbackbuf.h"
 
 WpeXStruct WpeXInfo;
-int MAXSCOL = 80, MAXSLNS = 30;
 
 static int fails;
 
@@ -225,6 +224,7 @@ static void case_drop(void)
 
 int main(void)
 {
+	wpe_grid_take(80, 30);
 	WpeXInfo.font_width = 9;
 	WpeXInfo.font_height = 18;
 	e_x_backbuf_hooks_add(release_one, back_one);

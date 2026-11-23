@@ -88,6 +88,7 @@ int  wpe_wlframe_apply(int *cols, int *rows);
 void wpe_wlframe_serve(void);
 void wpe_wlframe_finish(void);
 void wpe_wlframe_fit_buffer(int cols, int rows);
+void wpe_wlframe_keep_grid(int cols, int rows);
 
 /* ---- the one commit ------------------------------------------------- */
 void wpe_wlframe_present(int x, int y, int w, int h);

@@ -973,7 +973,7 @@ FILLS=$(echo fk_u_locate fk_u_cursor fk_u_putchar u_bioskey e_frb_u_menue \
   e_u_serve_display e_u_repaint_resized e_clip_os_get WpeDisplayReleaseFromHandler)
 # "kind  slot  reason"
 cat > "$WORK/fillexcept" <<'EOF'
-graphical e_u_ini_size read under WpeIsXwin (we_opt.c) and by the X11 backend
+graphical e_u_screen_reset read under WpeIsXwin (we_opt.c) and by the X11 backend
 graphical e_u_setlastpic read under WpeIsXwin (we_wind.c) and by the X11 backend
 console e_u_s_sys_ini read under !WpeIsXwin (we_fl_unix.c) and from e_system (we_prog.c)
 console e_u_s_sys_end read under !WpeIsXwin (we_fl_unix.c) and from e_system (we_prog.c)

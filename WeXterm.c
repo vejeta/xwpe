@@ -1180,6 +1180,88 @@ void WpeXColorGet(XrmDatabase xresdb, XrmQuark *name_list,
  return ;
 }
 
+/**
+ * e_x_grid_of_pixels - The cells a window of a pixel size holds.
+ * @pixel_w: @pixel_h: the window's size in pixels.
+ * @cols: @rows: receive the whole cells that fit.
+ *
+ * The one place the editor turns pixels into cells on X11: at start, after
+ * the window is mapped, and for every resize.
+ */
+void e_x_grid_of_pixels(int pixel_w, int pixel_h, int *cols, int *rows)
+{
+ *cols = pixel_w / WpeXInfo.font_width;
+ *rows = pixel_h / WpeXInfo.font_height;
+}
+
+/**
+ * WpeXTakeGrid - Give the grid owner the size of a window read from the
+ * server, and make the window's size hints say what the grid really is.
+ * @hints: the size hints of the window; their size follows the grid in use
+ * (a grid the editor clamped or kept is not the window's size).
+ * @pixel_w: @pixel_h: the window's size in pixels.
+ */
+static void WpeXTakeGrid(XSizeHints *hints, int pixel_w, int pixel_h)
+{
+ int cols, rows, old_cols, old_rows;
+
+ e_x_grid_of_pixels(pixel_w, pixel_h, &cols, &rows);
+ e_screen_take(cols, rows, &old_cols, &old_rows);
+ hints->width = MAXSCOL * WpeXInfo.font_width;
+ hints->height = MAXSLNS * WpeXInfo.font_height;
+}
+
+/**
+ * WpeXClampGeometryToScreen - Keep a requested window inside the screen and
+ * the grid's limits.
+ * @hints: the window's requested size; changed in place to whole cells that
+ * fit the screen.
+ *
+ * What the user gets: -geometry 30000x30000 starts the editor at the size of
+ * the screen, and the editor says so, instead of the server refusing a
+ * back buffer of that size and ending the program.
+ */
+static void WpeXClampGeometryToScreen(XSizeHints *hints)
+{
+ int screen_w = DisplayWidth(WpeXInfo.display, WpeXInfo.screen);
+ int screen_h = DisplayHeight(WpeXInfo.display, WpeXInfo.screen);
+ int asked_cols, asked_rows, cols, rows;
+
+ e_x_grid_of_pixels(hints->width, hints->height, &asked_cols, &asked_rows);
+ e_x_grid_of_pixels(hints->width < screen_w ? hints->width : screen_w,
+                    hints->height < screen_h ? hints->height : screen_h,
+                    &cols, &rows);
+ wpe_grid_fit(&cols, &rows);
+ if (cols == asked_cols && rows == asked_rows)
+  return;
+ hints->width = cols * WpeXInfo.font_width;
+ hints->height = rows * WpeXInfo.font_height;
+ if (asked_cols > cols || asked_rows > rows)
+  wpe_grid_note_clamp(asked_cols, asked_rows, cols, rows);
+}
+
+/**
+ * WpeXStartGrid - Make the first grid of the run from the window's hints.
+ * @hints: the window's size hints.
+ *
+ * With no memory even for the usual 80 x 24 the program ends with a
+ * sentence on standard error, before the window exists.
+ */
+static void WpeXStartGrid(XSizeHints *hints)
+{
+ int cols, rows;
+
+ e_x_grid_of_pixels(hints->width, hints->height, &cols, &rows);
+ if (e_screen_start(cols, rows) != 0)
+ {
+  fprintf(stderr, "xwpe: no memory for a screen of %d x %d\n",
+          WPE_GRID_START_COLS, WPE_GRID_START_ROWS);
+  exit(1);
+ }
+ hints->width = MAXSCOL * WpeXInfo.font_width;
+ hints->height = MAXSLNS * WpeXInfo.font_height;
+}
+
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - *\
   WpeXGeometryGet - Get geometry setting from the X resources.
 
@@ -1223,9 +1305,8 @@ void WpeXGeometryGet(XrmDatabase xresdb, XrmQuark *name_list,
  {
   size_hints->flags |= PPosition;
  }
- /* Old variables used since not converted yet */
- MAXSCOL = size_hints->width / WpeXInfo.font_width;
- MAXSLNS = size_hints->height / WpeXInfo.font_height;
+ WpeXClampGeometryToScreen(size_hints);
+ WpeXStartGrid(size_hints);
  return ;
 }
 
@@ -1595,12 +1676,7 @@ void WpeXInit(int *argc, char **argv)
    XWindowAttributes wattr;
    if (XGetWindowAttributes(WpeXInfo.display, WpeXInfo.window, &wattr) &&
        wattr.width > 0 && wattr.height > 0)
-   {
-    MAXSCOL = wattr.width  / WpeXInfo.font_width;
-    MAXSLNS = wattr.height / WpeXInfo.font_height;
-    size_hints.width  = MAXSCOL * WpeXInfo.font_width;
-    size_hints.height = MAXSLNS * WpeXInfo.font_height;
-   }
+    WpeXTakeGrid(&size_hints, wattr.width, wattr.height);
   }
   e_x_backbuf_remake(size_hints.width, size_hints.height, 0,
     e_x_blank_pixel());
@@ -1622,10 +1698,7 @@ void WpeXInit(int *argc, char **argv)
     fit_w = wattr.width;
     fit_h = wattr.height;
    }
-   MAXSCOL = fit_w / WpeXInfo.font_width;
-   MAXSLNS = fit_h / WpeXInfo.font_height;
-   size_hints.width  = MAXSCOL * WpeXInfo.font_width;
-   size_hints.height = MAXSLNS * WpeXInfo.font_height;
+   WpeXTakeGrid(&size_hints, fit_w, fit_h);
    /* wpe_render_cairo_init() sized the back buffer and cairo surface to the
       pre-refit grid.  When the refit enlarged it (HiDPI physical promotion),
       grow the render backing to match now, mirroring the ConfigureNotify
@@ -1649,11 +1722,7 @@ void WpeXInit(int *argc, char **argv)
 
  /* Copied with little change since I haven't had the time to look into
    what it does */
- if((*e_u_ini_size)())
- {
-  *argc = -1;
-  return ;
- }
+ (*e_u_screen_reset)();
 
  e_abs_refr();
  /* end of untouched section */

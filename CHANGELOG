@@ -505,6 +505,28 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* A screen the machine will not hold no longer costs you the editor.  The
+  size of the screen and the memory behind it are now one thing that changes
+  in one step or not at all.  A grow needs four planes of one entry per cell;
+  when the system refused them, the terminal editor set the new size,
+  overwrote its only pointer to the old planes with the NULL it got back and
+  died of a segmentation fault with your unsaved text, and on X11 and Wayland
+  the new size was set at the top of the key reader while the planes were
+  replaced later, inside the repaint, so the new stride ran over the old
+  block.  A refused grow now keeps the grid you had, with everything you
+  typed, and says so once ("Not Enough Memory for 1000 x 500, keeping
+  80 x 30"); the same size is not asked for again until you ask for another,
+  and a shrink is always taken.  The grid has a floor of 30 x 6 and a ceiling
+  of 4096 x 4096 cells on every display, and a size cut down says so once
+  ("Screen cut to 4096 x 10 (asked 5000 x 10)").  A terminal too large for
+  curses to hold starts on the largest screen the machine holds instead of
+  ending with the library's own sentence, and an X11 -geometry larger than
+  the screen starts at the screen's size instead of ending on the server's
+  BadAlloc.  An X11 window narrower than one cell no longer lays the editor
+  out for a grid of no cell.  A Wayland window whose pixels no wl_shm buffer
+  can carry is refused by the frame instead of reaching the compositor with a
+  truncated size.
+
 * A hover or a go-to-definition no longer waits for an answer from a language
   server that has exited.  When the editor found the server gone while
   writing to it (the write failed), the requests already out were never told,

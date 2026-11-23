@@ -470,6 +470,57 @@ Each window has:
 @item A status line showing the cursor position and edit mode.
 @end itemize
 
+@section The screen's size
+
+@cindex screen size
+@cindex grid, floor and ceiling
+@cindex resize, refused
+
+xwpe draws on a grid of cells, one cell per character position.  The grid
+follows the size of the terminal, the X window or the Wayland surface,
+between a floor of 30 columns and 6 rows, which the menu bar, a window's
+frame and the status line need, and a ceiling of 4096 columns and 4096
+rows, which is as far as the editor's own counts reach.  A display smaller
+than the floor is cut: xwpe lays out 30 x 6 and you see the part of it that
+fits.  A display larger than the ceiling shows its top left 4096 x 4096
+cells, leaves the rest empty, and says so once, naming the size it was
+given and the size it uses:
+
+@example
+Screen cut to 4096 x 10 (asked 5000 x 10)
+@end example
+
+@cindex memory, refused for a resize
+Growing the grid needs memory: four planes, one entry per cell.  When the
+system refuses them, xwpe keeps the grid it has, with everything you typed,
+and says so once:
+
+@example
+Not Enough Memory for 1000 x 500, keeping 80 x 30
+@end example
+
+@noindent
+The terminal or the window stays the size it is, so the strip past the grid
+stays empty, and the editor goes on working in the grid it kept.  Asking
+for that same size again is refused without asking the system a second
+time; any other size is tried as usual.  A shrink needs no new memory, so a
+shrink is always taken, also when the system refuses the smaller planes:
+xwpe then goes on using the planes it has.
+
+@cindex start, terminal too large
+@cindex geometry, larger than the screen
+@cindex start, memory refused
+The same limits hold at start.  A terminal too large for the curses library
+to hold does not end xwpe with the library's own sentence: it starts on the
+largest screen the machine holds and says what it asked for and what it
+uses.  An X11 window asked for with @option{-geometry} larger than the
+screen starts at the screen's size and says so, instead of asking the
+server for a picture of that size and ending when the server refuses it.
+When there is no memory for the size a display asks for, xwpe starts on
+80 x 24 in the corner of it and says so.  When there is none even for that,
+it ends with @samp{xwpe: no memory for a screen of 80 x 24}, on a terminal
+it has put back; on Wayland it tries X11 first, which then says it.
+
 @section What arrives while a box is open
 
 @cindex dialog, output while open

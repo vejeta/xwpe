@@ -124,6 +124,8 @@ we_SOURCES = \
   we_paint.c \
   we_layout.c \
   we_layout_desk.c \
+  we_grid.c \
+  we_grid_desk.c \
   we_testdump.c \
   we_trace.c \
   we_features.c \
@@ -300,6 +302,7 @@ noinst_HEADERS = \
   we_fdloop.h \
   we_paint.h \
   we_layout.h \
+  we_grid.h \
   we_testdump.h \
   we_buffer.h \
   we_closed.h \
@@ -1241,7 +1244,7 @@ TESTS += tests/check-x11-backbuf.sh
 if HAVE_X11
 check_PROGRAMS += test_xbackbuf
 TESTS += test_xbackbuf
-test_xbackbuf_SOURCES = tests/test_xbackbuf.c we_xbackbuf.c
+test_xbackbuf_SOURCES = tests/test_xbackbuf.c we_xbackbuf.c we_grid.c
 test_xbackbuf_CFLAGS = $(TEST_CFLAGS) $(X_CFLAGS) $(XFT_CFLAGS) $(NCURSESW_CFLAGS)
 endif
 
@@ -1273,7 +1276,8 @@ TESTS += tests/check-test-paths.sh
 if HAVE_WAYLAND
 check_PROGRAMS += test_wlframe
 TESTS += test_wlframe
-test_wlframe_SOURCES = tests/test_wlframe.c we_wlframe.c we_path.c we_fmt.c
+test_wlframe_SOURCES = tests/test_wlframe.c we_wlframe.c we_path.c we_fmt.c \
+	we_grid.c
 test_wlframe_CFLAGS = $(TEST_CFLAGS) $(WAYLAND_CFLAGS)
 test_wlframe_LDADD = $(WAYLAND_LIBS)
 endif
@@ -1315,6 +1319,18 @@ TESTS += tests/check-sh-idiom.sh
 # names by the highlighted row outside the owner; the file manager's panels
 # still doing it are in tests/list-entry.allow, and the counts may only fall.
 TESTS += tests/check-list-entry.sh
+
+# One owner of the screen grid's size and of the memory behind it
+# (we_grid.c).  test_grid links the owner alone and drives it with a
+# recording allocator: the floor and the ceiling, the counts, zeroed planes,
+# every refusal leaving the old grid whole, the first take, the same size, the
+# size just refused, and a saved rectangle that reaches past every side.
+# tests/check-grid-size.sh fails when code outside the owner multiplies the
+# two sizes, allocates or frees a plane, or names the owner's object.
+check_PROGRAMS += test_grid
+TESTS += test_grid tests/check-grid-size.sh
+test_grid_SOURCES = tests/test_grid.c we_grid.c
+test_grid_CFLAGS = $(TEST_CFLAGS)
 
 # One layout path for every box: the layout owner (we_layout.c).
 # tests/check-box-layout.sh fails when a box's place is computed outside
@@ -1623,9 +1639,15 @@ EXTRA_DIST = \
   tests/wayland-frame.allow \
   tests/check-x11-backbuf.sh \
   tests/test_xbackbuf.c \
+  tests/test_grid.c \
+  tests/check-grid-size.sh \
+  tests/grid-size.allow \
+  tests/test_grid_ncurses.py \
+  tests/x11/test_grid.py \
   tests/x11-backbuf.allow \
   tests/build-config-row.sh \
   tests/test_wlframe.c \
+  tests/wayland/test_grid.py \
   tests/wayland/test_surface_bound.py \
   tests/wayland/test_display_lost.py \
   tests/x11/test_display_lost.py \

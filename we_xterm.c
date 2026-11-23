@@ -27,7 +27,7 @@
 #endif
 
 int fk_show_cursor(void);
-int e_ini_size(void);
+void e_x_screen_reset(void);
 int e_x_getch(void);
 int fk_x_mouse(int *g);
 int fk_x_grab_pointer(int on);
@@ -97,10 +97,6 @@ extern char *e_tmp_dir;
 
 /*  for TextSchirm (text screen)   */
 
-extern SCREENCELL *altschirm;
-#ifdef NEWSTYLE
-extern char *extbyte, *altextbyte;
-#endif
 int old_cursor_x = 0, old_cursor_y = 0, cur_on = 1;
 extern PIC *e_X_l_pic;
 
@@ -171,7 +167,7 @@ int WpeDllInit(int *argc, char **argv)
  e_u_repaint_resized = e_x_repaint_resized;
  e_u_focus_editor = e_x_focus_editor;
  e_u_raise_editor = e_x_raise_editor;
- e_u_ini_size = e_ini_size;
+ e_u_screen_reset = e_x_screen_reset;
  e_u_setlastpic = e_setlastpic;
  WpeMouseChangeShape = (void (*)(WpeMouseShape))WpeNullFunction;
  WpeMouseRestoreShape = (void (*)(WpeMouseShape))WpeNullFunction;
@@ -505,6 +501,9 @@ int fk_show_cursor()
 }
 
 #ifdef HAVE_XFT
+/* The pixel size the Xft frame and the back buffer were last given. */
+static int e_x_frame_w, e_x_frame_h;
+
 /**
  * e_x_resize_frame - Make the frame the editor paints fit a new grid.
  * @pixel_w: the grid's width, in pixels
@@ -525,38 +524,27 @@ static void e_x_resize_frame(int pixel_w, int pixel_h)
 }
 #endif
 
-int e_ini_size()
+/**
+ * e_x_screen_reset - Start the screen again at the size in use.
+ *
+ * The slot the desk's repaint calls (e_u_screen_reset): forget the cursor,
+ * blank the grid's four planes and make the Xft frame the grid's pixel size.
+ * The grid and its planes are the owner's and already have the size, so
+ * nothing here can be refused.
+ */
+void e_x_screen_reset(void)
 {
  old_cursor_x = cur_x;
  old_cursor_y = cur_y;
-
- if (schirm)
-  FREE(schirm);
- if(altschirm)
-  FREE(altschirm);
- schirm = MALLOC(sizeof(SCREENCELL) * MAXSCOL * MAXSLNS);
- altschirm = MALLOC(sizeof(SCREENCELL) * MAXSCOL * MAXSLNS);
-#ifdef NEWSTYLE
- if (extbyte)
-  FREE(extbyte);
- if (altextbyte)
-  FREE(altextbyte);
- extbyte = calloc(MAXSCOL * MAXSLNS, 1);
- altextbyte = calloc(MAXSCOL * MAXSLNS, 1);
- if (!schirm || !altschirm || !extbyte || !altextbyte)
-  return(-1);
-#else
- if(!schirm || !altschirm)
-  return(-1);
-#endif
-
+ wpe_grid_wipe();
 #ifdef HAVE_XFT
  if (WpeXInfo.xftfont)
-  e_x_resize_frame(WpeXInfo.font_width * MAXSCOL,
-                   WpeXInfo.font_height * MAXSLNS);
+ {
+  e_x_frame_w = WpeXInfo.font_width * MAXSCOL;
+  e_x_frame_h = WpeXInfo.font_height * MAXSLNS;
+  e_x_resize_frame(e_x_frame_w, e_x_frame_h);
+ }
 #endif
-
- return(0);
 }
 
 #define A_Normal 	16
@@ -1357,37 +1345,60 @@ static void e_x_set_pending_size(int raw_w, int raw_h)
 }
 
 /**
- * e_x_apply_size - Take a window size: snap it to whole cells and, if the
- * grid changed, update MAXSCOL/MAXSLNS and the Xft draw and back buffer.
+ * e_x_fit_frame_to_grid - Make the Xft draw and the back buffer the pixel
+ * size of the grid in use.
+ * @pw: @ph: receive that pixel size.
+ *
+ * The frame follows the grid, not the window: a grid the editor kept or
+ * clamped is smaller than its window, and the rest is the window's own
+ * background.  A change of the cell's pixels (a monitor of another density)
+ * changes the size without changing the grid, and is caught here.
+ * Return: 1 when the frame was made again, 0 when it already had the size.
+ */
+static int e_x_fit_frame_to_grid(int *pw, int *ph)
+{
+ int w = MAXSCOL * WpeXInfo.font_width;
+ int h = MAXSLNS * WpeXInfo.font_height;
+
+ *pw = w;
+ *ph = h;
+#ifdef HAVE_XFT
+ if (WpeXInfo.xftfont && (w != e_x_frame_w || h != e_x_frame_h))
+ {
+  e_x_resize_frame(w, h);
+  e_x_frame_w = w;
+  e_x_frame_h = h;
+  return 1;
+ }
+#endif
+ return 0;
+}
+
+/**
+ * e_x_apply_size - Take a window size: snap it to whole cells, give the grid
+ * owner the size, and make the Xft draw and back buffer follow the grid.
  * @raw_w: @raw_h: the window's size in pixels.
- * Return: 1 with the snapped size and the old grid when the grid changed.
+ * Return: 1 with the grid's pixel size and the old grid when the editor must
+ * lay out and paint again (the grid changed, or the frame was made again for
+ * a cell of other pixels); 0 otherwise.  A refused size answers 0: the grid
+ * and its frame are what they were.
  */
 static int e_x_apply_size(int raw_w, int raw_h, int *pw, int *ph,
                           int *old_scol, int *old_slns)
 {
- int w, h;
+ int cols, rows, frame_made;
+ WpeGridTake took;
 
  /* A mixed-DPI monitor move changes the backing scale under libx11-compat; the
     font is reloaded to the new density before the grid is snapped so the glyph
-    size tracks the destination monitor (no-op on a real X server). The new
-    font_width/height then make the grid comparison below detect the change. */
+    size tracks the destination monitor (no-op on a real X server). The frame
+    is then fitted to the grid's pixels, which the new font_width/height
+    change even when the cell count does not. */
  e_x_refit_font_for_dpi();
- w = (raw_w / WpeXInfo.font_width)  * WpeXInfo.font_width;
- h = (raw_h / WpeXInfo.font_height) * WpeXInfo.font_height;
- if (w == MAXSCOL * WpeXInfo.font_width && h == MAXSLNS * WpeXInfo.font_height)
-  return 0;
-
- *old_scol = MAXSCOL;
- *old_slns = MAXSLNS;
- MAXSCOL = w / WpeXInfo.font_width;
- MAXSLNS = h / WpeXInfo.font_height;
-#ifdef HAVE_XFT
- if (WpeXInfo.xftfont)
-  e_x_resize_frame(w, h);
-#endif
- *pw = w;
- *ph = h;
- return 1;
+ e_x_grid_of_pixels(raw_w, raw_h, &cols, &rows);
+ took = e_screen_take(cols, rows, old_scol, old_slns);
+ frame_made = e_x_fit_frame_to_grid(pw, ph);
+ return took == WPE_GRID_CHANGED || frame_made;
 }
 
 /**
@@ -1860,6 +1871,10 @@ int e_x_getch()
 
  if (e_x_apply_pending_resize())
   return WPE_RESIZE;
+ /* A size the grid kept, or one it cut down, is said here: after the size a
+    command's window noted has been taken, and before anything is drawn, so
+    the user learns of it at once and not at his next key. */
+ e_screen_say_pending();
  e_refresh();
  e_input_was_char = 0;              /* default; the UTF-8 decoders set it when a
                                         typed character is returned */
@@ -1926,6 +1941,11 @@ int e_x_getch()
        wpe_layout_screen_resized(_old_scol, _old_slns);
        return WPE_RESIZE;
       }
+      /* The size was refused and the grid is what it was: say it now, while
+         the reader is still at the point where nothing is being drawn.  A
+         resize of the window hands the editor no key, so without this the
+         box waits for the user's next one. */
+      e_screen_say_pending();
     }
     break;
    case ClientMessage:
@@ -2301,7 +2321,7 @@ int e_x_repaint_desk(FENSTER *f)
   nw_pic = e_open_view(e_X_l_pic->a.x, e_X_l_pic->a.y, e_X_l_pic->e.x,
     e_X_l_pic->e.y, 0, 2);
  }
- e_ini_size();
+ (*e_u_screen_reset)();
  if (cn->mxedt < 1)
  {
   e_cls(f->fb->df.fb, f->fb->dc);
@@ -2315,7 +2335,7 @@ int e_x_repaint_desk(FENSTER *f)
  }
  ini_repaint(cn);
  e_abs_refr();
- memset(altextbyte, 0, MAXSCOL * MAXSLNS);
+ wpe_grid_forget_shown_frames();
  for (i = cn->mxedt; i >= 1; i--)
   e_free_view(&cn->f[i]->pic);
  /* relayout already done by ConfigureNotify handler -- just clamp */

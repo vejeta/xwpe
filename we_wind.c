@@ -437,7 +437,6 @@ void e_position_ai_window(FENSTER *ai, ECNT *cn)
  */
 void e_invalidate_area(int xa, int ya, int xe, int ye)
 {
- extern SCREENCELL *altschirm;
  int i, j;
 
  if (xa < 0) xa = 0;
@@ -452,7 +451,6 @@ void e_invalidate_area(int xa, int ya, int xe, int ye)
 #if !defined(NO_XWINDOWS) && defined(NEWSTYLE)
  if (WpeIsXwin())
  {
-  extern char *extbyte, *altextbyte;
   int had_borders = 0;
   for (j = ya; j <= ye; ++j)
    for (i = xa; i <= xe; ++i)
@@ -2085,16 +2083,9 @@ PIC *e_open_view(int xa, int ya, int xe, int ye, int col, int sw)
  
  if (sw != 0)
  {
-  int pw = xe - xa + 1;
-  int ph = ye - ya + 1;
-  int sy = ye < MAXSLNS ? ye : MAXSLNS - 1;
-  int sx = xe < MAXSCOL ? xe : MAXSCOL - 1;
-  SCREENCELL *buf = calloc(pw * ph, sizeof(SCREENCELL));
+  SCREENCELL *buf = wpe_grid_save_rect(xa, ya, xe, ye);
   if (buf == NULL) { FREE(pic); return(NULL); }
   pic->buf = (WINDOW *)buf;
-  for (j = ya; j <= sy; ++j)
-   for (i = xa; i <= sx; ++i)
-    buf[(j - ya) * pw + (i - xa)] = schirm[j * MAXSCOL + i];
  }
 
  if (sw < 2)
@@ -2139,13 +2130,8 @@ int e_close_view(PIC *pic, int sw)
 
  if (sw != 0 && pic->buf)
  {
-  int pw = pic->e.x - pic->a.x + 1;
-  int ey = pic->e.y < MAXSLNS ? pic->e.y : MAXSLNS - 1;
-  int ex = pic->e.x < MAXSCOL ? pic->e.x : MAXSCOL - 1;
-  SCREENCELL *buf = (SCREENCELL *)pic->buf;
-  for (j = pic->a.y; j <= ey; ++j)
-   for (i = pic->a.x; i <= ex; ++i)
-    schirm[j * MAXSCOL + i] = buf[(j - pic->a.y) * pw + (i - pic->a.x)];
+  wpe_grid_restore_rect((SCREENCELL *)pic->buf, pic->a.x, pic->a.y,
+                        pic->e.x, pic->e.y);
  }
  else if (sw != 0)
  {
@@ -2361,19 +2347,10 @@ void e_ed_rahmen(FENSTER *f, int sw)
 
 static void e_restore_pic_to_schirm(PIC *pic)
 {
- int i, j;
- int pw, ey, ex;
- SCREENCELL *buf;
-
  if (pic == NULL || pic->buf == NULL)
   return;
- pw = pic->e.x - pic->a.x + 1;
- ey = pic->e.y < MAXSLNS ? pic->e.y : MAXSLNS - 1;
- ex = pic->e.x < MAXSCOL ? pic->e.x : MAXSCOL - 1;
- buf = (SCREENCELL *)pic->buf;
- for (j = pic->a.y; j <= ey; j++)
-  for (i = pic->a.x; i <= ex; i++)
-   schirm[j * MAXSCOL + i] = buf[(j - pic->a.y) * pw + (i - pic->a.x)];
+ wpe_grid_restore_rect((SCREENCELL *)pic->buf, pic->a.x, pic->a.y,
+                       pic->e.x, pic->e.y);
 }
 
 static void e_render_window_content(FENSTER *f)

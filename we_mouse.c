@@ -595,8 +595,6 @@ int fl_wnd_mouse(sw, k, fw)
 
 static void e_scroll_invalidate_content(FENSTER *f)
 {
- extern SCREENCELL *altschirm;
- extern int MAXSCOL;
  int row, col;
 
  for (row = f->a.y + 1; row < f->e.y; row++)
