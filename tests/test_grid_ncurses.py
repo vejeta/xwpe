@@ -21,9 +21,12 @@ cannot hold:
     the editor starts on the largest screen curses accepts, as vim does, and
     says so.  The plain binary runs under an address-space limit for this
     (the sanitizer build cannot take one).
-  * A terminal smaller than the editor's floor keeps the floor and is cut by
-    the terminal.  Nothing is said: the floor is not a size the editor cut
-    down, it is the smallest screen its own frames fit on.
+  * A terminal smaller than the editor's floor keeps the floor as its grid,
+    and curses runs at the terminal's own size.  Told the floor instead,
+    curses writes every line wider than the terminal, which wraps it and
+    scrolls the editor off the screen.  Nothing is said: the floor is not a
+    size the editor cut down, it is the smallest screen its own frames fit
+    on.
 
 What each row reads is on the disk (the saved file), in the editor's trace
 (XWPE_UI_TRACE) and on the screen; none asserts only that the editor is up.
@@ -69,6 +72,11 @@ START_COLS = 3000
 START_ROWS = 3000
 
 GRID_TAKEN = re.compile(r"grid (\d+)x(\d+) taken")
+# The size curses runs at, as the editor writes it to its trace when it
+# starts curses.  The grid's floor and the terminal's own size are two
+# different sizes on a terminal below the floor, and only one of them may be
+# handed to curses.
+CURSES_RUNS_AT = re.compile(r"curses runs at (\d+)x(\d+)")
 
 # The refusal a row shows without the sanitizer: the seam refuses the Nth take
 # that asks for memory, and the start of the editor is the first of them.
@@ -270,9 +278,12 @@ def test_a_start_without_memory_for_its_screen_says_so(tmp_path):
 
 def test_a_terminal_smaller_than_the_floor_keeps_it(tmp_path):
     """A 10 x 3 terminal is too small for the editor's own frames: the grid
-    keeps its floor of 30 x 6, the terminal cuts it, and nothing is said.  A
-    grow back to the usual size is taken and a typed character reaches the
-    file, so the floor left a working editor behind."""
+    keeps its floor of 30 x 6, curses runs at the terminal's own 10 x 3 and
+    cuts what does not fit, and nothing is said.  A curses told the floor
+    writes 30 columns into a 10 column terminal, which wraps them and scrolls
+    the editor off the screen.  A grow back to the usual size is taken and a
+    typed character reaches the file, so the floor left a working editor
+    behind."""
     env = {"XWPE_UI_TRACE": os.path.join(str(tmp_path), TRACE_NAME)}
     with WpeSession(str(tmp_path), SEED, cols=FLOOR_COLS, rows=FLOOR_ROWS,
                     env_extra=env, wait=2.0) as w:
@@ -281,6 +292,15 @@ def test_a_terminal_smaller_than_the_floor_keeps_it(tmp_path):
         assert FLOOR_GRID in trace, "the floor is not in the trace:\n" + trace
         assert NOTICE_TRACE not in trace, \
             "the floor was said as a clamp:\n" + trace
+        ran_at = CURSES_RUNS_AT.search(trace)
+        assert ran_at, "the size curses runs at is not in the trace:\n" + trace
+        assert (int(ran_at.group(1)), int(ran_at.group(2))) == \
+            (FLOOR_COLS, FLOOR_ROWS), \
+            "curses runs at %sx%s on a %dx%d terminal, so it was told the " \
+            "grid's floor: every line it writes is wider than the terminal, " \
+            "which wraps it and scrolls the editor off the screen:\n%s" % (
+                ran_at.group(1), ran_at.group(2), FLOOR_COLS, FLOOR_ROWS,
+                trace)
         w.resize(DRIVER_COLS, DRIVER_ROWS, delay=2.0)
         _type_and_save(w)
 

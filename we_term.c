@@ -862,6 +862,11 @@ static void e_t_grow_to(int cols, int rows, int held_cols, int held_rows)
  * editor on the largest screen the machine holds.  A screen that ends up
  * smaller than the terminal is cut by curses, and the editor says so once.
  *
+ * curses is never told more than the terminal has.  On a terminal below the
+ * grid's floor the editor draws on the floor's grid and curses cuts it.  Told
+ * the floor instead, curses writes lines wider than the terminal, which the
+ * terminal wraps and scrolls, and the editor loses its own screen.
+ *
  * A refused start is never asked for.  The first newterm names a size cut to
  * the largest one curses reads from the environment (E_T_ENV_SIZE_MAX a
  * side), and curses always holds that: its own three screens of it are a few
@@ -883,6 +888,10 @@ static int e_t_open_screen(void)
  cols = asked_cols;
  rows = asked_rows;
  wpe_grid_fit(&cols, &rows);
+ if (cols > asked_cols)
+  cols = asked_cols;
+ if (rows > asked_rows)
+  rows = asked_rows;
  if (!e_t_newterm_at(e_t_env_size(cols), e_t_env_size(rows)))
  {
   initscr();           /* fails the same way and ends with curses' sentence */
@@ -892,6 +901,8 @@ static int e_t_open_screen(void)
   e_t_grow_to(cols, rows, COLS, LINES);
  if (COLS < asked_cols || LINES < asked_rows)
   wpe_grid_note_clamp(asked_cols, asked_rows, COLS, LINES);
+ wpe_ui_trace("curses runs at %dx%d, terminal asked %dx%d", COLS, LINES,
+              asked_cols, asked_rows);
  return 0;
 }
 

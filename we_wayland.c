@@ -323,11 +323,15 @@ static int wl_apply_pending_resize(void)
      frame is told, so the strip past it is black and the next configure is
      compared with the grid in use. */
   wpe_wlframe_keep_grid(MAXSCOL, MAXSLNS);
-  wpe_wlframe_finish();
   /* Said at the pass that took the size and not at a later one, which waits
      for another event to reach the input loop: a configure from the
-     compositor hands the editor no key of its own. */
+     compositor hands the editor no key of its own.  Said before the frame is
+     shown, so the sentence rides in the commit that answers the configure
+     and no frame is shown with the black strip and nothing said about it.
+     The box's own paint presents the fitted frame, so the configure is
+     answered here and not when the user answers the box. */
   e_screen_say_pending();
+  wpe_wlframe_finish();
   return 0;
  }
  wpe_layout_screen_resized(old_scol, old_slns);

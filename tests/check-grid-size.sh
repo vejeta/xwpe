@@ -36,8 +36,8 @@
 #  3. a plane name is passed to free, FREE, realloc or REALLOC, or is the
 #     bare first argument of memset, memcpy or memmove (memset(&altschirm[i],
 #     ...) is legal).
-#  4. it names wpe_grid_now, casts to WpeGrid *, or declares an object of
-#     type WpeGrid.
+#  4. it names wpe_grid_now, casts to WpeGrid * (with or without a const), or
+#     declares an object of type WpeGrid.
 #  5. it defines or undefines one of the six names, or pastes with ## a token
 #     that starts with MAXS, schirm, altschirm, extbyte or altextbyte.
 #  6. it declares extern one of the six names.
@@ -52,9 +52,9 @@
 # Canaries (--selftest, and at the start of every run): one offence of each
 # kind, among them an alias, a macro with code, a helper planted in a copy of
 # a real file, a product split over two lines, a calloc of SCREENCELL, a free
-# of a plane, a cast and an extern, and the legal lines named above; a scan
-# that does not name every offence, or names a legal line, fails the script
-# as blind.
+# of a plane, a cast, the same cast with a const, and an extern, and the legal
+# lines named above; a scan that does not name every offence, or names a legal
+# line, fails the script as blind.
 #
 # Exit: 0 clean, 1 offenders or a blind scanner.
 
@@ -247,7 +247,7 @@ function handle(s, ln, prep,   n, t, name, k, own) {
   if (rule_alloc(n) || rule_array(n)) report("rule 2 (allocation sized from the grid)", s)
   if (rule_free(n)) report("rule 3 (a plane freed or filled whole)", s)
   if (has_word("wpe_grid_now", n)) report("rule 4 (the owner object named)", s)
-  else if (s ~ /\([ \t]*WpeGrid[ \t]*\*[ \t]*\)/) report("rule 4 (cast to the owner type)", s)
+  else if (s ~ /\([ \t]*(const[ \t]+)?WpeGrid[ \t]*\*[ \t]*\)/) report("rule 4 (cast to the owner type)", s)
   else if (s ~ /(^|[^A-Za-z0-9_])WpeGrid[ \t]+[A-Za-z_]/) report("rule 4 (an object of the owner type)", s)
   if (s ~ /(MAXS[A-Za-z0-9_]*|[a-z]*schirm|[a-z]*extbyte)[ \t]*##/ || s ~ /##[ \t]*(MAXS|[a-z]*schirm|[a-z]*extbyte)/)
     report("rule 5 (pasting a grid name)", s)
@@ -378,6 +378,7 @@ plant() {
     printf 'static void planted_free(void)\n{\n free(schirm);\n}\n'
     printf 'static void planted_fill(void)\n{\n memset(altschirm, 0, 10);\n}\n'
     printf 'static void planted_cast(void)\n{\n WpeGrid *g = (WpeGrid *)0;\n (void)g;\n}\n'
+    printf 'static void planted_cast_const(void)\n{\n const WpeGrid *g = (const WpeGrid *)0;\n (void)g;\n}\n'
     printf 'static void planted_now(void)\n{\n (void)wpe_grid_now;\n}\n'
     printf 'extern int MAXSCOL;\n'
     printf '#undef MAXSLNS\n'
@@ -426,7 +427,8 @@ selftest() {
   missing=0
   for want in "SCRW \* MAXSLNS" "GRIDBYTES (MAXSCOL" "return MAXSLNS \* MAXSCOL" \
               "(size_t)MAXSCOL" "calloc(100, sizeof(SCREENCELL))" "free(schirm)" \
-              "memset(altschirm, 0, 10)" "(WpeGrid \*)0" "(void)wpe_grid_now" \
+              "memset(altschirm, 0, 10)" "(WpeGrid \*)0" \
+              "(const WpeGrid \*)0" "(void)wpe_grid_now" \
               "extern int MAXSCOL" "undef MAXSLNS" "return AREA(MAXSCOL, MAXSLNS)" \
               "char grid\[MAXSCOL \* 2\]" "MAXSCOL ## a"; do
     if ! grep -q -- "$want" "$WORK/found.txt"; then

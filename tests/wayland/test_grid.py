@@ -11,6 +11,10 @@ cells.  What the user gets when the memory for a size is not there:
     the frame kept the size it had fitted, so the next configure was compared
     with a grid the editor did not have and the remainder covered cells the
     editor was still drawing.
+  * The sentence about a kept grid rides in the frame that answers the
+    configure: the reader says it before that frame is committed, so no frame
+    shows the remainder strip with nothing said about it, and the sentence
+    never waits for an event the compositor does not owe the editor.
   * A start the machine has no memory for comes up on the 80 x 24 the owner
     falls back to, instead of a desk with no screen behind it.
   * A window smaller than one cell of the editor's frames keeps the floor of
@@ -92,6 +96,19 @@ REMAINDER_PIXEL = (950, 700)
 # puts in t.c.
 KEPT_ENV = {"XWPE_TEST_FAULT": FAULT_THIRD_TAKE, "XWPE_UI_TRACE": TRACE,
             "XWPE_TEST_SOURCE": SOURCE}
+# The frame owner's trace and the editor's own in one file: both writers
+# append a line at a time, so the order of the lines is the order of the
+# calls, and a row can read that the sentence was said before the frame that
+# answers the configure was committed.
+KEPT_SAY_ORDER_ENV = {"XWPE_TEST_FAULT": FAULT_THIRD_TAKE,
+                      "XWPE_UI_TRACE": TRACE, "XWPE_WL_FRAME_TRACE": TRACE,
+                      "XWPE_TEST_SOURCE": SOURCE}
+# The three lines of that order: the frame owner takes the kept grid for the
+# buffer, the reader says the sentence, the frame owner commits the frame
+# that carries both.
+KEEP_GRID_LINE = "keep grid="
+NOTICE_LINE = "grid notice "
+COMMIT_LINE = "commit "
 START_ENV = {"XWPE_TEST_FAULT": FAULT_FIRST_TAKE, "XWPE_UI_TRACE": TRACE,
              "XWPE_TEST_SOURCE": SOURCE}
 FLOOR_ENV = {"XWPE_UI_TRACE": TRACE, "XWPE_TEST_SOURCE": SOURCE,
@@ -104,6 +121,34 @@ def _trace(tmp_path):
             return fh.read()
     except OSError:
         return ""
+
+
+def _trace_lines(tmp_path):
+    """The lines of the trace, in the order they were written."""
+    return _trace(tmp_path).splitlines()
+
+
+def _first_after(lines, position, opening):
+    """The position of the first line after `position` that opens with
+    `opening`, or None when there is none."""
+    for later, line in enumerate(lines):
+        if later > position and line.startswith(opening):
+            return later
+    return None
+
+
+def _positions(lines, opening):
+    """The positions of the lines that open with `opening`."""
+    return [i for i, line in enumerate(lines) if line.startswith(opening)]
+
+
+def _kept_frame_committed(tmp_path):
+    """True once the frame that answers a kept configure is committed: the
+    frame owner took the kept grid for the buffer and a commit followed."""
+    lines = _trace_lines(tmp_path)
+    kept = _positions(lines, KEEP_GRID_LINE)
+    return bool(kept) and \
+        _first_after(lines, kept[0], COMMIT_LINE) is not None
 
 
 def _taken_grids(tmp_path):
@@ -208,6 +253,39 @@ def test_a_refused_grow_keeps_the_editor_and_its_text(xwpe, tmp_path):
              "a later size to be taken", TRACE_S,
              state_fn=lambda: _trace(tmp_path))
     assert xwpe.proc.poll() is None, "the editor ended after a refused grow"
+
+
+@pytest.mark.parametrize("xwpe", [KEPT_SAY_ORDER_ENV], indirect=True)
+def test_a_refused_grow_is_said_in_the_frame_that_answers_it(xwpe, tmp_path):
+    """The grow is refused and the frame that answers the compositor's
+    configure carries the sentence: the reader says it at the pass that took
+    the size, before that pass commits.  No frame is shown with the black
+    strip past the kept grid and nothing said about it, and the sentence does
+    not wait for an event the compositor does not owe the editor.
+
+    A configure hands the editor no key, so a reader that said the sentence
+    at a later pass would owe it until something else woke the input loop.
+    Both traces go to one file here, so the order of its lines is the order of
+    the calls, and the row reads that the sentence was written before the
+    commit of the kept frame.  No key of the row's own brings either about."""
+    _kept_grow(xwpe, tmp_path)
+    wait_for(lambda: _kept_frame_committed(tmp_path),
+             "the frame that answers the kept configure to be committed",
+             TRACE_S, state_fn=lambda: _trace(tmp_path))
+    lines = _trace_lines(tmp_path)
+    kept = _positions(lines, KEEP_GRID_LINE)[0]
+    commit = _first_after(lines, kept, COMMIT_LINE)
+    notice = _positions(lines, NOTICE_LINE)
+    assert notice, "the refusal was not said:\n" + "\n".join(lines)
+    assert notice[0] < commit, \
+        "the sentence came after the frame that answers the configure was " \
+        "committed, so that frame showed the strip past the kept grid with " \
+        "nothing said about it:\n" + "\n".join(lines)
+    assert NOTICE_REFUSED.search(lines[notice[0]]), \
+        "the sentence is not the refusal:\n" + lines[notice[0]]
+    _answer_the_box_type_and_save(xwpe)
+    assert xwpe.proc.poll() is None, \
+        "the editor ended after a refusal it said in its own frame"
 
 
 @pytest.mark.parametrize("xwpe", [KEPT_ENV], indirect=True)
