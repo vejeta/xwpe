@@ -7,6 +7,7 @@
 
 #include "model.h"		/* exchange for D.S.  */
 #include "edit.h"
+#include "we_rowread.h"
 #include "we_buffer.h"
 #include "we_menus.h"
 
@@ -1065,7 +1066,7 @@ static int e_err_save_wanted(FENSTER *f)
   return(0);
  if (!wpe_write_window_is_a_file(f))
   return(0);                    /* no file behind it: nothing to keep beside one */
- return(b->mxlines > 1 || b->bf[0].len > 0);
+ return(b->mxlines > 1 || wpe_row_len(b, 0) > 0);
 }
 
 /**
@@ -1648,7 +1649,7 @@ int e_recover(ECNT *cn)
   {
    b = cn->f[cn->mxedt]->b;
    e_buffer_mark_set(b, E_BUFFER_MARK_END, b->mxlines - 1,
-                     b->bf[b->mxlines-1].len);
+                     wpe_row_len(b, b->mxlines-1));
    e_edt_copy_block(f);
    e_close_window(f);
   }

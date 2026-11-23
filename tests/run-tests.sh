@@ -241,6 +241,12 @@ asan)
      -fno-omit-frame-pointer -include config.h -I. \
      tests/test_brkmatch.c we_brkmatch.c -o "$asan_src/test_brkmatch-asan" &&
    ASAN_OPTIONS=detect_leaks=0 "$asan_src/test_brkmatch-asan")
+  # The readers every walk of a row goes through, in a hostile frame.
+  echo "== row readers unit under AddressSanitizer =="
+  (cd "$top" && ${CC:-cc} -std=gnu17 -g -O1 -fsanitize=address,undefined \
+     -fno-omit-frame-pointer -include config.h -I. \
+     tests/test_rowread.c -o "$asan_src/test_rowread-asan" &&
+   ASAN_OPTIONS=detect_leaks=0 "$asan_src/test_rowread-asan")
   asan_units
   echo "== pyte suite under AddressSanitizer (WPE_BIN=./wpe-asan) =="
   # ASan runs about twice as slow, so stretch every wait unless the caller

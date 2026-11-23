@@ -200,7 +200,9 @@ void e_prj_say_not_opened(FENSTER *f, const char *path, const WpeReadOutcome *wh
 
 /*   we_progn.c  */
 
-int e_scfbol(int n, int mcsw, unsigned char *str, struct wpeSyntaxRule *cs);
+int e_scfbol(int n, int mcsw, const unsigned char *str, struct wpeSyntaxRule *cs);
+int e_syntax_row_continues(const BUFFER *b, int y);
+int e_syntax_row_leaves(const BUFFER *b, int y, int state);
 int e_sc_all(FENSTER *f, int sw);
 int e_program_opt(FENSTER *f);
 int e_sc_nw_txt(int y, BUFFER *b, int sw);

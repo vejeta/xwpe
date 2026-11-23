@@ -98,6 +98,7 @@ int    e_buffer_rows_push(STRING **lines, int *n, int *cap, int mx_x,
 int    e_buffer_wrap_cut(const unsigned char *row, int maxc);
 int    e_buffer_bytes_reserve(unsigned char **bytes, int *cap, int need);
 int    e_buffer_line_copy(BUFFER *b, const STRING *src, STRING *out);
+int    e_buffer_row_copy(BUFFER *b, int y, STRING *out);
 int    e_buffer_rows_check(BUFFER *b);
 void   e_buffer_marks_inside(BUFFER *b);
 
@@ -371,7 +372,7 @@ int    wpe_buffer_replay_kind(BUFFER *b, SCHIRM *s, Undo *rec);
 void   wpe_buffer_replay_on_shell(BUFFER *shell, SCHIRM *s, const Undo *rec, int y0);
 void   wpe_buffer_trace(const char *fmt, ...);
 
-int    e_str_len(unsigned char *s);
+int    e_str_len(const unsigned char *s);
 void   e_buffer_test_fail_allocs(int n);
 
 /* Tests only: memory refused inside one action of the running editor.  A

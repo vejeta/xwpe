@@ -10,6 +10,7 @@
    display's reader returns. */
 
 #include "edit.h"
+#include "we_rowread.h"
 #include "we_buffer.h"
 #include "we_lineend.h"
 #include "we_testdump.h"
@@ -227,7 +228,7 @@ static int dump_steps(const Undo *u)
 static int dump_window_is_text(FENSTER *f)
 {
  return f != NULL && DTMD_ISTEXT(f->dtmd) && f->b != NULL && f->s != NULL
-        && f->b->bf != NULL;
+        && wpe_rows_exist(f->b);
 }
 
 /**
@@ -313,18 +314,16 @@ static void dump_window_lines(DumpBuf *d, int n, FENSTER *f)
 
  for (i = 0; i < b->mxlines; i++)
  {
-  STRING *l = &b->bf[i];
-
-  if (l->s == NULL)
+  if (!wpe_row_stored(b, i))
   {
    dump_printf(d, "L %d %c \n", n, DUMP_END_SOFT);
    continue;
   }
-  if (l->s[l->len] == WPE_WR)
+  if (wpe_row_ends_line(b, i))
    dump_printf(d, "L %d %c ", n, DUMP_END_HARD);
   else
    dump_printf(d, "L %d %c ", n, DUMP_END_SOFT);
-  dump_bytes(d, l->s, l->len, 1);
+  dump_bytes(d, wpe_row_bytes(b, i, NULL), wpe_row_len(b, i), 1);
   dump_printf(d, "\n");
  }
 }

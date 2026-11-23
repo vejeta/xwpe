@@ -1,0 +1,51 @@
+# The functions outside the row owner (we_buffer.c) that still name the array
+# of rows ("bf") or reach a row through a name declared STRING * or a cast to
+# one.  Checked by tests/check-brk-bounds.sh; the shared readers are in
+# we_rowread.h.
+#
+#   KIND|file|function|count|why
+#
+# The count is the number of lines the scan finds in that function.  It may
+# only fall: a function that moves onto the readers loses its line, and a
+# line that matches nothing, or a count that is not the scan's, is stale.
+# The scan writes the first four fields with --list.
+#
+# Every read of a row's bytes or fields goes through the readers, so what is
+# left here is not a read:
+#
+# A  a line through a STRING * built for a call of the row owner (an array of
+#    lines the owner takes, or a member that keeps one): the owner's input
+# W  a line that writes a row in place: the row owner's concern, not moved by
+#    the readers; each is a site of the row owner's write face
+# D  the declaration of the row array itself
+#
+# the field of BUFFER
+D|edit.h|(file scope)|1|the array of rows
+# the owner's input arrays
+A|we_ai_ui.c|ai_pane_rows_insert|2|new rows made by the owner, then spliced in
+A|we_block.c|e_blck_changecase|1|copies of the block's rows, spliced back in
+A|we_block.c|e_case_line_changed|4|one copy of a row, changed before the splice
+A|we_block.c|e_case_lines_changed|1|the array of those copies
+A|we_buffer.h|(file scope)|2|the lines a transaction holds and takes out
+A|we_edit.c|e_ins_long_run|1|the rows the owner builds from a long run
+A|we_lineend.c|e_eol_append_text|1|rows built from text for the owner
+A|we_lineend.c|e_eol_replace_all|1|rows built from text for the owner
+A|we_lineend.c|eol_rows_from_text|1|rows built from text for the owner
+A|we_lineend.c|(file scope)|1|the rows a sink has made so far
+# writers of a row in place
+W|we_ai_ui.c|ai_pane_row_continues_below|2|ends the row without a line break
+W|we_debug.c|e_d_messages_erase_char|2|the Messages row loses a typed byte
+W|we_debug.c|e_d_messages_insert_char|4|the Messages row takes a typed byte
+W|we_debug.c|e_d_stack_put_row|11|the Stack window row is filled in place
+W|we_edit.c|e_del_nchar|3|moves the rest of a row left
+W|we_edit.c|e_ins_bytes_at|2|moves the rest of a row right and puts the bytes in
+W|we_edit.c|e_ins_cut_row|1|ends a wrapped row at the cut
+W|we_edit.c|e_ins_wrap_tail_down|4|fills the new row of a wrap
+W|we_edit.c|e_line_make_hard_empty|4|turns a fresh row into an empty line
+W|we_edit.c|e_overwrite_back|1|overwrites a byte of a row
+W|we_edit.c|e_put_char|1|overwrites a byte of a row
+W|we_edit.c|e_row_remeasure|2|sets the length and count of a row
+W|we_fl_unix.c|e_ed_man|1|marks a man page row in place
+W|we_prog.c|e_build_mark_row|4|puts the warning mark in front of a row
+W|we_prog.c|e_run_pty_apply_byte|6|a program's byte goes onto the last row
+W|we_wind.c|e_close_buffer|3|releases the rows of a closed buffer

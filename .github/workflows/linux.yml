@@ -110,7 +110,8 @@ jobs:
           TESTS="tests/check-build-config.sh test_checkheader test_syntax_def test_fdloop test_clipboard
           test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor
           test_dap test_ai_http test_ai_diff test_fmt test_numtext
-          tests/check-fmt-writes.sh"
+          test_brkmatch test_rowread
+          tests/check-fmt-writes.sh tests/check-brk-bounds.sh"
 
       - name: C units under the sanitizers (AddressSanitizer + UBSan)
         # The owner of a formatted text and its callers (the request header
@@ -136,6 +137,26 @@ jobs:
           python3 -m venv /tmp/ptenv
           /tmp/ptenv/bin/pip install --quiet pyte==0.8.2 pytest pytest-rerunfailures pytest-xdist pillow
           mkdir -p /tmp/xdg && chmod 700 /tmp/xdg
+
+      - name: Reads outside a row (AddressSanitizer)
+        # A walk that reads the byte before a row or past its NUL is no failure
+        # of a plain build: the byte belongs to the allocator, and the answer
+        # changes only with what it left there.  Only a sanitizer sees it, so
+        # the unit of the readers and the rows of the walks (Run > Beautify, the
+        # syntax colours, the painters of a help page) run under one.  The
+        # editor is started as wpe-asan: under the name we the programming
+        # layer is off and the rows would test nothing.
+        env:
+          ASAN_OPTIONS: "detect_leaks=0:abort_on_error=1:allow_user_segv_handler=0"
+        run: |
+          cc -std=gnu17 -g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer \
+            -include config.h -I. tests/test_rowread.c -o /tmp/test_rowread-asan
+          /tmp/test_rowread-asan
+          tests/run-tests.sh --asan-build
+          export XWPE_LIB="$PWD"
+          WPE_BIN="$PWD/wpe-asan" XWPE_TEST_WAIT_SCALE=2 /tmp/ptenv/bin/python -m pytest -q \
+            tests/test_row_readers.py tests/test_help_paint.py \
+            tests/test_help_check.py tests/test_error_search_text.py -n 4
 
       - name: ncurses UI suite (pyte, pseudo-terminal)
         # The deterministic key / menu / editing / rendering scenarios; the

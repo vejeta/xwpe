@@ -10,6 +10,7 @@
 
 #include "messages.h"
 #include "edit.h"
+#include "we_rowread.h"
 #include "WeExpArr.h"
 #include "progr.h"
 #include "we_fdloop.h"
@@ -289,9 +290,11 @@ static int ai_row_continues(int y)
  */
 static void ai_pane_row_continues_below(BUFFER *b, int y)
 {
- if (y < 0 || y >= b->mxlines || !b->bf[y].s) return;
- b->bf[y].s[b->bf[y].len] = '\0';
- b->bf[y].nrc = b->bf[y].len;
+ int len = wpe_row_len(b, y);
+
+ if (!wpe_row_stored(b, y)) return;
+ b->bf[y].s[len] = '\0';
+ b->bf[y].nrc = len;
 }
 
 /**
@@ -576,7 +579,7 @@ static void ai_pane_show(FENSTER *wf)
  */
 static int ai_pane_row_is_free(BUFFER *b, int y)
 {
- return b->mxlines == 1 && y == 0 && b->bf[0].len == 0;
+ return b->mxlines == 1 && y == 0 && wpe_row_len(b, 0) == 0;
 }
 
 /**
@@ -885,9 +888,8 @@ static char *ai_lines_text(FENSTER *f, int y0, int y1)
  */
 static int ai_row_breaks_after(BUFFER *b, int y)
 {
- STRING *row = &b->bf[y];
-
- return row->s != NULL && row->len <= b->mx.x && row->s[row->len] == WPE_WR;
+ return wpe_row_stored(b, y) && wpe_row_len(b, y) <= b->mx.x &&
+   wpe_row_ends_line(b, y);
 }
 
 /**
@@ -957,7 +959,7 @@ static char *ai_full_file_text(FENSTER *f)
    line and its '\n'. */
 static size_t ai_line_bytes(BUFFER *b, int y)
 {
- int ll = b->bf[y].len;
+ int ll = wpe_row_len(b, y);
  if (ll < 0) ll = 0;
  return (size_t)ll + 1;
 }
@@ -1317,8 +1319,8 @@ static void ai_pane_caret_to_input(FENSTER *wf)
 static void ai_pane_caret_to_end(FENSTER *wf)
 {
  int y = wf->b->mxlines - 1;
- if (y >= 0 && wf->b->bf[y].s)
-  e_buffer_cursor_set(wf->b, y, wf->b->bf[y].len);
+ if (y >= 0 && wpe_row_stored(wf->b, y))
+  e_buffer_cursor_set(wf->b, y, wpe_row_len(wf->b, y));
  else
   e_buffer_cursor_set(wf->b, y, 0);
 }
@@ -1983,7 +1985,7 @@ static char *ai_pane_join_line(BUFFER *b, int y0, int limit, int *rows)
  for (y = y0; y < limit; y++) {
   int l;
   if (y > y0 && !ai_row_continues(y)) break;
-  l = b->bf[y].s ? b->bf[y].len : 0;
+  l = wpe_row_stored(b, y) ? wpe_row_len(b, y) : 0;
   if (l > 0) total += (size_t)l;
  }
  *rows = y - y0;
@@ -1991,8 +1993,8 @@ static char *ai_pane_join_line(BUFFER *b, int y0, int limit, int *rows)
  if (!t) return NULL;
  total = 0;
  for (y = y0; y < y0 + *rows; y++) {
-  int l = b->bf[y].s ? b->bf[y].len : 0;
-  if (l > 0) { memcpy(t + total, b->bf[y].s, (size_t)l); total += (size_t)l; }
+  int l = wpe_row_stored(b, y) ? wpe_row_len(b, y) : 0;
+  if (l > 0) { memcpy(t + total, wpe_row_text(b, y, 0), (size_t)l); total += (size_t)l; }
  }
  t[total] = '\0';
  return t;
@@ -3795,7 +3797,7 @@ static int ai_file_line_count(FENSTER *w)
 {
  BUFFER *b = w->b;
  int n = b->mxlines;
- if (n > 1 && b->bf[n - 1].len == 0)
+ if (n > 1 && wpe_row_len(b, n - 1) == 0)
   n--;
  return n;
 }
@@ -4391,7 +4393,7 @@ static void ai_compose_show_seed(FENSTER *w, const char *seed)
   wpe_buffer_say_nomem(b, "the composer's text");
  e_buffer_history_drop(b);                   /* the seed is not the user's to undo */
  /* caret after the text */
- e_buffer_cursor_set(b, b->mxlines - 1, b->bf[b->mxlines - 1].len);
+ e_buffer_cursor_set(b, b->mxlines - 1, wpe_row_len(b, b->mxlines - 1));
  e_firstl(w, 1);
  e_zlsplt(w);
  e_brk_schirm(w);
@@ -4417,9 +4419,9 @@ static void ai_say_input_limit(FENSTER *f);   /* defined with the input row */
  */
 static int ai_compose_row_ends_line(BUFFER *b, int y)
 {
- if (y >= b->mxlines - 1 || !b->bf[y].s)
+ if (y >= b->mxlines - 1 || !wpe_row_stored(b, y))
   return 0;
- return b->bf[y].s[b->bf[y].len] == WPE_WR;
+ return wpe_row_ends_line(b, y);
 }
 
 /**
@@ -4435,8 +4437,8 @@ static long ai_compose_bytes(FENSTER *w)
  long n = 0;
  int y;
  for (y = 0; y < b->mxlines; y++) {
-  if (b->bf[y].len > 0)
-   n += b->bf[y].len;
+  if (wpe_row_len(b, y) > 0)
+   n += wpe_row_len(b, y);
   if (ai_compose_row_ends_line(b, y))
    n++;
  }
@@ -4476,7 +4478,7 @@ static char *ai_compose_text(FENSTER *w)
  int last = b->mxlines - 1;
  char *t = NULL;
 
- e_eol_text(b, 0, 0, last, b->bf[last].len, E_EOL_LF, 0, &t);   /* no break after the last row */
+ e_eol_text(b, 0, 0, last, wpe_row_len(b, last), E_EOL_LF, 0, &t);  /* no break after the last row */
  return t;
 }
 
@@ -7349,11 +7351,11 @@ static char *ai_segs_join_chosen(const wpe_ai_seg *segs, int nseg, const int *ac
  if (!out) return NULL;
  out[0] = '\0';
  for (i = 0; i < nseg; i++) {
-  char **lines = segs[i].a;
+  char **texts = segs[i].a;
   int n2 = segs[i].an;
-  if (segs[i].is_change && acc[i]) { lines = segs[i].b; n2 = segs[i].bn; }
+  if (segs[i].is_change && acc[i]) { texts = segs[i].b; n2 = segs[i].bn; }
   for (k = 0; k < n2; k++) {
-   size_t ll = strlen(lines[k]);
+   size_t ll = strlen(texts[k]);
    if (len + ll + 2 > cap) {
     char *bigger;
     while (len + ll + 2 > cap) cap *= 2;
@@ -7361,7 +7363,7 @@ static char *ai_segs_join_chosen(const wpe_ai_seg *segs, int nseg, const int *ac
     if (!bigger) { free(out); return NULL; }   /* the old pointer was the only one */
     out = bigger;
    }
-   memcpy(out + len, lines[k], ll);
+   memcpy(out + len, texts[k], ll);
    len += ll;
    out[len++] = '\n';
   }
@@ -9502,8 +9504,9 @@ static size_t ai_cursor_byte_offset(BUFFER *b)
  if (y < 0) y = 0;
  if (y > b->mxlines - 1) y = b->mxlines - 1;
  for (i = 0; i < y && i < b->mxlines; i++)
-  off += (size_t)(b->bf[i].len < 0 ? 0 : b->bf[i].len) + 1;
- ll = b->bf[y].len < 0 ? 0 : b->bf[y].len;
+  off += ai_line_bytes(b, i);
+ ll = wpe_row_len(b, y);
+ if (ll < 0) ll = 0;
  if (x > ll) x = ll;
  if (x < 0) x = 0;
  return (off + (size_t)x);
@@ -11772,7 +11775,7 @@ static void ai_messages_empty_for_run(FENSTER *f)
  if (e_buffer_clear(m->b) == E_BUFFER_NOMEM)
   wpe_buffer_say_nomem(m->b, "the run's rows");
  else
-  e_line_make_hard_empty(&m->b->bf[0]);     /* the one row a compile leaves */
+  e_line_make_hard_empty(m->b, 0);  /* the one row a compile leaves */
  e_buffer_cursor_set(m->b, 0, 0);
  e_messages_scroll_to_bottom(m);
  e_rep_win_tree(f->ed);
@@ -11818,12 +11821,11 @@ void wpe_ai_messages_run_output_begins(FENSTER *f)
  */
 static int ai_plan_row_is_ours(BUFFER *b, int row, int first)
 {
- const char *s;
- if (row < 0 || row >= b->mxlines || !b->bf[row].s) return 0;
- s = b->bf[row].s;
- if (first) return !strncmp(s, AI_PLAN_HEADER, strlen(AI_PLAN_HEADER));
- return !strncmp(s, AI_PLAN_STEP_LEAD, strlen(AI_PLAN_STEP_LEAD))
-     || !strncmp(s, AI_PLAN_NO_STEPS, strlen(AI_PLAN_NO_STEPS));
+ if (!wpe_row_stored(b, row)) return 0;
+ if (first)
+  return !strncmp(wpe_row_text(b, row, 0), AI_PLAN_HEADER, strlen(AI_PLAN_HEADER));
+ return !strncmp(wpe_row_text(b, row, 0), AI_PLAN_STEP_LEAD, strlen(AI_PLAN_STEP_LEAD))
+     || !strncmp(wpe_row_text(b, row, 0), AI_PLAN_NO_STEPS, strlen(AI_PLAN_NO_STEPS));
 }
 
 /**

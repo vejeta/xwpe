@@ -8,6 +8,7 @@
 #include "messages.h"
 #include "edit.h"
 #include "we_buffer.h"
+#include "we_rowread.h"
 #include "we_testdump.h"
 #include "we_paint.h"
 #include "we_layout.h"
@@ -2602,11 +2603,11 @@ int e_close_buffer(BUFFER *b)
  if (b != NULL)
  {
   e_buffer_history_drop(b);
-  if (b->bf != NULL)
+  if (wpe_rows_exist(b))
   {
    for (i = 0; i < b->mxlines; i++)
    {
-    if (b->bf[i].s != NULL)
+    if (wpe_row_stored(b, i))
      FREE( b->bf[i].s );
     b->bf[i].s = NULL;
    }
@@ -3182,6 +3183,111 @@ int e_ed_next(FENSTER *f)
  return(0);
 }
 
+/**
+ * e_pr_help_cell - Paint one character of a help page row at display column
+ * @j, in the colour @frb.
+ * Keeps the help branch of e_pr_line reading as what it paints, not as the
+ * window arithmetic every cell repeats.
+ */
+static void e_pr_help_cell(FENSTER *f, int y, int j, int ch, int frb)
+{
+ e_pr_char(f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j + 1,
+   y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1, ch, frb);
+}
+
+/**
+ * e_pr_help_within - Whether a help mark's text goes on at byte @i of row
+ * @y, shown at display column @j.
+ * @stop: the byte that ends it.
+ * The text of a link, of a headline or of a file name ends at its end mark,
+ * at the end of the row's text or at the window's right edge, whichever
+ * comes first: a page never paints past the edge or reads past the row.
+ */
+static int e_pr_help_within(FENSTER *f, int y, int i, int j, int stop)
+{
+ return i < wpe_row_len(f->b, y) && wpe_row_byte(f->b, y, i) != stop &&
+   j < COL_NUM_ON_SCREEN_RIGHT;
+}
+
+/**
+ * e_pr_help_link - Paint a button, a manual page button, a headline or a
+ * highlight of a help or Info page.
+ * @ip: the byte of the mark; on return the byte the text ended at.
+ * @jp: the display column of the mark; on return the column to go on from.
+ *
+ * The user sees the link in the colour of its kind, from the mark to its end
+ * mark; under X11 a box is drawn around it too (not around a highlight).
+ */
+static void e_pr_help_link(FENSTER *f, int y, int *ip, int *jp)
+{
+ SCHIRM *s = f->s;
+ int i = *ip, j = *jp, frb;
+ int mark = wpe_row_byte(f->b, y, i);
+#ifdef NEWSTYLE
+ int k = (mark != HBB) ? j : -1;
+#endif
+
+ if (mark == HHD)
+  frb = s->fb->hh.fb;
+ else if (mark == HBB)
+  frb = s->fb->hm.fb;
+ else
+  frb = s->fb->hb.fb;
+ for (i++; e_pr_help_within(f, y, i, j, HED); i++, j++)
+  e_pr_help_cell(f, y, j, wpe_row_byte(f->b, y, i), frb);
+ j--;
+#ifdef NEWSTYLE
+ if (WpeIsXwin() && k >= 0)
+  e_make_xrect(f->a.x - NUM_COLS_OFF_SCREEN_LEFT + k + 1, y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1,
+    f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j + 1, y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1, 0);
+#endif
+ *ip = i;
+ *jp = j;
+}
+
+/**
+ * e_pr_help_end_page - Paint the rest of the row below the last page of a
+ * help file as blank headline colour, from display column @j.
+ * Gives the user a clean end of the page instead of what is behind it.
+ */
+static void e_pr_help_end_page(FENSTER *f, int y, int j)
+{
+ for (; j < COL_NUM_ON_SCREEN_RIGHT; j++)
+  e_pr_help_cell(f, y, j, ' ', f->s->fb->hh.fb);
+}
+
+/**
+ * e_pr_help_file_link - Paint a link to a file of a help page: its text up
+ * to the colon, then the name, then the blanks to the end of the entry.
+ * @frb: the colour the page's plain text has on this row.
+ * @ip: the byte of the mark; on return the byte the entry ended at.
+ * @jp: the display column of the mark; on return the column to go on from.
+ *
+ * The user sees the link text as a button and the name in the page's colour;
+ * the part of the entry that is not shown is painted blank.
+ */
+static void e_pr_help_file_link(FENSTER *f, int y, int frb, int *ip, int *jp)
+{
+ int i = *ip, j = *jp, k = j;
+
+ for (i++; e_pr_help_within(f, y, i, j, ':'); i++, j++)
+  e_pr_help_cell(f, y, j, wpe_row_byte(f->b, y, i), f->s->fb->hb.fb);
+#ifdef NEWSTYLE
+ if (WpeIsXwin())
+  e_make_xrect(f->a.x-NUM_COLS_OFF_SCREEN_LEFT+k+1, y-NUM_LINES_OFF_SCREEN_TOP+f->a.y+1,
+    f->a.x-NUM_COLS_OFF_SCREEN_LEFT+j, y-NUM_LINES_OFF_SCREEN_TOP+f->a.y+1, 0);
+#endif
+ for (; e_pr_help_within(f, y, i, j, HED); i++, j++)
+  e_pr_help_cell(f, y, j, wpe_row_byte(f->b, y, i), frb);
+ for (i++; e_pr_help_within(f, y, i, j, HED); i++, j++)
+  e_pr_help_cell(f, y, j, ' ', frb);
+ for (; e_pr_help_within(f, y, i, j, '.'); i++, j++)
+  e_pr_help_cell(f, y, j, ' ', frb);
+ j--;
+ *ip = i;
+ *jp = j;
+}
+
 /*   write a line (screen content)     */
 void e_pr_line(int y, FENSTER *f)
 {
@@ -3207,16 +3313,16 @@ void e_pr_line(int y, FENSTER *f)
  text_frb = wpe_ai_pane_line_attr(f, y, text_frb);
 #endif
 
- for (i = j = 0; j < NUM_COLS_OFF_SCREEN_LEFT && i < b->bf[y].len; j++)
+ for (i = j = 0; j < NUM_COLS_OFF_SCREEN_LEFT && i < wpe_row_len(b, y); j++)
  {
-  unsigned char ch = (unsigned char) *(b->bf[y].s + i);
+  unsigned char ch = (unsigned char) wpe_row_byte(b, y, i);
   if (ch == WPE_TAB)
   { j += (f->ed->tabn - j % f->ed->tabn - 1); i++; }
   else if (ch < ' ')
   { j++; i++; }
   else if (ch >= 0xC0 && ch < 0xFE)
   { /* UTF-8 lead byte: one glyph, as the keys step over it */
-   int cp, cw, nb = e_utf8_glyph_at(b->bf[y].s + i, b->bf[y].len - i, &cp, &cw);
+   int cp, cw, nb = wpe_row_glyph_at(b, y, i, &cp, &cw);
    j += cw - 1;
    i += nb;
   }
@@ -3229,7 +3335,7 @@ void e_pr_line(int y, FENSTER *f)
   if (s->brp[j] == y) {  fsw = 1;  break;  }
  if (fsw)
   hollow = e_d_brk_drawn_hollow(f->datnam, y + 1);
- for (j = NUM_COLS_OFF_SCREEN_LEFT; i < b->bf[y].len && j < COL_NUM_ON_SCREEN_RIGHT; i++, j++)
+ for (j = NUM_COLS_OFF_SCREEN_LEFT; i < wpe_row_len(b, y) && j < COL_NUM_ON_SCREEN_RIGHT; i++, j++)
  {
   if (y == s->da.y && i >= s->da.x && i < s->de.x )
    frb = s->fb->dy.fb;
@@ -3239,7 +3345,7 @@ void e_pr_line(int y, FENSTER *f)
   else if (y == s->fa.y && i >= s->fa.x && i < s->fe.x )
    frb = s->fb->ek.fb;
 #else
- for (j = NUM_COLS_OFF_SCREEN_LEFT; i < b->bf[y].len && j < COL_NUM_ON_SCREEN_RIGHT; i++, j++)
+ for (j = NUM_COLS_OFF_SCREEN_LEFT; i < wpe_row_len(b, y) && j < COL_NUM_ON_SCREEN_RIGHT; i++, j++)
  {
   if (y == s->fa.y && i >= s->fa.x && i < s->fe.x )
    frb = s->fb->ek.fb;
@@ -3265,87 +3371,49 @@ void e_pr_line(int y, FENSTER *f)
 
   if (f->dtmd == DTMD_HELP)
   {
-   if (*(b->bf[y].s + i) == HBG || *(b->bf[y].s + i) == HFB ||
-     *(b->bf[y].s + i) == HHD || *(b->bf[y].s + i) == HBB)
+   int mark = wpe_row_byte(b, y, i);
+
+   if (mark == HBG || mark == HFB || mark == HHD || mark == HBB)
    {
-    if (*(b->bf[y].s + i) == HHD) frb = s->fb->hh.fb;
-    else if(*(b->bf[y].s + i) == HBB) frb = s->fb->hm.fb;
-    else frb = s->fb->hb.fb;
-#ifdef NEWSTYLE
-    if (*(b->bf[y].s + i) != HBB) k = j;
-    else k = -1;
-#endif
-    for (i++; b->bf[y].s[i] != HED && i < b->bf[y].len &&
-      j < COL_NUM_ON_SCREEN_RIGHT; i++, j++)
-     e_pr_char(f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j + 1,
-       y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1, *(b->bf[y].s + i), frb);
-    j--;
-#ifdef NEWSTYLE
-    if (WpeIsXwin() && k >= 0)
-     e_make_xrect(f->a.x - NUM_COLS_OFF_SCREEN_LEFT + k + 1, y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1,
-       f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j + 1, y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1, 0);
-#endif
+    e_pr_help_link(f, y, &i, &j);
     continue;
    }
-   else if (*(b->bf[y].s + i) == HFE)
+   else if (mark == HFE)
    {
-    for (; j < COL_NUM_ON_SCREEN_RIGHT; j++)
-     e_pr_char(f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j + 1, y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1,
-       ' ', s->fb->hh.fb);
+    e_pr_help_end_page(f, y, j);
     return;
    }
-   else if (*(b->bf[y].s + i) == HNF)
+   else if (mark == HNF)
    {
-    for (k = j, i++; b->bf[y].s[i] != ':' && i < b->bf[y].len &&
-      j < COL_NUM_ON_SCREEN_RIGHT; i++, j++)
-     e_pr_char(f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j + 1,
-       y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1, *(b->bf[y].s + i), s->fb->hb.fb);
-#ifdef NEWSTYLE
-    if (WpeIsXwin())
-     e_make_xrect(f->a.x-NUM_COLS_OFF_SCREEN_LEFT+k+1, y-NUM_LINES_OFF_SCREEN_TOP+f->a.y+1,
-       f->a.x-NUM_COLS_OFF_SCREEN_LEFT+j, y-NUM_LINES_OFF_SCREEN_TOP+f->a.y+1, 0);
-#endif
-    for (; b->bf[y].s[i] != HED && i < b->bf[y].len &&
-      j < COL_NUM_ON_SCREEN_RIGHT; i++, j++)
-     e_pr_char(f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j + 1,
-       y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1, *(b->bf[y].s + i), frb);
-    for (i++; b->bf[y].s[i] != HED && i < b->bf[y].len &&
-      j < COL_NUM_ON_SCREEN_RIGHT; i++, j++)
-     e_pr_char(f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j + 1,
-       y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1, ' ', frb);
-    for (; b->bf[y].s[i] != '.' && i < b->bf[y].len &&
-      j < COL_NUM_ON_SCREEN_RIGHT; i++, j++)
-     e_pr_char(f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j + 1,
-       y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1, ' ', frb);
-    j--;
+    e_pr_help_file_link(f, y, frb, &i, &j);
     continue;
    }
-   else if (*(b->bf[y].s + i) == HED) {  j--;  continue;  }
+   else if (mark == HED) {  j--;  continue;  }
   }
-  if (*(b->bf[y].s + i) == WPE_TAB)
+  if (wpe_row_byte(b, y, i) == WPE_TAB)
    for (k = f->ed->tabn - j % f->ed->tabn; k > 1 &&
      j < NUM_COLS_ON_SCREEN + NUM_COLS_OFF_SCREEN_LEFT - 2; k--, j++)
     e_pr_char(f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j + 1, y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1,
       ' ', frb);
-  else if (*(b->bf[y].s + i) < ' ')
+  else if (wpe_row_byte(b, y, i) < ' ')
   {
    e_pr_char(f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j +1, y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1,
      '^', frb);
    if (++j >= COL_NUM_ON_SCREEN_RIGHT) return;
   }
-  if (*(b->bf[y].s + i) == WPE_TAB)
+  if (wpe_row_byte(b, y, i) == WPE_TAB)
    e_pr_char(f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j + 1, y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1,                  ' ', frb);
-  else if (*(b->bf[y].s + i) < ' ' && j < COL_NUM_ON_SCREEN_RIGHT)
+  else if (wpe_row_byte(b, y, i) < ' ' && j < COL_NUM_ON_SCREEN_RIGHT)
    e_pr_char(f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j + 1, y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1,
-     *(b->bf[y].s + i) + 'A' - 1, frb);
+     wpe_row_byte(b, y, i) + 'A' - 1, frb);
   else
   {
-   unsigned char uc = (unsigned char) *(b->bf[y].s + i);
+   unsigned char uc = (unsigned char) wpe_row_byte(b, y, i);
    if (uc >= 0xC0 && uc < 0xFE)
    {
     /* UTF-8 lead byte: one glyph, the bytes the keys step over */
     int wc, cw;
-    int nb = e_utf8_glyph_at(b->bf[y].s + i, b->bf[y].len - i, &wc, &cw);
+    int nb = wpe_row_glyph_at(b, y, i, &wc, &cw);
     if (wc != 0)
     {
      int sx = f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j + 1;
@@ -3360,11 +3428,11 @@ void e_pr_line(int y, FENSTER *f)
    }
    else
     e_pr_char(f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j + 1,
-      y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1, *(b->bf[y].s + i), frb);
+      y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1, wpe_row_byte(b, y, i), frb);
   }
  }
 
- if ((i == b->bf[y].len) && (f->ed->edopt & ED_SHOW_ENDMARKS) &&
+ if ((i == wpe_row_len(b, y)) && (f->ed->edopt & ED_SHOW_ENDMARKS) &&
    (DTMD_ISMARKABLE(f->dtmd)) && (j < COL_NUM_ON_SCREEN_RIGHT))
  {
   if ((y < s->mark_end.y && ( y > s->mark_begin.y ||
@@ -3372,7 +3440,7 @@ void e_pr_line(int y, FENSTER *f)
     (y == s->mark_end.y && i < s->mark_end.x && ( y > s->mark_begin.y ||
     (y == s->mark_begin.y && i >= s->mark_begin.x) ) ) )
   {
-   if (*(b->bf[y].s + i) == WPE_WR)
+   if (wpe_row_ends_line(b, y))
     e_pr_char(f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j + 1, y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1,
       PWR, s->fb->ez.fb);
    else
@@ -3381,7 +3449,7 @@ void e_pr_line(int y, FENSTER *f)
   }
   else
   {
-   if (*(b->bf[y].s + i) == WPE_WR)
+   if (wpe_row_ends_line(b, y))
     e_pr_char(f->a.x - NUM_COLS_OFF_SCREEN_LEFT + j + 1, y - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1,
       PWR, s->fb->et.fb);
    else
@@ -3394,7 +3462,7 @@ void e_pr_line(int y, FENSTER *f)
 #ifdef DEBUGGER
  /* End-of-line LSP inlay hints, when the file has no syntax highlighting (this
     plain painter); the syntax painter e_pr_c_line hooks the same helper. */
- if (i == b->bf[y].len)
+ if (i == wpe_row_len(b, y))
  {
   extern void e_pr_inlay_eol(FENSTER *f, int y, int *jp, int frb);
   e_pr_inlay_eol(f, y, &j, s->fb->et.fb);

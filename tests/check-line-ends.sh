@@ -101,7 +101,7 @@ serialisers() {
         # a function handed the rows as a list of lines reads them as well
         if (name != "") { flush(); fn = name; has_bf = (out ~ /[*]const[ \t]*[*][ \t]*lines/); stores = 0 }
       }
-      if (out ~ /bf\[/) has_bf = 1
+      if (out ~ /bf\[/ || out ~ /wpe_row_(byte|bytes|text|from|view|stored|len|nrc|cstr|ends_line|glyph_at)[ \t]*\(/) has_bf = 1
       s = out
       while (match(s, /(putc|fputc)[ \t]*[(][ \t]*(WPE_WR|WPE_CR|\047\\n\047|\047\\r\047)/)) {
         stores++; s = substr(s, RSTART + RLENGTH)
@@ -178,6 +178,32 @@ int fake_row_terminator(BUFFER *b, int y)
  return(0);
 }
 EOF
+  cat > "$WORK/we_fake3.c" <<'EOF'
+/* the same, reading the rows through the shared readers only */
+int fake_rows_by_readers(BUFFER *b, char *out)
+{
+ int y, n = 0;
+
+ for (y = 0; y < b->mxlines; y++)
+ {
+  memcpy(out + n, wpe_row_text(b, y, 0), wpe_row_len(b, y));
+  n += wpe_row_len(b, y);
+  out[n++] = '\n';
+ }
+ return(n);
+}
+
+int fake_row_length_only(BUFFER *b, int y)
+{
+ return(wpe_row_len(b, y) + 1);
+}
+EOF
+  serialisers "$WORK/we_fake3.c" > "$WORK/fake3"
+  grep -q '^we_fake3.c fake_rows_by_readers 1$' "$WORK/fake3" &&
+  ! grep -q 'fake_row_length_only' "$WORK/fake3" || {
+    echo "check-line-ends: FAIL (selftest: a serialiser that reads rows through the readers is not seen)"
+    exit $BAD
+  }
   serialisers "$WORK/we_fake.c" | grep -q '^we_fake.c fake_rows_to_bytes 1$' || {
     echo "check-line-ends: FAIL (selftest: the scan does not see a blind serialiser)"
     exit $BAD

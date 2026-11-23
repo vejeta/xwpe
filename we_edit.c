@@ -7,6 +7,7 @@
 
 #include "messages.h"
 #include "edit.h"
+#include "we_rowread.h"
 #include "makro.h"
 #include "we_fdloop.h"
 #include "we_buffer.h"
@@ -346,17 +347,17 @@ BUFFER *e_p_w_buffer = NULL;
 /**
  * e_line_make_hard_empty - Turn an empty line into an empty line that ends
  * with a line break.
- * @l: a line of a fresh buffer.
+ * @b: a fresh buffer; @y: its row to turn.
  *
  * A new file and the clipboard start with one such line, so the first key
  * typed and the file written both see a line, as they always did.
  */
-void e_line_make_hard_empty(STRING *l)
+void e_line_make_hard_empty(BUFFER *b, int y)
 {
- l->s[0] = WPE_WR;
- l->s[1] = '\0';
- l->len = 0;
- l->nrc = 1;
+ b->bf[y].s[0] = WPE_WR;
+ b->bf[y].s[1] = '\0';
+ b->bf[y].len = 0;
+ b->bf[y].nrc = 1;
 }
 
 /**
@@ -506,7 +507,7 @@ static void e_edit_drop_fresh_line(FENSTER *f)
 {
  BUFFER *b = f->b;
 
- if (b->mxlines > 1 && b->bf[b->mxlines - 1].s[0] == '\0')
+ if (b->mxlines > 1 && wpe_row_byte(b, b->mxlines - 1, 0) == '\0')
   e_buffer_delete_lines(b, b->mxlines - 1, 1, E_BUFFER_STEP_COVERED);
  e_buffer_history_drop(b);
  f->save = 0;
@@ -754,7 +755,7 @@ static int e_edit_open(ECNT *cn, char *filename, int view, int *err)
   f->filemode = 0600;
 #endif
   e_buffer_mark_view(f->b);
-  e_line_make_hard_empty(&f->b->bf[0]);
+  e_line_make_hard_empty(f->b, 0);
   return(0);
  }
  if (strcmp(file,"") == 0)
@@ -899,7 +900,7 @@ static int e_edit_open(ECNT *cn, char *filename, int view, int *err)
  }
  else
  {
-  e_line_make_hard_empty(&f->b->bf[0]);
+  e_line_make_hard_empty(f->b, 0);
   if (ftype == E_EDIT_A_FILE)
    e_eol_buffer_fresh(f->b, cn);        /* a new file takes the default style */
  }
@@ -1186,8 +1187,8 @@ static void e_backspace_empty_row(BUFFER *b, SCHIRM *s)
  e_del_line(b->b.y, b, s);
  if (row_above < 0)
   row_above = 0;
- e_buffer_cursor_set(b, row_above, b->bf[row_above].len);
- if (b->bf[row_above].s[b->bf[row_above].len] == '\0')
+ e_buffer_cursor_set(b, row_above, wpe_row_len(b, row_above));
+ if (wpe_row_byte(b, row_above, wpe_row_len(b, row_above)) == '\0')
   e_buffer_cursor_step(b, -1);
 }
 
@@ -1217,8 +1218,8 @@ static void e_backspace_at_row_start(FENSTER *f, BUFFER *b, SCHIRM *s)
  POINT at_key = b->b;
  int row = b->b.y - 1;
 
- e_buffer_cursor_set(b, row, b->bf[row].len);
- if (b->bf[row].s[b->bf[row].len] == '\0')
+ e_buffer_cursor_set(b, row, wpe_row_len(b, row));
+ if (wpe_row_byte(b, row, wpe_row_len(b, row)) == '\0')
   e_buffer_cursor_step(b, -1);
  if (e_window_auto_indents(f))
   e_backspace_a_ind(b, s, at_key);
@@ -1385,7 +1386,7 @@ int e_eingabe(ECNT *e)
    }
    else if (b->b.y > 0 || b->b.x > 0)
    {
-    if (b->bf[b->b.y].len == 0)
+    if (wpe_row_len(b, b->b.y) == 0)
      e_backspace_empty_row(b, s);
     else if (b->b.x > 0)
      e_backspace_in_row(f, b, s);
@@ -1410,8 +1411,8 @@ int e_eingabe(ECNT *e)
     e_selection_delete(f);
     e_schirm(f, 1);
    }
-   else if (*(b->bf[b->b.y].s + b->b.x) != '\0' &&
-     (b->b.y < b->mxlines-1 || *(b->bf[b->b.y].s + b->b.x) != WPE_WR))
+   else if (wpe_row_byte(b, b->b.y, b->b.x) != '\0' &&
+     (b->b.y < b->mxlines-1 || wpe_row_byte(b, b->b.y, b->b.x) != WPE_WR))
    {
     e_del_nchar(b, s, b->b.x, b->b.y, e_char_bytes_at(b, b->b.x, b->b.y));
     e_schirm(f, 1);
@@ -1479,7 +1480,7 @@ weiter:
  */
 static int e_at_end_of_text(BUFFER *b)
 {
- return(b->b.y >= b->mxlines - 1 && b->b.x >= b->bf[b->b.y].len);
+ return(b->b.y >= b->mxlines - 1 && b->b.x >= wpe_row_len(b, b->b.y));
 }
 
 /**
@@ -1497,12 +1498,12 @@ static void e_delete_word_right(BUFFER *b, SCHIRM *s)
 
  if (e_at_end_of_text(b))
   return;
- if (b->b.x < b->bf[b->b.y].len)
+ if (b->b.x < wpe_row_len(b, b->b.y))
  {
-  next = e_su_lblk(b->b.x, (char *)b->bf[b->b.y].s);
+  next = e_su_lblk(b->b.x, (char *)wpe_row_bytes(b, b->b.y, NULL));
   e_del_nchar(b, s, b->b.x, b->b.y, next - b->b.x);
  }
- else if (b->bf[b->b.y].s[b->b.x] == WPE_WR)
+ else if (wpe_row_byte(b, b->b.y, b->b.x) == WPE_WR)
   e_del_nchar(b, s, b->b.x, b->b.y, 1);
  else
   e_buffer_cursor_set(b, b->b.y + 1, 0);
@@ -1519,7 +1520,7 @@ static void e_delete_word_right(BUFFER *b, SCHIRM *s)
  */
 static void e_delete_to_end_of_row(BUFFER *b, SCHIRM *s)
 {
- int n = b->bf[b->b.y].len - b->b.x;
+ int n = wpe_row_len(b, b->b.y) - b->b.x;
 
  if (n <= 0)
   return;
@@ -1562,7 +1563,7 @@ static void e_cursor_left(BUFFER *b)
  if (b->b.x > 0)
   e_buffer_cursor_step(b, -1);
  else if (y > 0)
-  e_buffer_cursor_set(b, y - 1, b->bf[y - 1].len);
+  e_buffer_cursor_set(b, y - 1, wpe_row_len(b, y - 1));
 }
 
 /**
@@ -1573,7 +1574,7 @@ static void e_cursor_right(BUFFER *b)
 {
  int y = b->b.y;
 
- if (b->b.x < b->bf[y].len)
+ if (b->b.x < wpe_row_len(b, y))
   e_buffer_cursor_step(b, 1);
  else if (y < b->mxlines - 1)
   e_buffer_cursor_set(b, y + 1, 0);
@@ -1588,9 +1589,9 @@ static void e_cursor_word_left(BUFFER *b)
  int y = b->b.y;
 
  if (b->b.x <= 0 && y > 0)
-  e_buffer_cursor_set(b, y - 1, b->bf[y - 1].len);
+  e_buffer_cursor_set(b, y - 1, wpe_row_len(b, y - 1));
  else if (b->b.x > 0)
-  e_buffer_cursor_set(b, y, e_su_rblk(b->b.x - 1, (char *)b->bf[y].s));
+  e_buffer_cursor_set(b, y, e_su_rblk(b->b.x - 1, (char *)wpe_row_bytes(b, y, NULL)));
 }
 
 /**
@@ -1601,10 +1602,10 @@ static void e_cursor_word_right(BUFFER *b)
 {
  int y = b->b.y;
 
- if (b->b.x >= b->bf[y].len && y < b->mxlines - 1)
+ if (b->b.x >= wpe_row_len(b, y) && y < b->mxlines - 1)
   e_buffer_cursor_set(b, y + 1, 0);
- else if (b->b.x < b->bf[y].len)
-  e_buffer_cursor_set(b, y, e_su_lblk(b->b.x, (char *)b->bf[y].s));
+ else if (b->b.x < wpe_row_len(b, y))
+  e_buffer_cursor_set(b, y, e_su_lblk(b->b.x, (char *)wpe_row_bytes(b, y, NULL)));
 }
 
 /**
@@ -1618,7 +1619,7 @@ static void e_cursor_screen_bottom_end(FENSTER *f)
 
  if (LINE_NUM_ON_SCREEN_BOTTOM < b->mxlines)
   y = LINE_NUM_ON_SCREEN_BOTTOM - 1;
- e_buffer_cursor_set(b, y, b->bf[y].len);
+ e_buffer_cursor_set(b, y, wpe_row_len(b, y));
 }
 
 /**
@@ -1777,7 +1778,7 @@ int e_tst_cur(int c, ECNT *e)
 	 break;
       case CBDO:
       case CBDO+512:
-	 e_buffer_cursor_set(b, b->mxlines - 1, b->bf[b->mxlines - 1].len);
+	 e_buffer_cursor_set(b, b->mxlines - 1, wpe_row_len(b, b->mxlines - 1));
 	 e_schirm(f, 1);
 	 break;
       case CBUP:
@@ -1827,7 +1828,7 @@ int e_tst_cur(int c, ECNT *e)
 	 break;
       case ENDE:
       case ENDE+512:
-	 e_buffer_cursor_set(b, b->b.y, b->bf[b->b.y].len);
+	 e_buffer_cursor_set(b, b->b.y, wpe_row_len(b, b->b.y));
 	 break;
       default:
 	 moved = 0;
@@ -2141,9 +2142,9 @@ static void e_help_marks_delete(BUFFER *b, SCHIRM *s)
 {
  int i = 0;
 
- while (i < b->bf[b->b.y].len)
+ while (i < wpe_row_len(b, b->b.y))
  {
-  if (!e_is_help_mark(b->bf[b->b.y].s[i]))
+  if (!e_is_help_mark(wpe_row_byte(b, b->b.y, i)))
    i++;
   else if (e_del_nchar(b, s, i, b->b.y, 1) == E_CHAR_REFUSED)
    return;
@@ -2387,8 +2388,8 @@ int FindFirstNospaceChar(BUFFER *b, int line)
 {
   int k;
   /* advance x while char[k] == space() */
-  for(k = 0; k < b->bf[line].len; k++) {
-    if(!isspace(b->bf[line].s[k])) {
+  for(k = 0; k < wpe_row_len(b, line); k++) {
+    if(!isspace(wpe_row_byte(b, line, k))) {
       return k;
     }
   }
@@ -2400,11 +2401,11 @@ int GetXOfCharNum(BUFFER *b, int line, int char_num)
 {
    int x, k;
    
-   for(x = 0, k = 0; k < b->bf[line].len; k++) {
+   for(x = 0, k = 0; k < wpe_row_len(b, line); k++) {
      if(k == char_num) {
        return x;
      }
-     x = ((b->bf[line].s[k] == '\t') ?
+     x = ((wpe_row_byte(b, line, k) == '\t') ?
           (x / b->cn->tabn + 1) * b->cn->tabn : x + 1);
    }
    /* return 0 to secure result interpretation */
@@ -2416,8 +2417,8 @@ int GetCharNumOfX(BUFFER *b, int line, int char_x)
 {
    int x, k, next_x;
    
-   for(x = 0, k = 0; k < b->bf[line].len; k++) {
-     next_x = ((b->bf[line].s[k] == '\t') ?
+   for(x = 0, k = 0; k < wpe_row_len(b, line); k++) {
+     next_x = ((wpe_row_byte(b, line, k) == '\t') ?
           (x / b->cn->tabn + 1) * b->cn->tabn : x + 1);
      if(next_x > char_x) {
        return x;
@@ -2541,9 +2542,9 @@ static void e_tab_a_ind_plan(BUFFER *b, ETabPlan *p)
 
    /* are there nospace chars under and after cursor pos */
    do_auto_indent = 1;
-   for (k = GetCharNumOfX(b, line, b->b.x); k < b->bf[line].len; k++)
+   for (k = GetCharNumOfX(b, line, b->b.x); k < wpe_row_len(b, line); k++)
    {
-    if (!isspace(b->bf[line].s[k]))
+    if (!isspace(wpe_row_byte(b, line, k)))
     {
      /* yes, there are */
      do_auto_indent = 0;
@@ -2554,7 +2555,7 @@ static void e_tab_a_ind_plan(BUFFER *b, ETabPlan *p)
    {
     /* erase all tail spaces */
     p->erase = 1;
-    p->erase_n = b->bf[line].len - b->b.x;
+    p->erase_n = wpe_row_len(b, line) - b->b.x;
    }
   }
   else
@@ -2567,11 +2568,11 @@ static void e_tab_a_ind_plan(BUFFER *b, ETabPlan *p)
  {
   /* there are only space chars in the line */
   do_auto_indent = 1;
-  if (b->bf[line].len > 0)
+  if (wpe_row_len(b, line) > 0)
   {
    /* erase all tail spaces */
    p->erase = 1;
-   p->erase_n = b->bf[line].len - b->b.x;
+   p->erase_n = wpe_row_len(b, line) - b->b.x;
   }
  }
 
@@ -2654,7 +2655,7 @@ static int e_char_is_blank_at(BUFFER *b, int x, int y)
 {
  if (e_char_bytes_at(b, x, y) != E_CHAR_ONE_BYTE)
   return(0);
- return(isspace(b->bf[y].s[x]) != 0);
+ return(isspace(wpe_row_byte(b, y, x)) != 0);
 }
 
 /* The last deletion of Backspace with auto-indent takes the character at
@@ -2689,12 +2690,12 @@ static void e_del_a_ind_plan(BUFFER *b, EDelAIndPlan *p)
  p->blanks = 0;
  if (y > 0)
  {
-  for (i = 0; i < b->bf[y].len && i < x && isspace(b->bf[y].s[i]); i++)
+  for (i = 0; i < wpe_row_len(b, y) && i < x && isspace(wpe_row_byte(b, y, i)); i++)
    ;
   if (i == x && e_char_is_blank_at(b, x, y))
   {
    for (j = 0, i = 0; j <= x; j++)
-    i = b->bf[y].s[j] == '\t' ? (i / b->cn->tabn + 1) * b->cn->tabn : i + 1;
+    i = wpe_row_byte(b, y, j) == '\t' ? (i / b->cn->tabn + 1) * b->cn->tabn : i + 1;
    if (i != j)
    {
     p->reindent = 1;
@@ -2704,9 +2705,9 @@ static void e_del_a_ind_plan(BUFFER *b, EDelAIndPlan *p)
    }
    for (j = y - 1; j >= 0; j--)
    {
-    for (i = 0, k = 0; k < b->bf[j].len && isspace(b->bf[j].s[k]); k++)
-     i = b->bf[j].s[k] == '\t' ? (i / b->cn->tabn + 1) * b->cn->tabn : i + 1;
-    if (k < b->bf[j].len && b->bf[j].s[k] != '#' && i <= x)
+    for (i = 0, k = 0; k < wpe_row_len(b, j) && isspace(wpe_row_byte(b, j, k)); k++)
+     i = wpe_row_byte(b, j, k) == '\t' ? (i / b->cn->tabn + 1) * b->cn->tabn : i + 1;
+    if (k < wpe_row_len(b, j) && wpe_row_byte(b, j, k) != '#' && i <= x)
     {
      i = x - i + 1;
      x -= i - 1;
@@ -2793,7 +2794,7 @@ static int e_row_byte_within(BUFFER *b, int y, int k, int len)
 {
  if (k >= len)
   return('\0');
- return(b->bf[y].s[k]);
+ return(wpe_row_byte(b, y, k));
 }
 
 /**
@@ -2813,14 +2814,14 @@ static int e_car_a_ind_width(BUFFER *b, int y, int head_len)
  do
  {
   j--;
-  len = b->bf[j].len;
+  len = wpe_row_len(b, j);
   if (j == y)
    len = head_len;
   for (i = 0, k = 0;
-    k < len && (isspace(b->bf[j].s[k]) || e_row_byte_within(b, j, i, len) == '{'); k++)
-   i = b->bf[j].s[k] == '\t' ? (i / b->cn->tabn + 1) * b->cn->tabn : i + 1;
+    k < len && (isspace(wpe_row_byte(b, j, k)) || e_row_byte_within(b, j, i, len) == '{'); k++)
+   i = wpe_row_byte(b, j, k) == '\t' ? (i / b->cn->tabn + 1) * b->cn->tabn : i + 1;
  } while (j > 0 && e_row_byte_within(b, j, k, len) == '#');
- if (k == len && k > 0 && b->bf[j].s[k-1] == '{')
+ if (k == len && k > 0 && wpe_row_byte(b, j, k - 1) == '{')
   i--;
  return(i);
 }
@@ -2928,8 +2929,8 @@ static int e_window_auto_indents(FENSTER *f)
  */
 static int e_car_ret_head_len(BUFFER *b)
 {
- if (b->b.x > b->bf[b->b.y].len)
-  return(b->bf[b->b.y].len);
+ if (b->b.x > wpe_row_len(b, b->b.y))
+  return(wpe_row_len(b, b->b.y));
  return(b->b.x);
 }
 
@@ -2950,9 +2951,9 @@ static void e_car_ret_pieces(BUFFER *b, SCHIRM *s, int top, void *plan)
 {
  ECarRetPlan *p = plan;
 
- if (p->trim_row >= 0 && b->bf[b->b.y].len > 0)
+ if (p->trim_row >= 0 && wpe_row_len(b, b->b.y) > 0)
  {
-  e_del_nchar(b, s, 0, b->b.y, b->bf[b->b.y].len);
+  e_del_nchar(b, s, 0, b->b.y, wpe_row_len(b, b->b.y));
   e_buffer_cursor_set(b, b->b.y, 0);
  }
  if (e_car_ret_split(b, s) != E_BUFFER_OK || p->indent <= 0)
@@ -2980,10 +2981,10 @@ static int e_auto_indent_pending_row(BUFFER *b)
  if (b->f == NULL || b->f->ed == NULL || !(b->f->ed->edopt & ED_TRIM_AUTO_INDENT))
   return(-1);
  mark = b->f->s->ai;
- if (mark.y < 0 || mark.y >= b->mxlines || b->bf[mark.y].len != mark.x)
+ if (!wpe_row_has(b, mark.y) || wpe_row_len(b, mark.y) != mark.x)
   return(-1);
  for (i = 0; i < mark.x; i++)
-  if (b->bf[mark.y].s[i] != ' ' && b->bf[mark.y].s[i] != '\t')
+  if (wpe_row_byte(b, mark.y, i) != ' ' && wpe_row_byte(b, mark.y, i) != '\t')
    return(-1);
  return(mark.y);
 }
@@ -3078,8 +3079,8 @@ static void e_auto_indent_take_off(BUFFER *b, SCHIRM *s)
  if (y < 0 || b->b.y == y)
   return;
  e_buffer_mark_unset(b, E_BUFFER_MARK_AUTO_INDENT);
- if (b->bf[y].len > 0)
-  e_del_nchar(b, s, 0, y, b->bf[y].len);
+ if (wpe_row_len(b, y) > 0)
+  e_del_nchar(b, s, 0, y, wpe_row_len(b, y));
 }
 
 /**
@@ -3160,7 +3161,7 @@ static int e_selection_bounds(FENSTER *f, POINT *begin, POINT *end)
  if (end->y >= b->mxlines)
  {
   end->y = b->mxlines - 1;
-  end->x = b->bf[end->y].len;
+  end->x = wpe_row_len(b, end->y);
  }
  if (end->y < begin->y || (end->y == begin->y && end->x <= begin->x))
   return(0);
@@ -3207,7 +3208,9 @@ static int e_selection_takes_char(FENSTER *f, int c)
 /** e_sel_row_bytes - The bytes of row @y of @b, its line break included. */
 static int e_sel_row_bytes(BUFFER *b, int y)
 {
- return(b->bf[y].len + (b->bf[y].s[b->bf[y].len] == WPE_WR ? 1 : 0));
+ if (wpe_row_ends_line(b, y))
+  return(wpe_row_len(b, y) + 1);
+ return(wpe_row_len(b, y));
 }
 
 /**
@@ -3419,13 +3422,13 @@ static int e_cursor_visual_adjust(FENSTER *f)
 
  for (i = j = 0; i < b->b.x; i++)
  {
-  unsigned char uc = (unsigned char) *(b->bf[b->b.y].s + i);
+  unsigned char uc = (unsigned char) wpe_row_byte(b, b->b.y, i);
   if (uc == WPE_TAB)
    j += (f->ed->tabn - ((j + i) % f->ed->tabn) - 1);
   else if (uc < ' ') j++;
   else if (UTF8_IS_LEAD(uc))
-   i += e_utf8_visual_step((unsigned char *)b->bf[b->b.y].s, i,
-                           b->bf[b->b.y].len, &j);
+   i += e_utf8_visual_step((unsigned char *)wpe_row_bytes(b, b->b.y, NULL), i,
+                           wpe_row_len(b, b->b.y), &j);
  }
  return j;
 }
@@ -3466,8 +3469,8 @@ static void e_cursor_keep_on_text(BUFFER *b)
 
  if (e_buffer_cursor_fits(b))
   return;
- if (b->b.y >= 0 && b->b.y < b->mxlines)
-  len = b->bf[b->b.y].len;
+ if (wpe_row_has(b, b->b.y))
+  len = wpe_row_len(b, b->b.y);
  wpe_buffer_trace("buffer position off a glyph y=%d x=%d len=%d", b->b.y, b->b.x, len);
  e_buffer_cursor_set(b, b->b.y, b->b.x);
 }
@@ -3511,19 +3514,17 @@ void e_cursor(FENSTER *f, int sw)
  e_cursor_keep_on_text(b);
  for (i = j = 0; i < b->b.x; i++)
  {
-  unsigned char uc = (unsigned char) *(b->bf[b->b.y].s + i);
+  unsigned char uc = (unsigned char) wpe_row_byte(b, b->b.y, i);
   if (uc == WPE_TAB)
    j += (f->ed->tabn - ((j + i) % f->ed->tabn) - 1);
   else if (uc < ' ') j++;
   else if (UTF8_IS_LEAD(uc))
-   i += e_utf8_visual_step((unsigned char *)b->bf[b->b.y].s, i,
-                           b->bf[b->b.y].len, &j);
+   i += e_utf8_visual_step((unsigned char *)wpe_row_bytes(b, b->b.y, NULL), i,
+                           wpe_row_len(b, b->b.y), &j);
   if (f->dtmd == DTMD_HELP)
   {
-   if (b->bf[b->b.y].s[i] == HBG || b->bf[b->b.y].s[i] == HED ||
-     b->bf[b->b.y].s[i] == HHD || b->bf[b->b.y].s[i] == HFE ||
-     b->bf[b->b.y].s[i] == HFB || b->bf[b->b.y].s[i] == HBB ||
-     b->bf[b->b.y].s[i] == HNF)
+   if (e_is_help_mark(wpe_row_byte(b, b->b.y, i)) ||
+     wpe_row_byte(b, b->b.y, i) == HNF)
     j -= 2;
   }
  }
@@ -3565,7 +3566,7 @@ void e_cursor(FENSTER *f, int sw)
   else if (b->b.x + j - s->c.x >= NUM_COLS_ON_SCREEN - 1)
    (s->c.x) = b->b.x + j - (NUM_COLS_ON_SCREEN)/2 ;
   if (s->c.x < 0) s->c.x = 0 ;
-  else if (s->c.x >= b->bf[b->b.y].len + j) s->c.x = b->bf[b->b.y].len + j;
+  else if (s->c.x >= wpe_row_len(b, b->b.y) + j) s->c.x = wpe_row_len(b, b->b.y) + j;
   e_schirm(f, sw);
  }
  if (e_buffer_find_mark_erase_due(b))
@@ -3614,8 +3615,8 @@ static Undo *e_char_record(int sw, BUFFER *b, int x, int y, int n);
  */
 static void e_row_remeasure(BUFFER *b, int y)
 {
- b->bf[y].len = e_str_len(b->bf[y].s);
- b->bf[y].nrc = e_str_nrc(b->bf[y].s);
+ b->bf[y].len = e_str_len(wpe_row_bytes(b, y, NULL));
+ b->bf[y].nrc = e_str_nrc(wpe_row_text(b, y, 0));
 }
 
 /*   delete N chars from buffer */
@@ -3631,28 +3632,28 @@ int e_del_nchar(BUFFER *b, SCHIRM *s, int x, int y, int n)
  e_char_count_change(b, n);
  rec = e_char_record('r', b, x, y, n);
  e_buffer_cover_begin(b, rec);
- len = b->bf[y].len;
- if (*(b->bf[y].s+len) == WPE_WR) len++;
- for (j = x; j <= len - n; ++j) *(b->bf[y].s+j) = *(b->bf[y].s+j+n)
+ len = wpe_row_len(b, y);
+ if (wpe_row_ends_line(b, y)) len++;
+ for (j = x; j <= len - n; ++j) *(b->bf[y].s+j) = wpe_row_byte(b, y, j+n)
   ;
  if (len > n)
   e_row_remeasure(b, y);
  e_buffer_text_removed(b, y, x, n);
 
  if (len <= n) e_del_line(y, b, s);
- else if (y < b->mxlines - 1 && *(b->bf[y].s+len-n-1) != WPE_WR )
+ else if (y < b->mxlines - 1 && wpe_row_byte(b, y, len-n-1) != WPE_WR )
  {
   /* A next row that fits the room left, exactly filling it included, comes
      up whole with its line break; a longer one only up to its last word. */
-  if (b->mx.x+n-len >= b->bf[y+1].len)
-   i = b->bf[y+1].len;
+  if (b->mx.x+n-len >= wpe_row_len(b, y+1))
+   i = wpe_row_len(b, y+1);
   else
-   i = e_su_rblk(b->mx.x+n-len, b->bf[y+1].s);
-  if (b->bf[y+1].s[i] == WPE_WR) i++;
+   i = e_su_rblk(b->mx.x+n-len, (char *)wpe_row_bytes(b, y+1, NULL));
+  if (wpe_row_byte(b, y+1, i) == WPE_WR) i++;
   if (i > 0)
   {
    for (j = 0; j < i; ++j)
-    *(b->bf[y].s+len-n+j) = *(b->bf[y+1].s+j);
+    *(b->bf[y].s+len-n+j) = wpe_row_byte(b, y+1, j);
    *(b->bf[y].s+len-n+i) = '\0';
    e_buffer_row_head_joined(b, y, len - n, i);
    e_del_nchar(b, s, 0, y+1, i);
@@ -3688,27 +3689,24 @@ int e_del_nchar(BUFFER *b, SCHIRM *s, int x, int y, int n)
  */
 static int e_ins_wrap_tail_down(BUFFER *b, int ya, int c)
 {
- STRING *row, *below;
- int tail, hard;
+ int tail, hard, k;
 
  if (e_buffer_insert_blank(b, ya + 1, E_BUFFER_STEP_COVERED) != E_BUFFER_OK)
  {
   wpe_buffer_say_nomem(b, "the line wrap");
   return(E_BUFFER_NOMEM);
  }
- row = &b->bf[ya];
- below = &b->bf[ya + 1];
- hard = (row->s[row->len] == WPE_WR);
- tail = row->len - c;
- memcpy(below->s, row->s + c, (size_t) tail);
- below->s[tail] = '\0';
+ hard = wpe_row_ends_line(b, ya);
+ tail = wpe_row_len(b, ya) - c;
+ for (k = 0; k < tail; k++)
+  b->bf[ya + 1].s[k] = wpe_row_byte(b, ya, c + k);
+ b->bf[ya + 1].s[tail] = '\0';
  if (hard)
  {
-  below->s[tail] = WPE_WR;
-  below->s[tail + 1] = '\0';
+  b->bf[ya + 1].s[tail] = WPE_WR;
+  b->bf[ya + 1].s[tail + 1] = '\0';
  }
- below->len = e_str_len(below->s);
- below->nrc = e_str_nrc(below->s);
+ e_row_remeasure(b, ya + 1);
  return(E_BUFFER_OK);
 }
 
@@ -3721,7 +3719,7 @@ static int e_ins_tail_needs_new_row(BUFFER *b, int ya, int c)
 {
  if (c == E_INS_CUT_NONE || ya == b->mxlines - 1)
   return(1);
- return(b->bf[ya].s[b->bf[ya].len] == WPE_WR);
+ return(wpe_row_ends_line(b, ya));
 }
 
 /**
@@ -3736,7 +3734,7 @@ static int e_ins_tail_needs_new_row(BUFFER *b, int ya, int c)
  */
 static int e_ins_cut_row(BUFFER *b, SCHIRM *sch, int ya, int c)
 {
- int tail = b->bf[ya].len - c;
+ int tail = wpe_row_len(b, ya) - c;
 
  if (e_ins_tail_needs_new_row(b, ya, c))
  {
@@ -3745,7 +3743,7 @@ static int e_ins_cut_row(BUFFER *b, SCHIRM *sch, int ya, int c)
  }
  else if (tail > 0)
  {
-  if (e_ins_nchar(b, sch, b->bf[ya].s + c, 0, ya + 1, tail) == E_CHAR_REFUSED)
+  if (e_ins_nchar(b, sch, (unsigned char *)wpe_row_from(b, ya, c), 0, ya + 1, tail) == E_CHAR_REFUSED)
    return(E_BUFFER_RANGE);
  }
  b->bf[ya].s[c] = '\0';
@@ -3755,14 +3753,14 @@ static int e_ins_cut_row(BUFFER *b, SCHIRM *sch, int ya, int c)
 }
 
 /**
- * e_ins_cut_at_blank - Does the cut at @c come after a blank or a dash, the
- * places a word wrap prefers?
+ * e_ins_cut_at_blank - Does the cut of row @ya at @c come after a blank or a
+ * dash, the places a word wrap prefers?
  */
-static int e_ins_cut_at_blank(const unsigned char *row, int c)
+static int e_ins_cut_at_blank(const BUFFER *b, int ya, int c)
 {
  if (c <= 0)
   return(0);
- return(row[c - 1] == ' ' || row[c - 1] == '-');
+ return(wpe_row_byte(b, ya, c - 1) == ' ' || wpe_row_byte(b, ya, c - 1) == '-');
 }
 
 /* The top bits of a byte that continues a UTF-8 character, and their mask. */
@@ -3770,13 +3768,13 @@ static int e_ins_cut_at_blank(const unsigned char *row, int c)
 #define E_INS_UTF8_CONT_MASK 0xC0
 
 /**
- * e_ins_cut_inside_char - Would a cut at @c split a UTF-8 character?  The
- * owner's cut keeps at least one byte, so with no room for a whole first
- * character it can fall inside one.
+ * e_ins_cut_inside_char - Would a cut of row @ya at @c split a UTF-8
+ * character?  The owner's cut keeps at least one byte, so with no room for a
+ * whole first character it can fall inside one.
  */
-static int e_ins_cut_inside_char(const unsigned char *row, int c)
+static int e_ins_cut_inside_char(const BUFFER *b, int ya, int c)
 {
- return((row[c] & E_INS_UTF8_CONT_MASK) == E_INS_UTF8_CONT);
+ return((wpe_row_byte(b, ya, c) & E_INS_UTF8_CONT_MASK) == E_INS_UTF8_CONT);
 }
 
 /**
@@ -3794,15 +3792,14 @@ static int e_ins_cut_inside_char(const unsigned char *row, int c)
  */
 static int e_ins_wrap_point(BUFFER *b, int ya, int xa, int n)
 {
- const unsigned char *row = b->bf[ya].s;
  int room = E_BUFFER_ROW_TEXT_MAX(b) - n, c;
 
  if (room < E_INS_ROOM_MIN)
   return(xa);
- c = e_buffer_wrap_cut(row, room);
- if (e_ins_cut_at_blank(row, c))
+ c = e_buffer_wrap_cut(wpe_row_bytes(b, ya, NULL), room);
+ if (e_ins_cut_at_blank(b, ya, c))
   return(c);
- if (c <= xa || e_ins_cut_inside_char(row, c))
+ if (c <= xa || e_ins_cut_inside_char(b, ya, c))
   return(xa);
  return(c);
 }
@@ -3852,7 +3849,7 @@ static void e_char_record_place(Undo *rec, int x, int y)
 static int e_ins_refused_wide(BUFFER *b, int ya, int n)
 {
  wpe_buffer_trace("buffer row wider than the window y=%d len=%d n=%d width=%d",
-                  ya, b->bf[ya].len, n, b->mx.x);
+                  ya, wpe_row_len(b, ya), n, b->mx.x);
  return(1);
 }
 
@@ -3875,7 +3872,7 @@ static int e_ins_run_is_long(BUFFER *b, int n)
  */
 static int e_ins_run_refused(BUFFER *b, int ya, int n)
 {
- if (b->bf[ya].len > E_BUFFER_ROW_TEXT_MAX(b))
+ if (wpe_row_len(b, ya) > E_BUFFER_ROW_TEXT_MAX(b))
   return(e_ins_refused_wide(b, ya, n));
  if (e_ins_run_is_long(b, n) && e_buffer_covered(b))
   return(e_ins_refused_wide(b, ya, n));
@@ -3896,14 +3893,14 @@ static int e_ins_run_refused(BUFFER *b, int ya, int n)
  */
 void e_ins_point_at(BUFFER *b, int y, int off, POINT *p)
 {
- while (y < b->mxlines - 1 && off > b->bf[y].len
-        && b->bf[y].s[b->bf[y].len] != WPE_WR)
+ while (y < b->mxlines - 1 && off > wpe_row_len(b, y)
+        && !wpe_row_ends_line(b, y))
  {
-  off -= b->bf[y].len;
+  off -= wpe_row_len(b, y);
   y++;
  }
- if (off > b->bf[y].len)
-  off = b->bf[y].len;
+ if (off > wpe_row_len(b, y))
+  off = wpe_row_len(b, y);
  p->y = y;
  p->x = off;
 }
@@ -3970,16 +3967,16 @@ static void e_ins_long_run_cursor(BUFFER *b, int ya, int off)
 static int e_ins_long_run(BUFFER *b, SCHIRM *sch, const unsigned char *s,
                           int xa, int ya, int n)
 {
- STRING *row = &b->bf[ya], *lines;
+ STRING *lines;
  WpeBufferPart parts[E_INS_LONG_PARTS];
  int behind[2], k;
 
- parts[0].s = row->s;
+ parts[0].s = wpe_row_from(b, ya, 0);
  parts[0].n = xa;
  parts[1].s = s;
  parts[1].n = n;
- parts[2].s = row->s + xa;
- parts[2].n = row->len - xa + (row->s[row->len] == WPE_WR);
+ parts[2].s = wpe_row_from(b, ya, xa);
+ parts[2].n = wpe_row_len(b, ya) - xa + wpe_row_ends_line(b, ya);
  lines = e_buffer_lines_from_parts(E_BUFFER_ROW_TEXT_MAX(b), parts, E_INS_LONG_PARTS, &k);
  if (k < 0)
  {
@@ -4007,7 +4004,7 @@ static int e_ins_long_run(BUFFER *b, SCHIRM *sch, const unsigned char *s,
  */
 static int e_ins_row_overflows(BUFFER *b, int ya, int n)
 {
- return(b->bf[ya].len + n > E_BUFFER_ROW_TEXT_MAX(b));
+ return(wpe_row_len(b, ya) + n > E_BUFFER_ROW_TEXT_MAX(b));
 }
 
 /**
@@ -4021,15 +4018,14 @@ static int e_ins_row_overflows(BUFFER *b, int ya, int n)
  */
 static void e_ins_bytes_at(BUFFER *b, int ya, int xa, const unsigned char *s, int n)
 {
- unsigned char *row = b->bf[ya].s;
- int j, end = b->bf[ya].len;
+ int j, end = wpe_row_len(b, ya);
 
- if (row[end] == WPE_WR)
+ if (wpe_row_ends_line(b, ya))
   end++;
  for (j = end; j >= xa; --j)
-  row[j + n] = row[j];
+  b->bf[ya].s[j + n] = wpe_row_byte(b, ya, j);
  for (j = 0; j < n; ++j)
-  row[xa + j] = s[j];
+  b->bf[ya].s[xa + j] = s[j];
 }
 
 /**
@@ -4147,7 +4143,7 @@ int e_utf8_visual_len(unsigned char *s, int bytes)
  */
 static int e_char_bytes_at(BUFFER *b, int x, int y)
 {
- return(e_utf8_seq_len((unsigned char *)b->bf[y].s + x, b->bf[y].len - x));
+ return(e_utf8_seq_len(wpe_row_from(b, y, x), wpe_row_len(b, y) - x));
 }
 
 /**
@@ -4157,7 +4153,7 @@ static int e_char_bytes_at(BUFFER *b, int x, int y)
  */
 static int e_char_start_before(BUFFER *b, int x, int y)
 {
- return(e_utf8_char_before((unsigned char *)b->bf[y].s, x, b->bf[y].len));
+ return(e_utf8_char_before(wpe_row_bytes(b, y, NULL), x, wpe_row_len(b, y)));
 }
 
 /**
@@ -4185,7 +4181,7 @@ int e_put_char(int c, BUFFER *b, SCHIRM *s)
   return(E_CHAR_REFUSED);
  if (!e_buffer_change_fits(b, b->b.y, b->b.x, 0, "overwrite"))
   return(E_CHAR_REFUSED);
- if (b->b.x == b->bf[b->b.y].len)
+ if (b->b.x == wpe_row_len(b, b->b.y))
  {
   /* the insert leaves the cursor behind the character, on the row a
      wrap took it to: it is not stepped again */
@@ -4527,10 +4523,10 @@ static int e_undo_record_compose(Undo *next, int sw, BUFFER *b, int x, int y, in
  e_buffer_record_at(next, y, x);
  next->a.x = n;
  if (sw == 'p')
-  next->u.c = b->bf[y].s[x];
+  next->u.c = wpe_row_byte(b, y, x);
  else if (sw == 'r' || sw == 's')
  {
-  if (e_buffer_record_text(next, b->bf[y].s + x, n) != E_BUFFER_OK)
+  if (e_buffer_record_text(next, wpe_row_from(b, y, x), n) != E_BUFFER_OK)
    return(-1);
   /* For type 's' (search/replace undo), a.y must store the length
      of the OTHER string -- the one that will be re-inserted when this
@@ -5054,12 +5050,9 @@ char *e_make_postf(char *out, size_t n, const char *name, const char *pf)
  */
 static int e_syntax_state_after(BUFFER *b, int i)
 {
- int *c_sw = b->f->c_sw;
- struct wpeSyntaxRule *st = b->f->c_st;
-
- if (st->continue_column >= 0 && isspace(b->bf[i+1].s[st->continue_column]))
+ if (!e_syntax_row_continues(b, i + 1))
   return(0);
- return(e_scfbol(b->bf[i].len, c_sw[i], b->bf[i].s, st));
+ return(e_syntax_row_leaves(b, i, b->f->c_sw[i]));
 }
 
 /**

@@ -7,6 +7,7 @@
 
 #include "messages.h"
 #include "edit.h"
+#include "we_rowread.h"
 #include "we_ai.h"
 #include "we_buffer.h"
 #include "we_fmt.h"
@@ -3946,49 +3947,49 @@ int e_ed_man(char *str, FENSTER * f)
     remove(tstr);
     e_close_window(f);
   }
-  if(b->mxlines == 1 && b->bf[0].len == 0)
+  if(b->mxlines == 1 && wpe_row_len(b, 0) == 0)
   {
     e_ins_nchar(f->b, f->s, "No manual entry for ", 0, 0, 20);
     e_ins_nchar(f->b, f->s, hstr, b->b.x, b->b.y, strlen(hstr));
     e_ins_nchar(f->b, f->s, ".", b->b.x, b->b.y, 1);
   }
   for(i = 0; i < b->mxlines; i++)
-    if(b->mxlines > 1 && b->bf[i].len == 0 && (i == 0 || b->bf[i - 1].len == 0))
+    if(b->mxlines > 1 && wpe_row_len(b, i) == 0 && (i == 0 || wpe_row_len(b, i - 1) == 0))
     {
       e_buffer_delete_lines(b, i, 1, E_BUFFER_STEP_NEW);
       i--;
     }
-  for(bg = 0; bg < b->bf[0].len && isspace(b->bf[0].s[bg]); bg++);
-  if(bg == b->bf[0].len)
+  for(bg = 0; bg < wpe_row_len(b, 0) && isspace(wpe_row_byte(b, 0, bg)); bg++);
+  if(bg == wpe_row_len(b, 0))
     bg = 0;
   for(i = 0;
       i < b->mxlines &&
-      WpeStrnccmp(b->bf[i].s + bg, "\017SEE\005 \017ALSO\005", 12) &&
-      WpeStrnccmp(b->bf[i].s + bg, "SEE ALSO", 8);
+      WpeStrnccmp(wpe_row_text(b, i, bg), "\017SEE\005 \017ALSO\005", 12) &&
+      WpeStrnccmp(wpe_row_text(b, i, bg), "SEE ALSO", 8);
       i++);
   if(i < b->mxlines)
-    for(bg = 0, i++; i < b->mxlines && b->bf[i].len > 0 && bg >= 0; i++)
+    for(bg = 0, i++; i < b->mxlines && wpe_row_len(b, i) > 0 && bg >= 0; i++)
     {
       bg = 0;
-      while(b->bf[i].s[bg])
+      while(wpe_row_byte(b, i, bg) > 0)
       {
-        for(; isspace(b->bf[i].s[bg]); bg++);
-        if(!b->bf[i].s[bg])
+        for(; isspace(wpe_row_byte(b, i, bg)); bg++);
+        if(wpe_row_byte(b, i, bg) <= 0)
           continue;
         for(j = bg + 1;
-            b->bf[i].s[j] && b->bf[i].s[j] != ',' && b->bf[i].s[j] != '.' &&
-            b->bf[i].s[j] != ' ' && b->bf[i].s[j] != '(';
+            wpe_row_byte(b, i, j) > 0 && wpe_row_byte(b, i, j) != ',' && wpe_row_byte(b, i, j) != '.' &&
+            wpe_row_byte(b, i, j) != ' ' && wpe_row_byte(b, i, j) != '(';
             j++);
-        if(b->bf[i].s[j] != '(')
+        if(wpe_row_byte(b, i, j) != '(')
         {
           bg = -1;
           break;
         }
-        if(b->bf[i].s[j - 1] == 5)
+        if(wpe_row_byte(b, i, j - 1) == 5)
           e_del_nchar(b, f->s, j - 1, i, 1);
-        for(j++; b->bf[i].s[j] && b->bf[i].s[j] != ',' && b->bf[i].s[j] != '.';
+        for(j++; wpe_row_byte(b, i, j) > 0 && wpe_row_byte(b, i, j) != ',' && wpe_row_byte(b, i, j) != '.';
             j++);
-        if(b->bf[i].s[bg] == 15)
+        if(wpe_row_byte(b, i, bg) == 15)
           b->bf[i].s[bg] = HFB;
         else
         {
@@ -3999,7 +4000,7 @@ int e_ed_man(char *str, FENSTER * f)
         cc = HED;
         e_ins_nchar(b, f->s, &cc, j, i, 1);
         j++;
-        if(b->bf[i].s[j])
+        if(wpe_row_byte(b, i, j) > 0)
           j++;
         bg = j;
       }

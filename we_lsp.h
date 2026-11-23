@@ -523,7 +523,7 @@ void e_lsp_close(e_lsp_session *s);
  * didChange send it as a space (e_lsp_wire_text).  Pure -- no session, no
  * I/O -- so the serialization invariant is unit-testable.  Returns a malloc'd
  * string (caller frees) or NULL on OOM. */
-char *e_lsp_join_lines(char *const *lines, int n);
+char *e_lsp_join_lines(const char *const *lines, int n);
 
 /* Dedup gate for a pushed display document (the Metals Doctor, which the server
  * re-pushes on every build event): return 1 and adopt @body when it differs

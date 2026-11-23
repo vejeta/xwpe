@@ -34,7 +34,7 @@ int main(void)
   test_watchdog_arm("test_lsp_buffer", MAIN_GUARD_S);
  /* 1. plain lines (no terminator): one '\n' each, including a trailing one. */
  {
-  char *l[] = { "object Demo", "  def x = 1" };
+  const char *l[] = { "object Demo", "  def x = 1" };
   check("plain lines -> single newline each",
         e_lsp_join_lines(l, 2), "object Demo\n  def x = 1\n");
  }
@@ -42,21 +42,21 @@ int main(void)
  /* 2. THE REGRESSION: each line still carries its WPE_WR ('\n') terminator --
        it must be trimmed, not doubled. */
  {
-  char *l[] = { "object Demo\n", "  def x = 1\n" };
+  const char *l[] = { "object Demo\n", "  def x = 1\n" };
   check("trailing WPE_WR is not doubled",
         e_lsp_join_lines(l, 2), "object Demo\n  def x = 1\n");
  }
 
  /* 3. blank lines: empty string AND NULL both count as one empty line. */
  {
-  char *l[] = { "a", "", NULL, "b" };
+  const char *l[] = { "a", "", NULL, "b" };
   check("empty and NULL lines are blank lines",
         e_lsp_join_lines(l, 4), "a\n\n\nb\n");
  }
 
  /* 4. an all-blank buffer keeps its line count (N newlines). */
  {
-  char *l[] = { "\n", "\n", "\n" };
+  const char *l[] = { "\n", "\n", "\n" };
   check("three blank lines -> three newlines",
         e_lsp_join_lines(l, 3), "\n\n\n");
  }
@@ -66,7 +66,7 @@ int main(void)
 
  /* 6. only content up to the first terminator is taken (defensive). */
  {
-  char *l[] = { "keep\nDROP", "keep2\nDROP2" };
+  const char *l[] = { "keep\nDROP", "keep2\nDROP2" };
   check("content after the terminator is ignored",
         e_lsp_join_lines(l, 2), "keep\nkeep2\n");
  }
@@ -76,7 +76,7 @@ int main(void)
        the wire has it as a space of the same width, so the server's lines
        are the editor's rows and every column after it stays where it was. */
  {
-  char *l[] = { "a\rb", "caf\xC3\xA9 total", "z" };
+  const char *l[] = { "a\rb", "caf\xC3\xA9 total", "z" };
   char *text = e_lsp_join_lines(l, 3);
   char *wire = e_lsp_wire_text(text);
   int len = -1, ok = 1, i;

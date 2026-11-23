@@ -7,6 +7,7 @@
 
 #include "messages.h"
 #include "edit.h"
+#include "we_rowread.h"
 #include "we_clip.h"
 #include "we_buffer.h"
 #include "we_lineend.h"
@@ -178,7 +179,7 @@ static BUFFER *e_blk_shell_new(BUFFER *b)
 
  if (bn == NULL)
   return(NULL);
- e_line_make_hard_empty(&bn->bf[0]);
+ e_line_make_hard_empty(bn, 0);
  return(bn);
 }
 
@@ -389,7 +390,7 @@ int e_blck_dup(char *dup, FENSTER *f)
  {
   return(0);
  }
- strncpy(dup, &b->bf[s->mark_begin.y].s[s->mark_begin.x], i);
+ strncpy(dup, wpe_row_text(b, s->mark_begin.y, s->mark_begin.x), i);
  dup[i]=0;
  return(i);
 }
@@ -522,8 +523,7 @@ static char *e_block_to_text(BUFFER *b, SCHIRM *s)
  if (key < kay || (kay == key && kex <= kax)) return NULL;
  if ((t = malloc(cap)) == NULL) return NULL;
  for (y = kay; y <= key && y < b->mxlines; y++) {
-  const char *ls = (const char *)b->bf[y].s;
-  int ll = b->bf[y].len, a, e;
+  int ll = wpe_row_len(b, y), a, e;
   if (ll < 0) ll = 0;
   a = (y == kay) ? kax : 0;
   e = (y == key) ? kex : ll;
@@ -536,8 +536,8 @@ static char *e_block_to_text(BUFFER *b, SCHIRM *s)
    if ((nt = realloc(t, cap)) == NULL) { free(t); return NULL; }
    t = nt;
   }
-  if (ls && e > a) { memcpy(t + len, ls + a, (size_t)(e - a)); len += (size_t)(e - a); }
-  if (y < key && b->bf[y].nrc > b->bf[y].len)   /* real line end, not a wrap segment */
+  if (wpe_row_stored(b, y) && e > a) { memcpy(t + len, wpe_row_text(b, y, a), (size_t)(e - a)); len += (size_t)(e - a); }
+  if (y < key && wpe_row_nrc(b, y) > wpe_row_len(b, y))   /* real line end, not a wrap segment */
    t[len++] = '\n';
  }
  t[len] = '\0';
@@ -556,7 +556,7 @@ static int e_clip_clear(BUFFER *b0)
 {
  if (e_buffer_clear(b0) != E_BUFFER_OK)
   return(-1);
- e_line_make_hard_empty(&b0->bf[0]);
+ e_line_make_hard_empty(b0, 0);
  return(0);
 }
 
@@ -682,7 +682,7 @@ static int e_clip_is_empty(FENSTER *w0)
 {
  BUFFER *b0 = w0->b;
 
- return(b0->mxlines <= 1 && b0->bf[0].len == 0);
+ return(b0->mxlines <= 1 && wpe_row_len(b0, 0) == 0);
 }
 
 /**
@@ -824,9 +824,9 @@ int e_blck_move(FENSTER *f)
  */
 static int e_blk_line_bytes(BUFFER *b, int y)
 {
- int n = b->bf[y].len;
+ int n = wpe_row_len(b, y);
 
- if (b->bf[y].s[n] != '\0')        /* the line break */
+ if (wpe_row_byte(b, y, n) != '\0')        /* the line break */
   n++;
  return(n);
 }
@@ -849,10 +849,10 @@ static int e_blk_lands_on_itself(BUFFER *bv, BUFFER *bz, int y, const WpeBlock *
  */
 static int e_blk_column_on_line(BUFFER *b, int x, int y)
 {
- if (y < 0 || y >= b->mxlines)
+ if (!wpe_row_has(b, y))
   return(-1);
- if (x > b->bf[y].len)
-  return(b->bf[y].len);
+ if (x > wpe_row_len(b, y))
+  return(wpe_row_len(b, y));
  if (x < 0)
   return(0);
  return(x);
@@ -1062,7 +1062,7 @@ static WpeBufferPart e_blk_part(BUFFER *b, int y, int from, int upto)
   from = end;
  if (from < 0)
   from = 0;
- p.s = b->bf[y].s + from;
+ p.s = wpe_row_from(b, y, from);
  p.n = end - from;
  return(p);
 }
@@ -1104,7 +1104,8 @@ static int e_blk_put_parts(WpeBlockOp *op, BUFFER *b, int row, int n_del,
  */
 static int e_blk_row_goes_on(const WpeBlockOp *op, BUFFER *b, int r)
 {
- if (r <= 0 || r >= b->mxlines || b->bf[r - 1].s[b->bf[r - 1].len] != '\0')
+ if (r <= 0 || !wpe_row_has(b, r) ||
+   wpe_row_byte(b, r - 1, wpe_row_len(b, r - 1)) != '\0')
   return(0);
  if (b == op->bv && r >= op->k.kay && r <= op->k.key)
   return(0);
@@ -1523,10 +1524,10 @@ static POINT e_blk_point_on_rows(BUFFER *b, int y, int x, int which)
 {
  POINT p;
 
- while (y + 1 < b->mxlines && b->bf[y].s[b->bf[y].len] == '\0' &&
-        e_blk_past_row(b->bf[y].len, x, which))
+ while (y + 1 < b->mxlines && wpe_row_byte(b, y, wpe_row_len(b, y)) == '\0' &&
+        e_blk_past_row(wpe_row_len(b, y), x, which))
  {
-  x -= b->bf[y].len;
+  x -= wpe_row_len(b, y);
   y++;
  }
  p.x = x;
@@ -2197,23 +2198,25 @@ static unsigned char e_case_of(const unsigned char *s, int x, int mode)
 /**
  * e_case_line_changed - A copy of row @y of @b with the part the block
  * covers changed to case @mode.
- * @screen: the window's screen (its block); @out: receives the copy.
+ * @screen: the window's screen (its block); @lines: the copies being made,
+ * @i: the one that receives this row's copy.
  * Return: E_BUFFER_OK or E_BUFFER_NOMEM.
  */
-static int e_case_line_changed(BUFFER *b, SCHIRM *screen, int y, int mode, STRING *out)
+static int e_case_line_changed(BUFFER *b, SCHIRM *screen, int y, int mode,
+                               STRING *lines, int i)
 {
- int x, x_begin = 0, x_end = b->bf[y].len;
+ int x, x_begin = 0, x_end = wpe_row_len(b, y);
 
- if (e_buffer_line_copy(b, &b->bf[y], out) != E_BUFFER_OK)
+ if (e_buffer_row_copy(b, y, &lines[i]) != E_BUFFER_OK)
   return(E_BUFFER_NOMEM);
  if (y == screen->mark_begin.y)
   x_begin = screen->mark_begin.x;
  if (y == screen->mark_end.y)
   x_end = screen->mark_end.x;
- if (x_end > out->len)
-  x_end = out->len;
+ if (x_end > lines[i].len)
+  x_end = lines[i].len;
  for (x = x_begin; x < x_end; x++)
-  out->s[x] = e_case_of(out->s, x, mode);
+  lines[i].s[x] = e_case_of(lines[i].s, x, mode);
  return(E_BUFFER_OK);
 }
 
@@ -2229,7 +2232,7 @@ static STRING *e_case_lines_changed(BUFFER *b, SCHIRM *screen, int n, int mode)
  if (lines == NULL)
   return(NULL);
  for (i = 0; i < n; i++)
-  if (e_case_line_changed(b, screen, screen->mark_begin.y + i, mode, &lines[i]) != E_BUFFER_OK)
+  if (e_case_line_changed(b, screen, screen->mark_begin.y + i, mode, lines, i) != E_BUFFER_OK)
   {
    e_buffer_lines_free(lines, i);
    return(NULL);
@@ -2379,7 +2382,7 @@ static void e_shift_right_pieces(BUFFER *b, SCHIRM *s, int top, void *plan)
 
  for (i = e_shift_first_row(s); i <= e_shift_last_row(s); i++)
  {
-  for (j = 0; j < b->bf[i].len && isspace(b->bf[i].s[j]); j++)
+  for (j = 0; j < wpe_row_len(b, i) && isspace(wpe_row_byte(b, i, j)); j++)
    ;                              /* a row of blanks stops at its end, before its line break */
   e_ins_nchar(b, s, (unsigned char *)sh->blanks, j, i, sh->n);
   if (i == s->mark_begin.y)
@@ -2398,16 +2401,16 @@ static void e_shift_left_pieces(BUFFER *b, SCHIRM *s, int top, void *plan)
 
  for (i = e_shift_first_row(s); i <= e_shift_last_row(s); i++)
  {
-  for(j = 0; j < b->bf[i].len && isspace(b->bf[i].s[j]); j++);
+  for(j = 0; j < wpe_row_len(b, i) && isspace(wpe_row_byte(b, i, j)); j++);
   for(l = j - 1, k = 0; l >= 0 && k < n; l--)
   {
-   if(b->bf[i].s[l] == ' ') k++;
-   else if(b->bf[i].s[l] == '\t')
+   if(wpe_row_byte(b, i, l) == ' ') k++;
+   else if(wpe_row_byte(b, i, l) == '\t')
    {
     for(nn = m = 0; m < l; m++)
     {
-     if(b->bf[i].s[m] == ' ') nn++;
-     else if(b->bf[i].s[m] == '\t')
+     if(wpe_row_byte(b, i, m) == ' ') nn++;
+     else if(wpe_row_byte(b, i, m) == '\t')
      nn += sh->tabn - (nn % sh->tabn);
     }
     k += sh->tabn - (nn % sh->tabn);
@@ -2602,7 +2605,7 @@ static void e_find_scope_end(BUFFER *b, SCHIRM *s, const FIND *fd, int *jend, in
  else if (!(fd->sw & E_FIND_SELECTED))
  {
   *jend = b->mxlines - 1;
-  *iend = b->bf[b->mxlines - 1].len;
+  *iend = wpe_row_len(b, b->mxlines - 1);
  }
  else if (backward)
  {
@@ -2625,9 +2628,9 @@ static unsigned e_find_row_kind(BUFFER *b, int j)
 {
  unsigned kind = 0;
 
- if (j == 0 || b->bf[j - 1].s[b->bf[j - 1].len] == WPE_WR)
+ if (j == 0 || wpe_row_ends_line(b, j - 1))
   kind |= WPE_ROW_STARTS_LINE;
- if (b->bf[j].s[b->bf[j].len] == WPE_WR || j == b->mxlines - 1)
+ if (wpe_row_ends_line(b, j) || j == b->mxlines - 1)
   kind |= WPE_ROW_ENDS_LINE;
  return(kind);
 }
@@ -2645,7 +2648,7 @@ static void e_find_cursor_place(BUFFER *b, int *y, int *x)
 {
  *y = b->b.y;
  *x = b->b.x;
- wpe_rowfind_text_place(y, x, b->bf[*y].len, e_find_row_kind(b, *y));
+ wpe_rowfind_text_place(y, x, wpe_row_len(b, *y), e_find_row_kind(b, *y));
 }
 
 /**
@@ -2708,7 +2711,7 @@ static int e_find_goes_on(BUFFER *b, const FIND *fd)
 static int e_find_in_row(BUFFER *b, const FIND *fd, int j, int jend, int iend, WpeRowHit *hit)
 {
  int backward = (fd->sw & E_FIND_BACKWARDS) != 0;
- int len = b->bf[j].len;
+ int len = wpe_row_len(b, j);
  int from, to;
  unsigned how = backward ? WPE_ROWFIND_BACKWARD : 0;
 
@@ -2724,7 +2727,7 @@ static int e_find_in_row(BUFFER *b, const FIND *fd, int j, int jend, int iend, W
   from = (j == jend) ? iend : 0;
   to = (j == b->b.y) ? b->b.x : len;
  }
- return(wpe_rowfind_row(fd, (unsigned char *)b->bf[j].s, len, e_find_row_kind(b, j),
+ return(wpe_rowfind_row(fd, (unsigned char *)wpe_row_bytes(b, j, NULL), len, e_find_row_kind(b, j),
                         from, to, how, hit));
 }
 
@@ -2822,7 +2825,7 @@ static void e_find_to_scope_start(BUFFER *b, FIND *fd)
  else if (in_block)
   e_buffer_cursor_from(b, E_BUFFER_MARK_END);
  else
-  e_buffer_cursor_set(b, b->mxlines - 1, b->bf[b->mxlines - 1].len);
+  e_buffer_cursor_set(b, b->mxlines - 1, wpe_row_len(b, b->mxlines - 1));
 }
 
 int e_find(FENSTER *f)
@@ -3252,7 +3255,7 @@ int e_replace(FENSTER *f)
     break;
    case 1:
     fd->sw |= 4;
-    e_buffer_cursor_set(b, b->mxlines - 1, b->bf[b->mxlines - 1].len);
+    e_buffer_cursor_set(b, b->mxlines - 1, wpe_row_len(b, b->mxlines - 1));
     break;
    case 3:
     fd->sw |= 10;

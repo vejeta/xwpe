@@ -307,6 +307,7 @@ noinst_HEADERS = \
   we_write.h \
   we_fileop.h \
   we_rowfind.h \
+  we_rowread.h \
   we_utf8.h \
   we_trace.h \
   we_vterm.h \
@@ -457,6 +458,14 @@ test_shtok_CFLAGS = $(TEST_CFLAGS)
 # splitting the matcher into steps cannot move the cursor to another bracket.
 test_brkmatch_SOURCES = tests/test_brkmatch.c we_brkmatch.c
 test_brkmatch_CFLAGS = $(TEST_CFLAGS)
+
+# The readers of a row (we_rowread.h): what a walk gets for a row the text
+# does not have, the byte before a row and the bytes past its NUL, in a
+# hostile frame that makes a read outside the text change the answer in a
+# plain build too.  The unit needs edit.h and the header, no object.
+check_PROGRAMS += test_rowread
+test_rowread_SOURCES = tests/test_rowread.c we_rowread.h
+test_rowread_CFLAGS = $(TEST_CFLAGS)
 
 # The owner of a compiler's message pattern (we_errpat.c): a pattern is read
 # once into rows and warning tests, a text cut inside a token is refused with
@@ -1121,11 +1130,14 @@ if WPE_AI
 TESTS += tests/check-checkpoint-record.sh
 endif
 
-# One owner of what the bracket matcher reads (we_brkmatch.c): four readers
-# are the only code that indexes a row, its bytes or the number of rows.
-# tests/check-brk-bounds.sh fails when any other function does, or when a
-# macro or a pointer walk carries a raw read out of a reader.
-TESTS += tests/check-brk-bounds.sh
+# One owner of what a walk reads of a row: the readers of we_rowread.h are the
+# only code that indexes a row, its bytes or the number of rows, in the
+# bracket matcher (we_brkmatch.c) and in every file that no longer reads a
+# row itself.  tests/check-brk-bounds.sh fails when any other function does,
+# or when a macro or a pointer walk carries a raw read out of a reader;
+# tests/row-reads.allow names, with their counts, the functions that write a
+# row in place and the lines built for a call of the row owner.
+TESTS += test_rowread tests/check-brk-bounds.sh
 
 # One owner of how long a command to a debugger may be: the request engine
 # (we_debreq.h).  tests/check-debug-command.sh fails when a site sizes a
@@ -1552,6 +1564,15 @@ EXTRA_DIST = \
   tests/test_ai_read_owner.py \
   tests/test_ai_read_tools.py \
   tests/check-brk-bounds.sh \
+  tests/row-reads.allow \
+  tests/test_rowread.c \
+  tests/test_row_readers.py \
+  tests/test_help_paint.py \
+  tests/help_pages.py \
+  tests/test_help_check.py \
+  tests/test_error_search_text.py \
+  tests/x11/test_help_paint.py \
+  tests/wayland/test_help_paint.py \
   tests/write-owner.allow \
   tests/test_write_owner.c \
   tests/test_ai_session.c \

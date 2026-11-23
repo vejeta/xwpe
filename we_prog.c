@@ -7,6 +7,7 @@
 
 #include "messages.h"
 #include "edit.h"
+#include "we_rowread.h"
 #include "WeExpArr.h"
 #include "we_ai.h"       /* AI assistant entry point (guarded by WPE_AI) */
 #include "we_buffer.h"
@@ -931,17 +932,17 @@ static void e_run_pty_apply_byte(BUFFER *b, unsigned char c)
   ;
  else if (c == '\b' || c == 127)
  {
-  len = b->bf[line].len;
+  len = wpe_row_len(b, line);
   if (len > 0)
   {
-   len = e_utf8_char_before(b->bf[line].s, len, len);
+   len = e_utf8_char_before(wpe_row_bytes(b, line, NULL), len, len);
    b->bf[line].s[len] = '\0';
    b->bf[line].len = len;
   }
  }
  else if (c >= 32)
  {
-  len = b->bf[line].len;
+  len = wpe_row_len(b, line);
   b->bf[line].s = REALLOC(b->bf[line].s, len + 2);
   b->bf[line].s[len] = c;
   b->bf[line].s[len + 1] = '\0';
@@ -968,7 +969,7 @@ static void e_run_drain_pty(int pty_fd, BUFFER *b, FENSTER *mf)
   for (k = 0; k < n; k++)
    e_run_pty_apply_byte(b, (unsigned char)buf[k]);
  }
- e_buffer_cursor_set(b, b->mxlines - 1, b->bf[b->mxlines - 1].len);
+ e_buffer_cursor_set(b, b->mxlines - 1, wpe_row_len(b, b->mxlines - 1));
  e_cursor(mf, 1);
  e_schirm(mf, 1);
  e_refresh();
@@ -2372,7 +2373,7 @@ static int e_run_program(ECNT *cn)
  mf = cn->f[i];
  b = mf->b;
 
- if (b->bf[b->mxlines-1].len != 0)
+ if (wpe_row_len(b, b->mxlines-1) != 0)
   e_view_add_row(b);
  ret = e_run_with_pty(plan, b, mf);
  if (ret < 0)
@@ -4290,13 +4291,12 @@ static void e_build_mark_row(BUFFER *b, int y)
  size_t m = strlen(E_BUILD_WARNING_MARK), total;
  char *s;
 
- if (y < 0 || y >= b->mxlines)
+ if (!wpe_row_has(b, y))
   return;
- s = (char *)b->bf[y].s;
- if (!strncmp(s, E_BUILD_WARNING_MARK, m))
+ if (!strncmp(wpe_row_text(b, y, 0), E_BUILD_WARNING_MARK, m))
   return;                                 /* marked by an earlier step */
- total = strlen(s) + 1;
- s = REALLOC(s, total + m);
+ total = strlen(wpe_row_text(b, y, 0)) + 1;
+ s = REALLOC(b->bf[y].s, total + m);
  memmove(s + m, s, total);
  memcpy(s, E_BUILD_WARNING_MARK, m);
  b->bf[y].s = (void *)s;
@@ -4670,7 +4670,6 @@ int e_show_error(int n, FENSTER *f)
  BUFFER *b = cn->f[cn->mxedt]->b;
  int i, bg = 0;
  char *filename;
- unsigned char *cp;
 
  if (!err_li || n >= err_num || n < 0)
   return(1);
@@ -4750,15 +4749,16 @@ int e_show_error(int n, FENSTER *f)
  }
  else
  {
-  cp = strstr(b->bf[b->b.y].s, err_li[n].srch+1);
-  for (i = 0; b->bf[b->b.y].s + i < cp; i++);
+  i = wpe_row_find(b, b->b.y, err_li[n].srch+1);
+  if (i < 0)
+   i = 0;
   if (err_li[n].srch[0] == 'B')
   {
-   for (i--; i >= 0 && isspace(b->bf[b->b.y].s[i]); i--);
+   for (i--; i >= 0 && isspace(wpe_row_byte(b, b->b.y, i)); i--);
    if (i < 0 && b->b.y > 0)
    {
     e_buffer_cursor_set(b, b->b.y - 1, 0);
-    i = b->bf[b->b.y].len+1;
+    i = wpe_row_len(b, b->b.y)+1;
    }
    else
     i++;
@@ -4915,39 +4915,39 @@ static int e_p_unmatched_row_verdict(const char *row)
 static int e_p_scan_messages(FENSTER *f, BUFFER *b, struct e_p_run *run)
 {
  int i, j, k = 0, ret = 0, ctx_y = -1;
- char *spt;
+ const char *spt;
 
  for (i = 0; i < b->mxlines; i++)
  {
-  if (!strncmp((char *)b->bf[i].s, "Error at Command:", 17))
+  if (!strncmp(wpe_row_text(b, i, 0), "Error at Command:", 17))
    return(!ret ? -2 : ret);
-  if (e_p_is_context_row((char *)b->bf[i].s))
+  if (e_p_is_context_row(wpe_row_text(b, i, 0)))
   {
    if (ctx_y < 0)
     ctx_y = i;
    continue;
   }
-  if (e_p_is_note_row((char *)b->bf[i].s))
+  if (e_p_is_note_row(wpe_row_text(b, i, 0)))
    continue;
-  if ((!strncmp((char *)b->bf[i].s, "ld", 2) &&
-    (b->bf[i].s[2] == ' '  || b->bf[i].s[2] == ':')) ||
-    !strncmp((char *)b->bf[i].s, "collect:", 8))
+  if ((!strncmp(wpe_row_text(b, i, 0), "ld", 2) &&
+    (wpe_row_byte(b, i, 2) == ' '  || wpe_row_byte(b, i, 2) == ':')) ||
+    !strncmp(wpe_row_text(b, i, 0), "collect:", 8))
    ret = -2;
-  else if (!strncmp((char *)b->bf[i].s, "makefile:", 9) ||
-    !strncmp((char *)b->bf[i].s, "Makefile:", 9))
+  else if (!strncmp(wpe_row_text(b, i, 0), "makefile:", 9) ||
+    !strncmp(wpe_row_text(b, i, 0), "Makefile:", 9))
   {
    err_li[k].file = MALLOC(9);
    for (j = 0; j < 8; j++)
-    err_li[k].file[j] = b->bf[i].s[j];
+    err_li[k].file[j] = wpe_row_byte(b, i, j);
    err_li[k].file[8] = '\0';
-   err_li[k].line = atoi((char *)b->bf[i].s+9);
+   err_li[k].line = atoi(wpe_row_text(b, i, 9));
    err_li[k].y = err_li[k].row = i;
    err_li[k].kind = E_ROW_MAKE;
    err_li[k].x = 0;
    err_li[k].srch = NULL;
-   err_li[k].text = MALLOC(strlen((char *)b->bf[i].s) + 1);
-   strcpy(err_li[k].text, (char *)b->bf[i].s);
-   err_li[k].text[b->bf[i].len] = '\0';
+   err_li[k].text = MALLOC(strlen(wpe_row_text(b, i, 0)) + 1);
+   strcpy(err_li[k].text, wpe_row_text(b, i, 0));
+   err_li[k].text[wpe_row_len(b, i)] = '\0';
    k++;
    err_num++;
    ret = -1;
@@ -4957,9 +4957,9 @@ static int e_p_scan_messages(FENSTER *f, BUFFER *b, struct e_p_run *run)
      Error 1": the makefile's line follows "Makefile:".  An offset written
      for an older format read 0 here, and the row then fell through to the
      compiler's pattern and was counted as an error of the user's code. */
-  else if (!strncmp((char *)b->bf[i].s, "make", 4) &&
-    ((spt = strstr((char *)b->bf[i].s, "makefile:")) ||
-    (spt = strstr((char *)b->bf[i].s, "Makefile:")) ) &&
+  else if (!strncmp(wpe_row_text(b, i, 0), "make", 4) &&
+    ((spt = strstr(wpe_row_text(b, i, 0), "makefile:")) ||
+    (spt = strstr(wpe_row_text(b, i, 0), "Makefile:")) ) &&
     (err_li[k].line = atoi(spt + 9)) > 0 )
   {
    err_li[k].file = MALLOC(9);
@@ -4970,9 +4970,9 @@ static int e_p_scan_messages(FENSTER *f, BUFFER *b, struct e_p_run *run)
    err_li[k].kind = E_ROW_MAKE;
    err_li[k].x = 0;
    err_li[k].srch = NULL;
-   err_li[k].text = MALLOC(strlen((char *)b->bf[i].s) + 1);
-   strcpy(err_li[k].text, (char *)b->bf[i].s);
-   err_li[k].text[b->bf[i].len] = '\0';
+   err_li[k].text = MALLOC(strlen(wpe_row_text(b, i, 0)) + 1);
+   strcpy(err_li[k].text, wpe_row_text(b, i, 0));
+   err_li[k].text[wpe_row_len(b, i)] = '\0';
    k++;
    err_num++;
    continue;
@@ -4984,7 +4984,7 @@ static int e_p_scan_messages(FENSTER *f, BUFFER *b, struct e_p_run *run)
    ret = e_p_match_message(b, run, &i, &k, ret);
    e_p_attach_context(k_before, k, &ctx_y);
    if (!ret)
-    ret = e_p_unmatched_row_verdict((char *)b->bf[i].s);
+    ret = e_p_unmatched_row_verdict(wpe_row_text(b, i, 0));
   }
  }
  if (!(f->ed->edopt & (ED_ERRORS_STOP_AT | ED_MESSAGES_STOP_AT)) &&
@@ -10324,7 +10324,7 @@ int e_p_show_messages(FENSTER *f)
   return(-1);
  }
  f = f->ed->f[f->ed->mxedt];
- if (f->b->mxlines == 1 && f->b->bf[0].len == 0)
+ if (f->b->mxlines == 1 && wpe_row_len(f->b, 0) == 0)
  {
   e_ins_nchar(f->b, f->s, "No Messages", 0, 0, 11);
   e_schirm(f, 1);
@@ -10362,7 +10362,7 @@ int e_p_show_program_output(FENSTER *f)
      tailing terminal -- so output continues (and interactive input goes)
      right after the last character, not on top of it.  For a line ending
      in a newline the last line is empty, so this is column 0. */
-  e_buffer_cursor_set(mf->b, last, mf->b->bf[last].len);
+  e_buffer_cursor_set(mf->b, last, wpe_row_len(mf->b, last));
  }
  e_messages_scroll_to_bottom(mf);
  e_schirm(mf, 1);
@@ -10566,8 +10566,7 @@ static void e_p_run_begin(BUFFER *b, struct e_p_run *run)
  }
  for (i = 0; i < b->mxlines; i++)
  {
-  run->rows[i].s = (const char *)b->bf[i].s;
-  run->rows[i].len = b->bf[i].len;
+  wpe_row_view(b, i, &run->rows[i].s, &run->rows[i].len);
  }
  run->walk = wpe_errpat_walk_begin(run->pat, run->rows, b->mxlines,
    e_p_compiled_source, (b->cn->edopt & ED_MESSAGES_STOP_AT) != 0);
@@ -10604,8 +10603,6 @@ static int e_p_kind_of_hit(const WpeErrHit *hit)
  */
 static void e_p_file_hit(int k, WpeErrHit *hit, BUFFER *b)
 {
- const char *row = (const char *)b->bf[hit->text_row].s;
-
  err_li[k].file = e_p_row_file(hit->file);
  FREE(hit->file);
  hit->file = NULL;
@@ -10615,9 +10612,9 @@ static void e_p_file_hit(int k, WpeErrHit *hit, BUFFER *b)
  err_li[k].x = hit->x;
  err_li[k].y = err_li[k].row = hit->row;
  err_li[k].kind = e_p_kind_of_hit(hit);
- err_li[k].text = MALLOC(strlen(row) + 1);
- strcpy(err_li[k].text, row);
- err_li[k].text[b->bf[hit->text_row].len] = '\0';
+ err_li[k].text = MALLOC(strlen(wpe_row_text(b, hit->text_row, 0)) + 1);
+ strcpy(err_li[k].text, wpe_row_text(b, hit->text_row, 0));
+ err_li[k].text[wpe_row_len(b, hit->text_row)] = '\0';
  err_num++;
 }
 

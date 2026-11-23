@@ -7,6 +7,7 @@
 
 #include "messages.h"
 #include "edit.h"
+#include "we_rowread.h"
 #include "we_buffer.h"
 #include "we_render.h"
 #include "we_mousedrain.h"
@@ -1194,7 +1195,7 @@ static void e_mouse_select_line(BUFFER *b)
 
  first.y = last.y = b->b.y;
  first.x = 0;
- last.x = b->bf[b->b.y].len;
+ last.x = wpe_row_len(b, b->b.y);
  e_buffer_block_set(b, &first, &last);
 }
 
@@ -1208,13 +1209,13 @@ static void e_mouse_select_line(BUFFER *b)
  */
 void e_select_word_at_cursor(BUFFER *b)
 {
- const STRING *row = &b->bf[b->b.y];
+ int y = b->b.y;
  POINT first, last;
 
- first.y = last.y = b->b.y;
- for (first.x = b->b.x; first.x > 0 && isalnum1(row->s[first.x-1]); first.x--)
+ first.y = last.y = y;
+ for (first.x = b->b.x; first.x > 0 && isalnum1(wpe_row_byte(b, y, first.x-1)); first.x--)
   ;
- for (last.x = b->b.x; last.x < row->len && isalnum1(row->s[last.x]); last.x++)
+ for (last.x = b->b.x; last.x < wpe_row_len(b, y) && isalnum1(wpe_row_byte(b, y, last.x)); last.x++)
   ;
  e_buffer_block_set(b, &first, &last);
 }

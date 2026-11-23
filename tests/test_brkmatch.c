@@ -26,7 +26,7 @@
  * openers) and [n] (a row of closers).  A matcher that reads there sees a
  * comment edge, an opener or a closer where the text has none.
  *
- * What only ASan sees: a matcher whose brk_row_len does not test the row
+ * What only ASan sees: a matcher whose wpe_row_len does not test the row
  * still gives the right answers in the hostile frame, though it reads the
  * stale slot.  That read is red only under the sanitizer, which
  * tests/run-tests.sh --asan runs on this unit as a local gate.

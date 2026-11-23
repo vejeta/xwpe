@@ -7,6 +7,7 @@
 
 #include "messages.h"
 #include "edit.h"
+#include "we_rowread.h"
 #include "makro.h"
 #include "we_buffer.h"
 #include "we_lineend.h"
@@ -717,16 +718,15 @@ static char *e_info_node_key(const char *name)
  * to open), so one that does not fit is not used cut: the caller refuses.
  * Return: 0 when the name fits whole, -1 when it would have been cut.
  */
-static int e_help_take_name(const STRING *row, int from, char *name, size_t size)
+static int e_help_take_name(const BUFFER *b, int y, int from, char *name, size_t size)
 {
- const char *src;
  int avail, cut;
 
- if (from > row->len)
-  from = row->len;
- avail = row->len - from;
- src = (const char *) row->s + from;
- wpe_help_token(name, size, src, avail, help_end_mark, NULL, &cut);
+ if (from > wpe_row_len(b, y))
+  from = wpe_row_len(b, y);
+ avail = wpe_row_len(b, y) - from;
+ wpe_help_token(name, size, (const char *) wpe_row_from(b, y, from), avail,
+                help_end_mark, NULL, &cut);
  if (cut)
   return(-1);
  return(0);
@@ -740,12 +740,12 @@ static int e_help_take_name(const STRING *row, int from, char *name, size_t size
  * Back returns to.
  * Return: 0, or -1 when the name does not fit @key whole.
  */
-static int e_help_take_header(const STRING *row, int from, char *key, size_t size)
+static int e_help_take_header(const BUFFER *b, int y, int from, char *key, size_t size)
 {
  if (size < 3)
   return(-1);
  key[0] = HHD;
- if (e_help_take_name(row, from, key + 1, size - 2) != 0)
+ if (e_help_take_name(b, y, from, key + 1, size - 2) != 0)
   return(-1);
  wpe_help_lcat(key, size, help_end_mark);
  return(0);
@@ -846,9 +846,9 @@ int e_help_ret(FENSTER *f)
  char str[WPE_HELP_LINE_SIZE];
  struct help_ud *next;
 
-   for(i = b->b.x; i >= 0 && b->bf[b->b.y].s[i] != HED; i--)
-   {  if(b->bf[b->b.y].s[i] == HBG)
-      {  if(e_help_take_header(&b->bf[b->b.y], i+1, str, sizeof str) != 0)
+   for(i = b->b.x; i >= 0 && wpe_row_byte(b, b->b.y, i) != HED; i--)
+   {  if(wpe_row_byte(b, b->b.y, i) == HBG)
+      {  if(e_help_take_header(b, b->b.y, i+1, str, sizeof str) != 0)
 	    return(e_help_refuse_name(f));
 	 if((next = MALLOC(sizeof(struct help_ud))) != NULL)
 	 {  next->str = MALLOC((strlen(str)+1) * sizeof(char));
@@ -872,9 +872,9 @@ int e_help_ret(FENSTER *f)
 	 e_schirm(f, 1);
 	 return(0);
       }
-      else if(b->bf[b->b.y].s[i] == HNF)
-      {  for(i++; i < b->bf[b->b.y].len && b->bf[b->b.y].s[i] != HED; i++);
-	 if(e_help_take_name(&b->bf[b->b.y], i+1, str, sizeof str) != 0)
+      else if(wpe_row_byte(b, b->b.y, i) == HNF)
+      {  for(i++; i < wpe_row_len(b, b->b.y) && wpe_row_byte(b, b->b.y, i) != HED; i++);
+	 if(e_help_take_name(b, b->b.y, i+1, str, sizeof str) != 0)
 	    return(e_help_refuse_name(f));
 	 if((next = MALLOC(sizeof(struct help_ud))) != NULL)
 	 {  next->str = MALLOC(4 * sizeof(char));
@@ -894,12 +894,12 @@ int e_help_ret(FENSTER *f)
 	 e_schirm(f, 1);
 	 return(0);
       }
-      else if(b->bf[b->b.y].s[i] == HFB)
-      {  if(e_help_take_name(&b->bf[b->b.y], i+1, str, sizeof str) != 0)
+      else if(wpe_row_byte(b, b->b.y, i) == HFB)
+      {  if(e_help_take_name(b, b->b.y, i+1, str, sizeof str) != 0)
 	    return(e_help_refuse_name(f));
 	 return(e_ed_man(str, f));
       }
-      else if(b->bf[b->b.y].s[i] == HHD) return(e_help_last(f));
+      else if(wpe_row_byte(b, b->b.y, i) == HHD) return(e_help_last(f));
    }
    return(1);
 }
@@ -1009,16 +1009,15 @@ static const char help_comp_stops[] = { HED, HBG, HHD, HFE, '\0' };
  * Checking a help file for missing headers compares names, so none is cut.
  * Return: the name in malloc'd storage, or NULL when memory is short.
  */
-static char *e_help_comp_name(const STRING *row, int mark, int *stop, int *closed)
+static char *e_help_comp_name(const BUFFER *b, int y, int mark, int *stop, int *closed)
 {
- const char *src = (const char *) row->s + mark + 1;
- int avail = row->len - (mark + 1);
  const char *end;
  char *name;
 
- name = wpe_help_token_dup(src, avail, help_comp_stops, &end);
- *stop = mark + 1 + (int) (end - src);
- *closed = (end < src + avail && *end == HED);
+ name = wpe_help_token_dup((const char *) wpe_row_from(b, y, mark + 1),
+                           wpe_row_len(b, y) - (mark + 1), help_comp_stops, &end);
+ *stop = mark + 1 + (name ? (int) strlen(name) : 0);
+ *closed = (*stop < wpe_row_len(b, y) && wpe_row_byte(b, y, *stop) == HED);
  return(name);
 }
 
@@ -1060,11 +1059,11 @@ static int e_help_comp_collect(FENSTER *f, int mark, const char *what,
 
  for (j = 0; j < b->mxlines; j++)
  {
-  for (i = 0; i < b->bf[j].len; i++)
+  for (i = 0; i < wpe_row_len(b, j); i++)
   {
-   if (b->bf[j].s[i] != mark)
+   if (wpe_row_byte(b, j, i) != mark)
     continue;
-   name = e_help_comp_name(&b->bf[j], i, &stop, &closed);
+   name = e_help_comp_name(b, j, i, &stop, &closed);
    if (name && !closed)
    {
     FREE(name);
@@ -1712,7 +1711,6 @@ int e_hp_ret(FENSTER *f)
 int e_topic_search(FENSTER *f)
 {
  int x, y;
- char *s;
  BUFFER *b;
  char item[100], *ptr=item;
 
@@ -1721,16 +1719,15 @@ int e_topic_search(FENSTER *f)
  b = f->ed->f[f->ed->mxedt]->b;
  y=b->b.y;
  x=b->b.x;
- s=b->bf[y].s;
- if(!isalnum(s[x]) && s[x]!='_')
+ if(!isalnum(wpe_row_byte(b, y, x)) && wpe_row_byte(b, y, x)!='_')
   return (0);
- for(;x>=0 && (isalnum(s[x])||s[x]=='_');x--);
- if(x<0 && !isalnum(s[0]) && s[0]!='_')
+ for(;x>=0 && (isalnum(wpe_row_byte(b, y, x))||wpe_row_byte(b, y, x)=='_');x--);
+ if(x<0 && !isalnum(wpe_row_byte(b, y, 0)) && wpe_row_byte(b, y, 0)!='_')
   return(0);
  x++;
- for(; x<=b->bf[y].len && (isalnum(s[x])||s[x]=='_') &&
+ for(; x<=wpe_row_len(b, y) && (isalnum(wpe_row_byte(b, y, x))||wpe_row_byte(b, y, x)=='_') &&
       ptr < item + sizeof(item) - 1; x++,ptr++)
-  *ptr=s[x];
+  *ptr=wpe_row_byte(b, y, x);
  *ptr=0; 
  e_ed_man(item, f);
  return(0); 

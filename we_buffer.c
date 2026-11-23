@@ -169,7 +169,7 @@ static void *buffer_realloc(void *p, size_t n)
  * A line ends at its line break (WPE_WR) or at its terminating zero; every
  * column the user sees is counted with this.
  */
-int e_str_len(unsigned char *s)
+int e_str_len(const unsigned char *s)
 {
  int i;
 
@@ -4008,6 +4008,17 @@ int e_buffer_line_copy(BUFFER *b, const STRING *src, STRING *out)
   buffer_line_measure(out);
  }
  return(E_BUFFER_OK);
+}
+
+/**
+ * e_buffer_row_copy - A copy of row @y of @b as a line of its own, for a
+ * change that is made on the copy and spliced back in (the block's case).
+ * @out: receives the copy, the caller's until a splice adopts it.
+ * Return: E_BUFFER_OK or E_BUFFER_NOMEM.
+ */
+int e_buffer_row_copy(BUFFER *b, int y, STRING *out)
+{
+ return(e_buffer_line_copy(b, &b->bf[y], out));
 }
 
 /* How many of rows [y0, y0 + n) of b carry a breakpoint once the items of

@@ -588,6 +588,15 @@ def xwpe(xserver, gui_owner, tmp_path, request):
     if name is not None:
         src = tmp_path / name
         src.write_text(source or "")
+    # XWPE_TEST_HELP: the help file F1 opens, which the editor finds in its
+    # HOME (the row's folder) through XWPE_LIB.  XWPE_TEST_OPTIONS is the
+    # xwperc that goes with it, so a long page row stays one row.
+    help_text = param.pop("XWPE_TEST_HELP", None)
+    options = param.pop("XWPE_TEST_OPTIONS", None)
+    if help_text is not None:
+        (tmp_path / "help.xwpe").write_text(help_text)
+        (tmp_path / "xwperc").write_text(options or "[General]\n")
+        param["XWPE_LIB"] = str(tmp_path)
     # XWPE_TEST_DETACHED: start the editor as a desktop launcher would, a
     # session leader with no controlling terminal (present means detached).
     detached = param.pop("XWPE_TEST_DETACHED", None) is not None

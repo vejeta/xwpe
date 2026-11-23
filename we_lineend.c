@@ -23,6 +23,7 @@
    drops it and says so in the info it returns. */
 
 #include "edit.h"
+#include "we_rowread.h"
 #include "we_buffer.h"
 #include "we_lineend.h"
 
@@ -298,7 +299,7 @@ static int eol_head_line(EolRows *rl, int y, int x)
   return(E_BUFFER_OK);          /* the file starts its line: no front to keep */
  if (e_buffer_bytes_reserve(&rl->cur, &rl->cur_cap, x) != E_BUFFER_OK)
   return(E_BUFFER_NOMEM);
- memcpy(rl->cur, rl->b->bf[y].s, (size_t)x);
+ memcpy(rl->cur, wpe_row_bytes(rl->b, y, NULL), (size_t)x);
  rl->cur_n = x;
  return(E_BUFFER_OK);
 }
@@ -313,10 +314,10 @@ static int eol_head_line(EolRows *rl, int y, int x)
  */
 static int eol_tail_line(EolRows *rl, int y, int x)
 {
- STRING *row = &rl->b->bf[y];
-
- return(e_buffer_rows_push(&rl->line, &rl->n, &rl->cap, rl->mx_x, row->s + x,
-                           row->len - x, row->s[row->len]));
+ return(e_buffer_rows_push(&rl->line, &rl->n, &rl->cap, rl->mx_x,
+                           wpe_row_from(rl->b, y, x),
+                           wpe_row_len(rl->b, y) - x,
+                           wpe_row_byte(rl->b, y, wpe_row_len(rl->b, y))));
 }
 
 /**
@@ -394,8 +395,8 @@ int e_eol_read_file_into(FILE *fp, BUFFER *b, int x, int y, int manpage, WpeEolI
  memset(&rl, 0, sizeof(rl));
  rl.b = b;
  rl.mx_x = b->mx.x;
- if (x > b->bf[y].len)
-  x = b->bf[y].len;
+ if (x > wpe_row_len(b, y))
+  x = wpe_row_len(b, y);
  if (eol_slurp(fp, &bytes, &n) != E_BUFFER_OK)
   return(E_BUFFER_NOMEM);
  eol_classify(bytes, n, info);
@@ -664,12 +665,12 @@ static void eol_break_put(EolSink *k, int eol)
  * A row's bytes are written whatever they are, up to its length.  A soft row
  * (the buffer's wrap of a long line) has no break after it.
  */
-static void eol_row_out(EolSink *k, BUFFER *b, STRING *row, int from, int limit, int eol,
+static void eol_row_out(EolSink *k, BUFFER *b, int y, int from, int limit, int eol,
                         int skip_break)
 {
- int stop = row->len;
+ int stop = wpe_row_len(b, y);
 
- if (row->s == NULL)
+ if (!wpe_row_stored(b, y))
   return;
  if (from < 0)
   from = 0;
@@ -678,9 +679,9 @@ static void eol_row_out(EolSink *k, BUFFER *b, STRING *row, int from, int limit,
  if (stop > b->mx.x + 1)
   stop = b->mx.x + 1;
  if (stop > from)
-  eol_sink_put(k, row->s + from, (size_t)(stop - from));
- if (from <= row->len && row->len < limit && row->len <= b->mx.x &&
-     row->s[row->len] == WPE_WR && !skip_break)
+  eol_sink_put(k, wpe_row_from(b, y, from), (size_t)(stop - from));
+ if (from <= wpe_row_len(b, y) && wpe_row_len(b, y) < limit && wpe_row_len(b, y) <= b->mx.x &&
+     wpe_row_ends_line(b, y) && !skip_break)
   eol_break_put(k, eol);
 }
 
@@ -699,9 +700,9 @@ static void eol_walk(EolSink *k, BUFFER *b, int ya, int xa, int ye, int xe, int 
  int omit = (keep_final && b->final_break == E_FINAL_BREAK_NONE);
 
  for (j = ya; j < ye && j < b->mxlines; j++)
-  eol_row_out(k, b, &b->bf[j], (j == ya) ? xa : 0, INT_MAX, eol, omit && j == last);
+  eol_row_out(k, b, j, (j == ya) ? xa : 0, INT_MAX, eol, omit && j == last);
  if (j < b->mxlines)
-  eol_row_out(k, b, &b->bf[j], 0, xe, eol, omit && j == last);
+  eol_row_out(k, b, j, 0, xe, eol, omit && j == last);
 }
 
 /**

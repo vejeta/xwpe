@@ -3772,7 +3772,7 @@ void e_lsp_close(e_lsp_session *s)
  * Returns a malloc'd, NUL-terminated buffer of @n lines, each '\n'-terminated
  * (so the empty buffer yields ""), or NULL on allocation failure.  Caller frees.
  */
-char *e_lsp_join_lines(char *const *lines, int n)
+char *e_lsp_join_lines(const char *const *lines, int n)
 {
  size_t total = 1, off = 0;
  char *buf;

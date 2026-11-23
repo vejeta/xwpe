@@ -7,6 +7,7 @@
 
 #include "messages.h"
 #include "edit.h"
+#include "we_rowread.h"
 #include "progr.h"
 #include "we_fdloop.h"
 #include "we_dap.h"
@@ -1150,7 +1151,7 @@ int _messages_activated = 0;
 
 static void e_d_messages_erase_char(BUFFER *b, int last)
 {
- int len = b->bf[last].len;
+ int len = wpe_row_len(b, last);
 
  if (len > 0)
  {
@@ -1162,7 +1163,7 @@ static void e_d_messages_erase_char(BUFFER *b, int last)
 
 static void e_d_messages_insert_char(BUFFER *b, int last, int c)
 {
- int len = b->bf[last].len;
+ int len = wpe_row_len(b, last);
 
  if (len < b->mx.x - 1)
  {
@@ -1203,7 +1204,7 @@ static void e_d_pty_ensure_own_line(FENSTER *mf)
 
  if (e_d_async.pty_owns_last_line)
   return;
- if (last >= 0 && b->bf[last].len > 0)
+ if (last >= 0 && wpe_row_len(b, last) > 0)
   e_d_messages_append_char(mf, '\n');
  e_d_async.pty_owns_last_line = 1;
 }
@@ -3232,7 +3233,7 @@ static void e_d_messages_place_cursor(FENSTER *mf)
  int row, col;
 
  if (last < 0) return;
- if (!e_d_async.pty_owns_last_line && b->bf[last].len > 0)
+ if (!e_d_async.pty_owns_last_line && wpe_row_len(b, last) > 0)
  {
   row = mf->a.y + 1 + (last + 1 - s->c.y);
   col = mf->a.x + 1;
@@ -3242,7 +3243,7 @@ static void e_d_messages_place_cursor(FENSTER *mf)
   row = mf->a.y + 1 + (last - s->c.y);
   { extern int e_utf8_visual_len(unsigned char *, int);
     col = mf->a.x + 1 +
-     e_utf8_visual_len((unsigned char *)b->bf[last].s, b->bf[last].len);
+     e_utf8_visual_len((unsigned char *)wpe_row_bytes(b, last, NULL), wpe_row_len(b, last));
   }
  }
  if (row > mf->e.y - 1) row = mf->e.y - 1;
@@ -4569,7 +4570,7 @@ int e_edit_watches(FENSTER *f)
   return(0);
  for (l = 0; l < e_d_nwtchs && e_d_nrwtchs[l] <= b->b.y; l++)
   ;
- if (l == e_d_nwtchs && b->bf[b->b.y].len == 0)
+ if (l == e_d_nwtchs && wpe_row_len(b, b->b.y) == 0)
   return(e_make_watches(f));
  snprintf(str, sizeof str, "%s", e_d_swtchs[l - 1]);
  if (e_d_add_watch(str, sizeof str, f) && e_d_sendable(f, str, E_D_NOT_SENT_WATCH))
@@ -4665,7 +4666,7 @@ static int e_d_watch_refused(FENSTER *f)
  */
 static int e_d_view_is_empty(BUFFER *b)
 {
- return(b->mxlines == 1 && b->bf[0].len == 0);
+ return(b->mxlines == 1 && wpe_row_len(b, 0) == 0);
 }
 
 /**
@@ -5156,7 +5157,7 @@ static void e_d_stack_put_row(FENSTER *f, char *str, int *pi, int *pj)
  {
   if (i >= b->mxlines && e_view_add_row(b) != E_BUFFER_OK)
    return;                      /* no memory: the rows so far stay whole */
-  if ((i > 0 && j == 0 && *(b->bf[i-1].s+b->bf[i-1].len-1) == '\\') ||
+  if ((i > 0 && j == 0 && wpe_row_byte(b, i-1, wpe_row_len(b, i-1)-1) == '\\') ||
     (e_deb_type == DEB_GDB && j == 0 && (k > 0 || str[k] != '#')))
   {
    for(j = 0; j < 3; j++)
@@ -5167,11 +5168,13 @@ static void e_d_stack_put_row(FENSTER *f, char *str, int *pi, int *pj)
   for(; j < NUM_COLS_ON_SCREEN_SAFE - 2 && str[k] != '\n' && str[k] != '\0';
     j++, k++)
    *(b->bf[i].s+j) = str[k];
+  b->bf[i].len = j;             /* the bytes laid so far are the row's text: the cut below reads them */
   if (str[k] != '\0')
   {
    if (str[k] != '\n')
    {
-    for(l = j-1; l > 2 && !isspace(b->bf[i].s[l]) && b->bf[i].s[l] != '=';
+    for(l = j-1; l > 2 && !isspace(wpe_row_byte(b, i, l)) &&
+      wpe_row_byte(b, i, l) != '=';
       l--)
      ;
     if (l > 2)
@@ -5367,8 +5370,8 @@ static int e_make_stack_row_ends(BUFFER *b, int i)
  if (i == b->mxlines - 1)
   return(1);
  if (e_deb_type == DEB_GDB)
-  return(b->bf[i+1].s[0] == '#');
- return(b->bf[i].s[b->bf[i].len - 1] != '\\');
+  return(wpe_row_byte(b, i+1, 0) == '#');
+ return(wpe_row_byte(b, i, wpe_row_len(b, i) - 1) != '\\');
 }
 
 /**
@@ -5384,9 +5387,9 @@ static char *e_make_stack_join(BUFFER *b, int i, char *row)
 {
  for(; i < b->mxlines; i++)
  {
-  if(!(row = e_make_stack_grow(row, b->bf[i].len)))
+  if(!(row = e_make_stack_grow(row, wpe_row_len(b, i))))
    return(NULL);
-  strcat(row, (char *) b->bf[i].s);
+  strcat(row, wpe_row_text(b, i, 0));
   if(e_make_stack_row_ends(b, i))
    break;
   else if(row[strlen(row)-2] == '\\')
@@ -5441,16 +5444,16 @@ int e_make_stack(FENSTER *f)
    {  tmpstr[0] = '\0';
       if(e_deb_type == DEB_GDB)
       {  for(i = dif = 0; i <= b->b.y; i++)
-	    if(b->bf[i].s[0] == '#') dif = atoi((char *) (b->bf[i].s + 1));
-	 for(i = b->b.y; i >= 0 && b->bf[i].s[0] != '#'; i--);
+	    if(wpe_row_byte(b, i, 0) == '#') dif = atoi(wpe_row_text(b, i, 1));
+	 for(i = b->b.y; i >= 0 && wpe_row_byte(b, i, 0) != '#'; i--);
 	 if(i < 0) return(e_make_stack_done(tmpstr, 1));
       }
       else
       {  for(i = 1, dif = 0; i <= b->b.y; i++)
-	    if(b->bf[i-1].s[b->bf[i-1].len - 1] != '\\') dif++;
-	 for(i = b->b.y; i > 0 && b->bf[i-1].s[b->bf[i-1].len - 1] == '\\';
+	    if(wpe_row_byte(b, i-1, wpe_row_len(b, i-1) - 1) != '\\') dif++;
+	 for(i = b->b.y; i > 0 && wpe_row_byte(b, i-1, wpe_row_len(b, i-1) - 1) == '\\';
 	    i--);
-	 if(i == 0 && b->bf[i].len == 0) return(e_make_stack_done(tmpstr, 1));
+	 if(i == 0 && wpe_row_len(b, i) == 0) return(e_make_stack_done(tmpstr, 1));
       }
       if(!(tmpstr = e_make_stack_row(b, i, tmpstr)))
       {  e_error(e_msg[ERR_LOWMEM], 0, f->fb);  return(-1);  }
@@ -5474,7 +5477,7 @@ int e_make_stack(FENSTER *f)
    else if(e_deb_type == DEB_SDB)
    {  FREE(tmpstr);           /* sdb's rows are read in place */
       for(i = b->b.y; i >= 0 && (line =
-	 e_make_line_num2((char *)b->bf[i].s, file)) < 0; i--);
+	 e_make_line_num2(wpe_row_text(b, i, 0), file)) < 0; i--);
    }
    if(e_d_p_watches(f, 0) == -1) return(-1);
    e_d_goto_source(file, line, f);   /* Enter in the Stack window: the user asked */
@@ -12657,7 +12660,7 @@ static int e_d_dap_start_messages(FENSTER *f)
  */
 static int e_d_messages_empty(BUFFER *b)
 {
- return(b->mxlines <= 1 && b->bf[0].len == 0);
+ return(b->mxlines <= 1 && wpe_row_len(b, 0) == 0);
 }
 
 /**
@@ -16615,8 +16618,8 @@ static int e_d_stack_row_frame(BUFFER *b)
  int i;
 
  for (i = b->b.y; i >= 0 && i < b->mxlines; i--)
-  if (b->bf[i].s[0] == E_D_FRAME_ROW_MARK)
-   return(atoi((char *)b->bf[i].s + 1));
+  if (wpe_row_byte(b, i, 0) == E_D_FRAME_ROW_MARK)
+   return(atoi(wpe_row_text(b, i, 1)));
  return(-1);
 }
 
@@ -18067,7 +18070,7 @@ int e_make_line_num(char *str, char *file)
  * e_make_line_num2 - The line and, into @file (E_D_LINE_MAX bytes), the
  * file of an sdb or xdb "t" row: see e_ds_line_num2.
  */
-int e_make_line_num2(char *str, char *file)
+int e_make_line_num2(const char *str, char *file)
 {
  return(e_ds_line_num2(str, file, E_D_LINE_MAX));
 }
@@ -28618,15 +28621,9 @@ static e_lsp_text_index *g_lsp_synced_ix = NULL;
 static e_lsp_units e_lsp_units_at(FENSTER *f, int y, int x)
 {
  BUFFER *b = f->b;
- const unsigned char *row = NULL;
- int len = 0;
 
- if (y >= 0 && y < b->mxlines && b->bf[y].s)
- {
-  row = (const unsigned char *)b->bf[y].s;
-  len = b->bf[y].len;
- }
- return(e_lsp_units_of(row, len, x, e_lsp_position_encoding(g_lsp)));
+ return(e_lsp_units_of(wpe_row_bytes(b, y, NULL), wpe_row_len(b, y), x,
+   e_lsp_position_encoding(g_lsp)));
 }
 
 /**
@@ -29707,17 +29704,17 @@ static void e_lsp_on_show_text(const char *title, const char *body, void *ud)
 static char *e_lsp_buffer_text(FENSTER *f)
 {
  BUFFER *b = f->b;
- char **lns;
+ const char **lns;
  char *body;
  int y, n = b->mxlines;
 
  if (n < 0)
   n = 0;
- lns = malloc((n ? n : 1) * sizeof(char *));
+ lns = malloc((n ? n : 1) * sizeof(*lns));
  if (!lns)
   return(NULL);
  for (y = 0; y < n; y++)
-  lns[y] = b->bf[y].s;            /* NULL is fine -- join treats it as empty */
+  lns[y] = wpe_row_cstr(b, y);    /* NULL is fine -- join treats it as empty */
  body = e_lsp_join_lines(lns, n);
  free(lns);
  return(body);
@@ -31818,6 +31815,20 @@ static int e_lsp_is_ident(int c)
         (c >= '0' && c <= '9') || c == '_');
 }
 
+/**
+ * e_lsp_ident_at - Whether the character of row @y at column @x belongs to a
+ * word.  A column the row does not have is not part of any word, so a
+ * completion or a rename never takes in what lies past the text.
+ */
+static int e_lsp_ident_at(const BUFFER *b, int y, int x)
+{
+ int c = wpe_row_byte(b, y, x);
+
+ if (c == WPE_ROW_NONE)
+  return(0);
+ return(e_lsp_is_ident(c));
+}
+
 /* Column to send for a SYMBOL action (definition / hover / references / ...):
    snap to the START of the identifier under (or just after) the cursor, so the
    action resolves wherever on the word the cursor sits -- a server can return
@@ -31827,16 +31838,15 @@ static int e_lsp_is_ident(int c)
 static int e_lsp_symbol_col(FENSTER *f)
 {
  BUFFER *b = f->b;
- char *line = b->bf[b->b.y].s;
+ int y = b->b.y;
  int x = b->b.x;
 
- if (!line)
+ if (!wpe_row_stored(b, y))
   return(x);
  /* cursor one past the word (e.g. on the ')' after "Shape") -> step onto it */
- if (x > 0 && !e_lsp_is_ident((unsigned char)line[x]) &&
-     e_lsp_is_ident((unsigned char)line[x - 1]))
+ if (x > 0 && !e_lsp_ident_at(b, y, x) && e_lsp_ident_at(b, y, x - 1))
   x--;
- while (x > 0 && e_lsp_is_ident((unsigned char)line[x - 1]))
+ while (x > 0 && e_lsp_ident_at(b, y, x - 1))
   x--;
  return(x);
 }
@@ -32008,7 +32018,7 @@ static void e_lsp_complete_show(FENSTER *f, const e_lsp_ask_t *a)
  SCHIRM *s = f->s;
  const e_lsp_completion_item *items = a->items;
  const char *labels[E_LSP_ASK_ITEMS_MAX];
- char *line, insbuf[256];
+ char insbuf[256];
  const char *ins;
  int n = a->n, i, sel, prefix = 0, inslen;
 
@@ -32016,8 +32026,7 @@ static void e_lsp_complete_show(FENSTER *f, const e_lsp_ask_t *a)
  {  e_error("No completions.", 0, f->fb);  return;  }
 
  /* the identifier already typed before the cursor (to be replaced) */
- line = b->bf[b->b.y].s;
- while (prefix < b->b.x && e_lsp_is_ident((unsigned char)line[b->b.x - 1 - prefix]))
+ while (prefix < b->b.x && e_lsp_ident_at(b, b->b.y, b->b.x - 1 - prefix))
   prefix++;
 
  for (i = 0; i < n; i++)
@@ -32859,23 +32868,24 @@ static void e_lsp_replace_buffer(FENSTER *f, const char *newtext)
 static void e_lsp_word_at_cursor(FENSTER *f, char *out, size_t osz)
 {
  BUFFER *b = f->b;
- char *line = b->bf[b->b.y].s;
- int len = line ? strlen(line) : 0;
+ int y = b->b.y;
+ int len = 0;
  int a = b->b.x, e = b->b.x, n;
 
  out[0] = '\0';
- if (!line)
+ if (!wpe_row_stored(b, y))
   return;
- while (a > 0 && e_lsp_is_ident((unsigned char)line[a - 1]))
+ len = strlen(wpe_row_text(b, y, 0));
+ while (a > 0 && e_lsp_ident_at(b, y, a - 1))
   a--;
- while (e < len && e_lsp_is_ident((unsigned char)line[e]))
+ while (e < len && e_lsp_ident_at(b, y, e))
   e++;
  n = e - a;
  if (n <= 0)
   return;
  if (n >= (int)osz)
   n = osz - 1;
- memcpy(out, line + a, n);
+ memcpy(out, wpe_row_text(b, y, a), n);
  out[n] = '\0';
 }
 

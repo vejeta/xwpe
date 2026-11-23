@@ -9,6 +9,7 @@
 #include "edit.h"
 #include "WeExpArr.h"
 #include "we_buffer.h"
+#include "we_rowread.h"
 
 #undef TESTSDEF
 
@@ -242,7 +243,7 @@ extern char *e_p_msg[];
  }	   								\
 }
 
-int e_scfbol(int n, int mcsw, unsigned char *str, WpeSyntaxRule *cs)
+int e_scfbol(int n, int mcsw, const unsigned char *str, WpeSyntaxRule *cs)
 {
  int bssw = 0, svmsw = 0, nla = 0, i, j;
 
@@ -390,6 +391,43 @@ int e_program_opt(FENSTER *f)
  return(0);
 }
 
+/**
+ * e_syntax_row_continues - Whether row @y of a window starts in the state the
+ * row above leaves it in.
+ * @b: the text of a window whose file has syntax colours (b->f->c_st).
+ *
+ * Some languages mark a continued statement by a character in one column of
+ * the next row (Fortran, column 6): a row with a blank there starts afresh,
+ * and the colours of a long string or comment do not run into it.  A row
+ * shorter than that column has no blank there and carries the state, as it
+ * always did.  A language with no such column always carries it.
+ * Return: 1 when the row carries the state of the row above, 0 when it
+ * starts afresh.
+ */
+int e_syntax_row_continues(const BUFFER *b, int y)
+{
+ int column = b->f->c_st->continue_column;
+
+ if (column < 0)
+  return 1;
+ return !isspace(wpe_row_byte(b, y, column));
+}
+
+/**
+ * e_syntax_row_leaves - The syntax state row @y hands to the next row, given
+ * the state @state it starts in.
+ * @b: the text of a window whose file has syntax colours (b->f->c_st).
+ *
+ * The colours of a window are one state per row: whether it starts inside a
+ * comment, a string or a directive.  This is the one step that turns the
+ * state a row starts in into the state it leaves, so the colours of a whole
+ * text and the colours of the rows an edit touched are the same.
+ */
+int e_syntax_row_leaves(const BUFFER *b, int y, int state)
+{
+ return e_scfbol(wpe_row_len(b, y), state, wpe_row_bytes(b, y, NULL), b->f->c_st);
+}
+
 int e_sc_nw_txt(int y, BUFFER *b, int sw)
 {
  int i, out;
@@ -410,7 +448,7 @@ int e_sc_nw_txt(int y, BUFFER *b, int sw)
  {
   for (i = y; i < b->mxlines-1; i++)
   {
-   if ((out = e_scfbol(b->bf[i].len, b->f->c_sw[i], b->bf[i].s, b->f->c_st)) == b->f->c_sw[i+1])
+   if ((out = e_syntax_row_leaves(b, i, b->f->c_sw[i])) == b->f->c_sw[i+1])
     break;
    else
     b->f->c_sw[i+1] = out;
@@ -420,12 +458,16 @@ int e_sc_nw_txt(int y, BUFFER *b, int sw)
  {
   if (y != 0) /* Quick fix to continue line check - Dennis */
   {
-   b->f->c_sw[y] = isspace(b->bf[y].s[b->f->c_st->continue_column]) ? 0 :
-     e_scfbol(b->bf[y-1].len, b->f->c_sw[y-1], b->bf[y-1].s, b->f->c_st);
+   if (e_syntax_row_continues(b, y))
+    b->f->c_sw[y] = e_syntax_row_leaves(b, y-1, b->f->c_sw[y-1]);
+   else
+    b->f->c_sw[y] = 0;
    for (i = y; i < b->mxlines-1; i++)
    {
-    out = isspace(b->bf[i+1].s[b->f->c_st->continue_column]) ? 0 :
-      e_scfbol(b->bf[i].len, b->f->c_sw[i], b->bf[i].s, b->f->c_st);
+    if (e_syntax_row_continues(b, i+1))
+     out = e_syntax_row_leaves(b, i, b->f->c_sw[i]);
+    else
+     out = 0;
     if (out == b->f->c_sw[i+1])
      break;
     else
@@ -446,14 +488,16 @@ int *e_sc_txt(int *c_sw, BUFFER *b)
  if (b->f->c_st->continue_column < 0)
  {
   for (i = 0; i < b->mxlines-1; i++)
-   c_sw[i+1] = e_scfbol(b->bf[i].len, c_sw[i], b->bf[i].s, b->f->c_st);
+   c_sw[i+1] = e_syntax_row_leaves(b, i, c_sw[i]);
  }
  else
  {
   for (i = 0; i < b->mxlines-1; i++)
   {
-   c_sw[i+1] = isspace(b->bf[i+1].s[b->f->c_st->continue_column]) ? 0 :
-     e_scfbol(b->bf[i].len, c_sw[i], b->bf[i].s, b->f->c_st);
+   if (e_syntax_row_continues(b, i+1))
+    c_sw[i+1] = e_syntax_row_leaves(b, i, c_sw[i]);
+   else
+    c_sw[i+1] = 0;
   }
  }
  return(c_sw);
@@ -531,9 +575,9 @@ void e_pr_c_line(int y, FENSTER *f)
  int diag_on = e_lsp_decor_active_for(f);
 #endif
 
- for (i = j = 0; j < s->c.x && i < b->bf[y].len; j++, i++)
+ for (i = j = 0; j < s->c.x && i < wpe_row_len(b, y); j++, i++)
  {
-  unsigned char uc = (unsigned char) *(b->bf[y].s + i);
+  unsigned char uc = (unsigned char) wpe_row_byte(b, y, i);
   if (uc == WPE_TAB)
    j += (f->ed->tabn - j % f->ed->tabn - 1);
 #ifdef UNIX
@@ -541,7 +585,7 @@ void e_pr_c_line(int y, FENSTER *f)
    j++;
   else if (uc >= 0xC0 && uc < 0xFE)
   {
-   int cp, cw, nb = e_utf8_glyph_at(b->bf[y].s + i, b->bf[y].len - i, &cp, &cw);
+   int cp, cw, nb = wpe_row_glyph_at(b, y, i, &cp, &cw);
    j += cw - 1;
    i += nb - 1;
   }
@@ -550,7 +594,7 @@ void e_pr_c_line(int y, FENSTER *f)
  if (j > s->c.x)
   i--;
  for (k = 0; k < i; k++)
-  e_mk_col(b->bf[y].s, b->bf[y].len, k, frb, f->c_st, n_nd, n_bg);
+  e_mk_col(wpe_row_bytes(b, y, NULL), wpe_row_len(b, y), k, frb, f->c_st, n_nd, n_bg);
 #ifdef DEBUGGER
  for (j = 1; j <= s->brp[0]; j++)
   if (s->brp[j] == y)
@@ -560,9 +604,9 @@ void e_pr_c_line(int y, FENSTER *f)
   }
  if (fsw)
   hollow = e_d_brk_drawn_hollow(f->datnam, y + 1);
- for (j = s->c.x; i < b->bf[y].len && j < NUM_COLS_ON_SCREEN_SAFE + s->c.x - 1; i++, j++)
+ for (j = s->c.x; i < wpe_row_len(b, y) && j < NUM_COLS_ON_SCREEN_SAFE + s->c.x - 1; i++, j++)
  {
-  e_mk_col(b->bf[y].s, b->bf[y].len, i, frb, f->c_st, n_nd, n_bg);
+  e_mk_col(wpe_row_bytes(b, y, NULL), wpe_row_len(b, y), i, frb, f->c_st, n_nd, n_bg);
   if ( y == s->da.y && i >= s->da.x && i < s->de.x )
    frb = s->fb->dy.fb;
   else if (fsw && hollow)
@@ -572,9 +616,9 @@ void e_pr_c_line(int y, FENSTER *f)
   else if ( y == s->fa.y && i >= s->fa.x && i < s->fe.x )
    frb = s->fb->ek.fb;
 #else
- for (j = s->c.x; i < b->bf[y].len && j < NUM_COLS_ON_SCREEN_SAFE + s->c.x - 1; i++, j++)
+ for (j = s->c.x; i < wpe_row_len(b, y) && j < NUM_COLS_ON_SCREEN_SAFE + s->c.x - 1; i++, j++)
  {
-  e_mk_col(b->bf[y].s, b->bf[y].len, i, frb, f->c_st, n_nd, n_bg);
+  e_mk_col(wpe_row_bytes(b, y, NULL), wpe_row_len(b, y), i, frb, f->c_st, n_nd, n_bg);
   if ( y == s->fa.y && i >= s->fa.x && i < s->fe.x )
    frb = s->fb->ek.fb;
 #endif
@@ -587,33 +631,33 @@ void e_pr_c_line(int y, FENSTER *f)
   if (diag_on)
    frb = e_lsp_decor_attr_at(s, y, i, frb);  /* recolor LSP problem/highlight cells */
 #endif
-  if (*(b->bf[y].s + i) == WPE_TAB)
+  if (wpe_row_byte(b, y, i) == WPE_TAB)
    for (k = f->ed->tabn - j % f->ed->tabn;
      k > 1 && j < NUM_COLS_ON_SCREEN + s->c.x - 2; k--, j++)
     e_pr_char(f->a.x - s->c.x + j + 1, y - s->c.y + f->a.y + 1, ' ', frb);
 #ifdef UNIX
-  else if (*(b->bf[y].s + i) < ' ')
+  else if (wpe_row_byte(b, y, i) < ' ')
   {
    e_pr_char(f->a.x - s->c.x + j +1, y - s->c.y + f->a.y + 1, '^', frb);
    if (++j >= NUM_COLS_ON_SCREEN + s->c.x - 1)
     return;
   }
 #endif
-  if (*(b->bf[y].s + i) == WPE_TAB)
+  if (wpe_row_byte(b, y, i) == WPE_TAB)
    e_pr_char(f->a.x - s->c.x + j + 1, y - s->c.y + f->a.y + 1,                  ' ', frb);
 #ifdef UNIX
-  else if (*(b->bf[y].s + i) < ' ' && j < NUM_COLS_ON_SCREEN + s->c.x - 1)
+  else if (wpe_row_byte(b, y, i) < ' ' && j < NUM_COLS_ON_SCREEN + s->c.x - 1)
    e_pr_char(f->a.x - s->c.x + j + 1, y - s->c.y + f->a.y + 1,
-     *(b->bf[y].s + i) + 'A' - 1, frb);
+     wpe_row_byte(b, y, i) + 'A' - 1, frb);
 #endif
   else
   {
-   unsigned char uc = (unsigned char) *(b->bf[y].s + i);
+   unsigned char uc = (unsigned char) wpe_row_byte(b, y, i);
    if (uc >= 0xC0 && uc < 0xFE)
    {
     /* UTF-8 lead byte: one glyph, the bytes the keys step over */
     int wc, cw;
-    int nb = e_utf8_glyph_at(b->bf[y].s + i, b->bf[y].len - i, &wc, &cw);
+    int nb = wpe_row_glyph_at(b, y, i, &wc, &cw);
     if (wc != 0)
     {
      int sx = f->a.x - s->c.x + j + 1;
@@ -628,13 +672,13 @@ void e_pr_c_line(int y, FENSTER *f)
    }
    else
     e_pr_char(f->a.x - s->c.x + j + 1, y - s->c.y + f->a.y + 1,
-      *(b->bf[y].s + i), frb);
+      wpe_row_byte(b, y, i), frb);
   }
  }
 
- e_mk_col(b->bf[y].s, b->bf[y].len, i, frb, f->c_st, n_nd, n_bg);
+ e_mk_col(wpe_row_bytes(b, y, NULL), wpe_row_len(b, y), i, frb, f->c_st, n_nd, n_bg);
 
- if ((i == b->bf[y].len) && (f->ed->edopt & ED_SHOW_ENDMARKS) &&
+ if ((i == wpe_row_len(b, y)) && (f->ed->edopt & ED_SHOW_ENDMARKS) &&
    (DTMD_ISMARKABLE(f->dtmd)) && (j < NUM_COLS_ON_SCREEN_SAFE + s->c.x - 1))
  {
   if ((y < s->mark_end.y && ( y > s->mark_begin.y ||
@@ -642,7 +686,7 @@ void e_pr_c_line(int y, FENSTER *f)
     (y == s->mark_end.y && i < s->mark_end.x && ( y > s->mark_begin.y ||
     (y == s->mark_begin.y && i >= s->mark_begin.x) ) ) )
   {
-   if (*(b->bf[y].s + i) == WPE_WR)
+   if (wpe_row_ends_line(b, y))
     e_pr_char(f->a.x - s->c.x + j + 1, y - s->c.y + f->a.y + 1,
       PWR, s->fb->ez.fb);
    else
@@ -651,7 +695,7 @@ void e_pr_c_line(int y, FENSTER *f)
   }
   else
   {
-   if (*(b->bf[y].s + i) == WPE_WR)
+   if (wpe_row_ends_line(b, y))
      e_pr_char(f->a.x - s->c.x + j + 1, y - s->c.y + f->a.y + 1,
        PWR, frb);
    else
@@ -661,7 +705,7 @@ void e_pr_c_line(int y, FENSTER *f)
   j++;
  }
 #ifdef DEBUGGER
- if (i == b->bf[y].len)            /* whole line fit -> room for EOL inlay hints */
+ if (i == wpe_row_len(b, y))       /* whole line fit -> room for EOL inlay hints */
   e_pr_inlay_eol(f, y, &j, frb);
 #endif
  for (; j < NUM_COLS_ON_SCREEN + s->c.x - 1; j++)
@@ -831,12 +875,12 @@ char *e_agets(char *str, int n, E_AFILE *ep)
  if (ep->fp)
   return(fgets(str, n, ep->fp));
  if (ep->p.y >= ep->b->mxlines ||
-   (ep->p.y == ep->b->mxlines-1 && ep->p.x > ep->b->bf[ep->p.y].len))
+   (ep->p.y == ep->b->mxlines-1 && ep->p.x > wpe_row_len(ep->b, ep->p.y)))
   return(NULL);
  for (i = 0; ep->p.y < ep->b->mxlines; (ep->p.y)++)
  {
-  for (j = ep->p.x; i < n-1 && j <= ep->b->bf[ep->p.y].len; i++, j++)
-   str[i] = ep->b->bf[ep->p.y].s[j];
+  for (j = ep->p.x; i < n-1 && j <= wpe_row_len(ep->b, ep->p.y); i++, j++)
+   str[i] = wpe_row_byte(ep->b, ep->p.y, j);
 
   if (str[i-1] == '\n')
   {
@@ -1280,11 +1324,11 @@ int e_show_nm_f(char *name, FENSTER *f, int oldn, char **oldname)
  f = f->ed->f[f->ed->mxedt];
  for (i = num, j = x+1-(len = strlen(name)); i >= 0; )
  {
-  for (len = strlen(name); j >= 0 && strncmp(name, f->b->bf[i].s+j, len);
+  for (len = strlen(name); j >= 0 && strncmp(name, wpe_row_text(f->b, i, j), len);
     j--)
    ;
   if (j < 0 && i >= 0)
-  {  i--;  j = f->b->bf[i].len-len+1;  }
+  {  i--;  j = wpe_row_len(f->b, i)-len+1;  }
   else break;
  }
  if (i >= 0)
@@ -1380,20 +1424,20 @@ int e_mbt_str(BUFFER *b, int *ii, int *jj, unsigned char c, int n, int sw,
 
  if (*cmnd != 2)
   *cmnd = 0;
- for (bsp = 0; j < b->bf[i].len && (b->bf[i].s[j] != c || bsp); j++)
+ for (bsp = 0; j < wpe_row_len(b, i) && (wpe_row_byte(b, i, j) != c || bsp); j++)
  {
-  if (b->bf[i].s[j] == '\\')
+  if (wpe_row_byte(b, i, j) == '\\')
    bsp = !bsp;
   else
    bsp = 0;
-  if (j == b->bf[i].len - 1 && bsp && i < b->mxlines-1)
+  if (j == wpe_row_len(b, i) - 1 && bsp && i < b->mxlines-1)
   {
    char *str = MALLOC(1);
    int m;
 
    i++;
    bsp = 0;
-   for (j = 0, m = b->bf[i].len; j < m && isspace(b->bf[i].s[j]); j++)
+   for (j = 0, m = wpe_row_len(b, i); j < m && isspace(wpe_row_byte(b, i, j)); j++)
     ;
    if (j > 0)
     e_del_nchar(b, b->f->s, 0, i, j);
@@ -1415,9 +1459,9 @@ int e_mbt_cnd(BUFFER *b, int *ii, int *jj, int n, int sw, int *cmnd)
 {
  int i = *ii, j = *jj + 2;
 
- for (; b->bf[i].s[j] != '*' || b->bf[i].s[j+1] != '/'; j++)
+ for (; wpe_row_byte(b, i, j) != '*' || wpe_row_byte(b, i, j + 1) != '/'; j++)
  {
-  if (j >= b->bf[i].len - 1)
+  if (j >= wpe_row_len(b, i) - 1)
   {
    if (i < b->mxlines-1)
    {
@@ -1425,11 +1469,11 @@ int e_mbt_cnd(BUFFER *b, int *ii, int *jj, int n, int sw, int *cmnd)
     int m;
 
     i++;
-    for (j = 0, m = b->bf[i].len; j < m && isspace(b->bf[i].s[j]); j++)
+    for (j = 0, m = wpe_row_len(b, i); j < m && isspace(wpe_row_byte(b, i, j)); j++)
      ;
     if (j > 0)
      e_del_nchar(b, b->f->s, 0, i, j);
-    if (j < m && (b->bf[i].s[0] != '*' || b->bf[i].s[1] != '/'))
+    if (j < m && (wpe_row_byte(b, i, 0) != '*' || wpe_row_byte(b, i, 1) != '/'))
     {
      str = e_mbt_mk_sp(str, n+b->cn->autoindent, sw, &m);
      e_ins_nchar(b, b->f->s, str, 0, i, m);
@@ -1498,10 +1542,10 @@ int e_mk_beauty(int sw, int ndif, FENSTER *f)
   n = 0;
  else
  {
-  for (n = j = 0; j < b->bf[i].len && isspace(b->bf[i].s[j]); j++)
+  for (n = j = 0; j < wpe_row_len(b, i) && isspace(wpe_row_byte(b, i, j)); j++)
   {
-   if (b->bf[i].s[j] == ' ') n++;
-   else if (b->bf[i].s[j] == '\t')
+   if (wpe_row_byte(b, i, j) == ' ') n++;
+   else if (wpe_row_byte(b, i, j) == '\t')
     n += f->ed->tabn - (n % f->ed->tabn);
   }
  }
@@ -1512,18 +1556,18 @@ int e_mk_beauty(int sw, int ndif, FENSTER *f)
  nvek[0] = n;
  for (cm_sv = 1, cmnd = 1, brk = 0; i < nd; i++)
  {
-  for (j = 0; j < b->bf[i].len && isspace(b->bf[i].s[j]); j++)
+  for (j = 0; j < wpe_row_len(b, i) && isspace(wpe_row_byte(b, i, j)); j++)
    ;
   if (i > bg)
   {
-   for (k = b->bf[i-1].len-1; k >= 0 && isspace(b->bf[i-1].s[k]); k--);
-   if (k >= 0) e_del_nchar(b, s, k + 1, i-1, b->bf[i-1].len-1-k);
+   for (k = wpe_row_len(b, i-1)-1; k >= 0 && isspace(wpe_row_byte(b, i-1, k)); k--);
+   if (k >= 0) e_del_nchar(b, s, k + 1, i-1, wpe_row_len(b, i-1)-1-k);
    e_del_nchar(b, s, 0, i, j);
-   if (b->bf[i].len > 0 && b->bf[i].s[0] != '#' && 
-     (b->bf[i].s[0] != '/' || b->bf[i].s[1] != '*'))
+   if (wpe_row_len(b, i) > 0 && wpe_row_byte(b, i, 0) != '#' &&
+     (wpe_row_byte(b, i, 0) != '/' || wpe_row_byte(b, i, 1) != '*'))
    {
-    if ((cmnd == 0 && (!cm_sv || b->bf[i].s[0] != '{')) ||
-      (cmnd == 2 && b->bf[i-1].s[k] == '\\'))
+    if ((cmnd == 0 && (!cm_sv || wpe_row_byte(b, i, 0) != '{')) ||
+      (cmnd == 2 && wpe_row_byte(b, i-1, k) == '\\'))
     {
      tstr = e_mbt_mk_sp(tstr, !cmnd ? n+b->cn->autoindent : b->cn->autoindent,
        (sw & 4) ? 0 : f->ed->tabn, &m);
@@ -1541,17 +1585,17 @@ int e_mk_beauty(int sw, int ndif, FENSTER *f)
   }
   if (cmnd == 0) cm_sv = cbrk ? 1 : 0;
   else cm_sv = cmnd;
-  for (cmnd = 1; j < b->bf[i].len; j++)
+  for (cmnd = 1; j < wpe_row_len(b, i); j++)
   {
-   if (b->bf[i].s[j] == '\"')
+   if (wpe_row_byte(b, i, j) == '\"')
     e_mbt_str(b, &i, &j, '\"', n, (sw & 4) ? 0 : f->ed->tabn, &cmnd);
-   else if (f->b->bf[i].s[j] == '\'')
+   else if (wpe_row_byte(b, i, j) == '\'')
     e_mbt_str(b, &i, &j, '\'', n, (sw & 4) ? 0 : f->ed->tabn, &cmnd);
-   else if (b->bf[i].s[j] == '/' && b->bf[i].s[j+1] == '*')
+   else if (wpe_row_byte(b, i, j) == '/' && wpe_row_byte(b, i, j + 1) == '*')
     e_mbt_cnd(b, &i, &j, n, (sw & 4) ? 0 : f->ed->tabn, &cmnd);
-   else if (b->bf[i].s[j] == '/' && b->bf[i].s[j+1] == '/') break;
-   else if (b->bf[i].s[j] == ';') {  cmnd = cbrk ? 0 : 1;  nstrct = 0;  }
-   else if (b->bf[i].s[j] == '#' && ispif(b->bf[i].s))
+   else if (wpe_row_byte(b, i, j) == '/' && wpe_row_byte(b, i, j + 1) == '/') break;
+   else if (wpe_row_byte(b, i, j) == ';') {  cmnd = cbrk ? 0 : 1;  nstrct = 0;  }
+   else if (wpe_row_byte(b, i, j) == '#' && ispif(wpe_row_text(b, i, 0)))
    {
     nif++;
     ifvekb = REALLOC(ifvekb, (nif+1)*sizeof(int));
@@ -1560,7 +1604,7 @@ int e_mk_beauty(int sw, int ndif, FENSTER *f)
     ifvekr[nif] = cbrk;
     cmnd = 2;
    }
-   else if (b->bf[i].s[j] == '#' && nif > 0 && ispelse(b->bf[i].s))
+   else if (wpe_row_byte(b, i, j) == '#' && nif > 0 && ispelse(wpe_row_text(b, i, 0)))
    {
     brk = ifvekb[nif];
     cbrk = ifvekr[nif];
@@ -1568,44 +1612,44 @@ int e_mk_beauty(int sw, int ndif, FENSTER *f)
     tstr = e_mbt_mk_sp(tstr, n, (sw & 4) ? 0 : f->ed->tabn, &m);
     cmnd = 2;
    }
-   else if (b->bf[i].s[j] == '#' && ispendif(b->bf[i].s))
+   else if (wpe_row_byte(b, i, j) == '#' && ispendif(wpe_row_text(b, i, 0)))
    {  nif--;  cmnd = 2;  }
-   else if (b->bf[i].s[j] == '#')
+   else if (wpe_row_byte(b, i, j) == '#')
    {
     cmnd = 2;
-    for (j++; j < b->bf[i].len; j++)
+    for (j++; j < wpe_row_len(b, i); j++)
     {
-     if (j == b->bf[i].len - 1 && i < b->mxlines-1 && b->bf[i].s[j] == '\\')
+     if (j == wpe_row_len(b, i) - 1 && i < b->mxlines-1 && wpe_row_byte(b, i, j) == '\\')
      {  i++;  j = 0;  }
-     else if (b->bf[i].s[j] == '\"')
+     else if (wpe_row_byte(b, i, j) == '\"')
       e_mbt_str(b, &i, &j, '\"', n, (sw & 4) ? 0 : f->ed->tabn, &cmnd);
-     else if (f->b->bf[i].s[j] == '\'')
+     else if (wpe_row_byte(b, i, j) == '\'')
       e_mbt_str(b, &i, &j, '\'', n, (sw & 4) ? 0 : f->ed->tabn, &cmnd);
-     else if (b->bf[i].s[j] == '/' && b->bf[i].s[j+1] == '*')
+     else if (wpe_row_byte(b, i, j) == '/' && wpe_row_byte(b, i, j + 1) == '*')
       e_mbt_cnd(b, &i, &j, n, (sw & 4) ? 0 : f->ed->tabn, &cmnd);
-     else if (b->bf[i].s[j] == '/' && b->bf[i].s[j+1] == '/') break;
+     else if (wpe_row_byte(b, i, j) == '/' && wpe_row_byte(b, i, j + 1) == '/') break;
     }
-    if (b->bf[i].s[j] == '/' && b->bf[i].s[j+1] == '/') break;
+    if (wpe_row_byte(b, i, j) == '/' && wpe_row_byte(b, i, j + 1) == '/') break;
    }
-   else if (b->bf[i].s[j] == '(') {  nstrct = 0;  cmnd = 0;  cbrk++;  }
-   else if (b->bf[i].s[j] == ')') {  nstrct = 0;  cmnd = 0;  cbrk--;  }
-   else if (b->bf[i].s[j] == '{')
+   else if (wpe_row_byte(b, i, j) == '(') {  nstrct = 0;  cmnd = 0;  cbrk++;  }
+   else if (wpe_row_byte(b, i, j) == ')') {  nstrct = 0;  cmnd = 0;  cbrk--;  }
+   else if (wpe_row_byte(b, i, j) == '{')
    {
     brk++;
     cmnd = 1;
-    for (k = j + 1; k < b->bf[i].len && isspace(b->bf[i].s[k]); k++);
-    if (k < b->bf[i].len && (b->bf[i].s[k] != '/' ||
-      (b->bf[i].s[k+1] != '*' && b->bf[i].s[k+1] != '/')))
+    for (k = j + 1; k < wpe_row_len(b, i) && isspace(wpe_row_byte(b, i, k)); k++);
+    if (k < wpe_row_len(b, i) && (wpe_row_byte(b, i, k) != '/' ||
+      (wpe_row_byte(b, i, k + 1) != '*' && wpe_row_byte(b, i, k + 1) != '/')))
     {
      e_del_nchar(b, s, j+1, i, k-j-1);
      e_ins_nchar(b, s, bstr, j+1, i, ndif-1);
     }
     if (nstrct == 1)
     {
-     if (k >= b->bf[i].len) n = nvek[brk-1];
+     if (k >= wpe_row_len(b, i)) n = nvek[brk-1];
      else
      {
-      for (k = j - 1; k >= 0 && isspace(b->bf[i].s[k]); k--);
+      for (k = j - 1; k >= 0 && isspace(wpe_row_byte(b, i, k)); k--);
       if (k >= 0) nstrct++;
      }
      nstrct++;
@@ -1619,7 +1663,7 @@ int e_mk_beauty(int sw, int ndif, FENSTER *f)
     {
      for(n = k = 0; k < j; k++)
      {
-      if (b->bf[i].s[k] == '\t')
+      if (wpe_row_byte(b, i, k) == '\t')
        n += f->ed->tabn - (n % f->ed->tabn);
       else n++;
      }
@@ -1629,7 +1673,7 @@ int e_mk_beauty(int sw, int ndif, FENSTER *f)
     nvek = REALLOC(nvek, (brk+1)*sizeof(int));
     nvek[brk] = n;
    }
-   else if (f->b->bf[i].s[j] == '}')
+   else if (wpe_row_byte(b, i, j) == '}')
    {
     brk--;
     cmnd = 1;
@@ -1648,7 +1692,7 @@ int e_mk_beauty(int sw, int ndif, FENSTER *f)
     }
     n -= ndif;
     tstr = e_mbt_mk_sp(tstr, n, (sw & 4) ? 0 : f->ed->tabn, &m);
-    for (k = j - 1; k >= 0 && isspace(b->bf[i].s[k]); k--);
+    for (k = j - 1; k >= 0 && isspace(wpe_row_byte(b, i, k)); k--);
     e_del_nchar(b, s, k+1, i, j-1-k);
     if (k > 0)
     {  e_ins_nchar(b, s, bstr, k+1, i, ndif-1);  j = k+ndif+1;  }
@@ -1657,15 +1701,15 @@ int e_mk_beauty(int sw, int ndif, FENSTER *f)
     n = nvek[brk];
     tstr = e_mbt_mk_sp(tstr, n, (sw & 4) ? 0 : f->ed->tabn, &m);
    }
-   else if (((j == 0 || !isalnum1(b->bf[i].s[j-1])) &&
-     (iscase(b->bf[i].s+j) || isstatus(b->bf[i].s+j))) ||
-     (nstrct > 1 && isalnum1(b->bf[i].s[j])))
+   else if (((j == 0 || !isalnum1(wpe_row_byte(b, i, j-1))) &&
+     (iscase(wpe_row_text(b, i, j)) || isstatus(wpe_row_text(b, i, j)))) ||
+     (nstrct > 1 && isalnum1(wpe_row_byte(b, i, j))))
    {
     if (vkcs[nic])
     {
      n = nvek[vkcb[nic]+1];
      tstr = e_mbt_mk_sp(tstr, n, (sw & 4) ? 0 : f->ed->tabn, &m);
-     for (k = j - 1; k >= 0 && isspace(b->bf[i].s[k]); k--);
+     for (k = j - 1; k >= 0 && isspace(wpe_row_byte(b, i, k)); k--);
      e_del_nchar(b, s, k+1, i, j-1-k);
      if (k > 0)
      {  e_ins_nchar(b, s, bstr, k+1, i, ndif-1);  j = k+ndif+1;  }
@@ -1674,18 +1718,18 @@ int e_mk_beauty(int sw, int ndif, FENSTER *f)
     }
     else
     {  brk++;  vkcs[nic] = 1;  }
-    if (nstrct < 2 || isstatus(b->bf[i].s+j))
+    if (nstrct < 2 || isstatus(wpe_row_text(b, i, j)))
     {
-     for (j++; j < b->bf[i].len && b->bf[i].s[j] != ':'; j++);
-     for (k = j + 1; k < b->bf[i].len && isspace(b->bf[i].s[k]); k++);
-     if (k < b->bf[i].len && (b->bf[i].s[k] != '/' ||
-       (b->bf[i].s[k+1] != '*' && b->bf[i].s[k+1] != '/')))
+     for (j++; j < wpe_row_len(b, i) && wpe_row_byte(b, i, j) != ':'; j++);
+     for (k = j + 1; k < wpe_row_len(b, i) && isspace(wpe_row_byte(b, i, k)); k++);
+     if (k < wpe_row_len(b, i) && (wpe_row_byte(b, i, k) != '/' ||
+       (wpe_row_byte(b, i, k + 1) != '*' && wpe_row_byte(b, i, k + 1) != '/')))
      {
       e_del_nchar(b, s, j+1, i, k-j-1);
       e_ins_nchar(b, s, bstr, j+1, i, ndif-1);
       for (n = k = 0; k < j; k++)
       {
-       if (b->bf[i].s[k] == '\t')
+       if (wpe_row_byte(b, i, k) == '\t')
         n += f->ed->tabn - (n % f->ed->tabn);
        else
         n++;
@@ -1703,8 +1747,8 @@ int e_mk_beauty(int sw, int ndif, FENSTER *f)
     cmnd = 3;
     nstrct = 0;
    }
-   else if ((j == 0 || !isalnum1(b->bf[i].s[j-1])) &&
-     (!strncmp(b->bf[i].s+j, "switch", 6) && !isalnum1(b->bf[i].s[j+6])))
+   else if ((j == 0 || !isalnum1(wpe_row_byte(b, i, j-1))) &&
+     (!strncmp(wpe_row_text(b, i, j), "switch", 6) && !isalnum1(wpe_row_byte(b, i, j + 6))))
    {
     nic++;
     vkcb = REALLOC(vkcb, (nic+1)*sizeof(int));
@@ -1712,13 +1756,13 @@ int e_mk_beauty(int sw, int ndif, FENSTER *f)
     vkcs[nic] = 0;
     vkcb[nic] = brk;
    }
-   else if ((j == 0 || !isalnum1(b->bf[i].s[j-1])) &&
-     ((!strncmp(b->bf[i].s+j, "class", 5) && !isalnum1(b->bf[i].s[j+5])) ||
-     (!strncmp(b->bf[i].s+j, "struct", 6) && !isalnum1(b->bf[i].s[j+6]))))
+   else if ((j == 0 || !isalnum1(wpe_row_byte(b, i, j-1))) &&
+     ((!strncmp(wpe_row_text(b, i, j), "class", 5) && !isalnum1(wpe_row_byte(b, i, j + 5))) ||
+     (!strncmp(wpe_row_text(b, i, j), "struct", 6) && !isalnum1(wpe_row_byte(b, i, j + 6)))))
     nstrct = 1;
-   else if (cmnd == 1 && !isspace(f->b->bf[i].s[j]))
+   else if (cmnd == 1 && !isspace(wpe_row_byte(b, i, j)))
     cmnd = 0;
-   else if (cmnd == 3 && f->b->bf[i].s[j] == ':') cmnd = 1;
+   else if (cmnd == 3 && wpe_row_byte(b, i, j) == ':') cmnd = 1;
   }
  }
  FREE(nvek);  FREE(tstr);  FREE(bstr);

@@ -10,6 +10,7 @@
 
 #include "messages.h"
 #include "edit.h"
+#include "we_rowread.h"
 #include "WeExpArr.h"
 #include "progr.h"
 #include "we_buffer.h"
@@ -486,10 +487,9 @@ static char *ws_window_text(FENSTER *w)
  int y;
  if (!t) return NULL;
  for (y = 0; y < b->mxlines; y++) {
-  const char *ls = (const char *)b->bf[y].s;
-  int ll = b->bf[y].len < 0 ? 0 : b->bf[y].len;
+  int ll = wpe_row_len(b, y) < 0 ? 0 : wpe_row_len(b, y);
   if (len + (size_t)ll + 2 > cap) { char *nt; while (len + (size_t)ll + 2 > cap) cap *= 2; nt = realloc(t, cap); if (!nt) { free(t); return NULL; } t = nt; }
-  if (ls && ll > 0) { memcpy(t + len, ls, (size_t)ll); len += (size_t)ll; }
+  if (wpe_row_stored(b, y) && ll > 0) { memcpy(t + len, wpe_row_bytes(b, y, NULL), (size_t)ll); len += (size_t)ll; }
   t[len++] = '\n';
  }
  t[len] = '\0';

@@ -177,6 +177,17 @@ Bugs fixed in 1.6.x:
   #else and holds another '#', and no longer reads beyond the text when an
   #else row is the last row or a comment starts or ends at column 0; it
   says No Matching Bracket! where it used to die.
+* Run > Beautify no longer reads outside the text after a continued #define
+  followed by an empty line, or on a directive line as wide as the window's
+  rows that ends in an open comment, and a syntax_def whose continue column
+  is wider than the rows no longer makes the editor read past them when the
+  file opens.  Every part of the editor that looks at the bytes of a row (the
+  beautifier, the painters of the text, of help pages and of Info pages, the
+  syntax colours, the bracket matcher, the cursor and editing keys, the block
+  and search commands, the build messages, the Stack window and the language
+  server and assistant panes) now reads a row only through one set of readers,
+  so a position the text does not have reads as no character; the screen and
+  the text show the same as before.
 * In the graphical editor (X11 and Wayland) a program the editor starts (a
   compile, the Run program, a debugger, a language server) could stop before
   it ever ran, with nothing in Messages, when a library thread held a lock at

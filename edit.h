@@ -617,7 +617,7 @@ void e_cursor(FENSTER *f, int sw);
 int e_del_nchar(BUFFER *b, SCHIRM *s, int x, int y, int n);
 int e_ins_nchar(BUFFER *b, SCHIRM *sch, unsigned char *s, int xa, int ya,
   int n);
-void e_line_make_hard_empty(STRING *l);
+void e_line_make_hard_empty(BUFFER *b, int y);
 int e_replace_occurrence(BUFFER *b, SCHIRM *s, int x, int y, int sn,
   unsigned char *text, int rn);
 void e_ins_point_at(BUFFER *b, int y, int off, POINT *p);
@@ -745,7 +745,7 @@ int e_help_ret(FENSTER *f);
 int e_topic_search(FENSTER *f);
 
 /*   we_hfkt.c   */
-int e_str_len(unsigned char *s);
+int e_str_len(const unsigned char *s);
 #if 0
 int e_str_nrc(unsigned char *s);
 int e_toupper(int c);
@@ -1269,7 +1269,7 @@ int e_d_program_runs(void);
 int e_deb_options(FENSTER *f);
 int e_d_step_next(FENSTER *f, int sw);
 int e_make_line_num(char *str, char *file);
-int e_make_line_num2(char *str, char *file);
+int e_make_line_num2(const char *str, char *file);
 int e_d_goto_break(char *file, int line, FENSTER *f);
 int e_d_goto_source(char *file, int line, FENSTER *f);
 int e_d_is_watch(int c, FENSTER *f);
