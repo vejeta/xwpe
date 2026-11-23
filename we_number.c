@@ -12,6 +12,7 @@
 
 #include <errno.h>
 #include <limits.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -38,7 +39,6 @@
 #define E_NUMBER_COUNT_LEAD   "xwperc: "
 #define E_NUMBER_COMPACT_JOIN ", "
 #define E_NUMBER_COMPACT_VALUE_MAX 8
-#define E_NUMBER_CUT_MARK     "..."
 
 /*
    The one table.  The range is what the editor can work with: Tabstops is a
@@ -152,8 +152,8 @@ static int e_number_text_is_zero(const char *text)
 
 void wpe_number_range_words(char *buf, size_t n, const WpeNumberType *t, const char *text)
 {
- snprintf(buf, n, " %s: %d to %d%s", t->label, t->min, t->max,
-          e_number_text_is_zero(text) ? " (not 0)" : "");
+ (void)wpe_fmt_shown(buf, n, " %s: %d to %d%s", t->label, t->min, t->max,
+                     e_number_text_is_zero(text) ? " (not 0)" : "");
 }
 
 /**
@@ -322,10 +322,38 @@ void e_number_write(ECNT *cn, const WpeNumberType *t, FILE *fp)
 static void e_number_refusal_words(char *buf, size_t n, ECNT *cn, const WpeNumberType *t)
 {
  const char *text = e_number_refused_text[t->kind];
+ WpeFmtText words;
 
- snprintf(buf, n, "%s : %.*s is not %d to %d, %d used (the file keeps %.*s)",
-          t->key, E_NUMBER_SHOWN_MAX, text, t->min, t->max,
-          *e_number_slot(cn, t), E_NUMBER_SHOWN_MAX, text);
+ wpe_fmt_begin_shown(&words, buf, n);
+ wpe_fmt_add(&words, "%s : ", t->key);
+ wpe_fmt_add_shown(&words, E_NUMBER_SHOWN_MAX, text);
+ wpe_fmt_add(&words, " is not %d to %d, %d used (the file keeps ", t->min, t->max,
+             *e_number_slot(cn, t));
+ wpe_fmt_add_shown(&words, E_NUMBER_SHOWN_MAX, text);
+ wpe_fmt_add(&words, ")");
+ if (wpe_fmt_end(&words, NULL) == WPE_FMT_FAILED)
+  buf[0] = '\0';   /* the C library refused a value: say nothing rather than half */
+}
+
+/**
+ * e_number_append - Add a sentence to the end of the start-up line.
+ * @line: the line so far; @n: its size; @fmt: the sentence to add.
+ *
+ * A part that does not fit the line's room ends the line in "..." where a
+ * character ends, so the user sees the line was cut.  A line already full
+ * takes nothing more.
+ */
+static void e_number_append(char *line, size_t n, const char *fmt, ...) WPE_FMT_PRINTF(3, 4);
+static void e_number_append(char *line, size_t n, const char *fmt, ...)
+{
+ size_t used = strlen(line);
+ va_list ap;
+
+ if (used + 1 >= n)
+  return;
+ va_start(ap, fmt);
+ (void)wpe_fmt_vshown(line + used, n - used, fmt, ap);
+ va_end(ap);
 }
 
 /**
@@ -341,12 +369,10 @@ static void e_number_refusals_line(char *line, size_t n, ECNT *cn)
 
  for (k = 0; k < WPE_NUM_KINDS; k++)
  {
-  size_t used = strlen(line);
-
   if (!e_number_refused_noted[k])
    continue;
   e_number_refusal_words(words, sizeof words, cn, WPE_NUM(k));
-  snprintf(line + used, n - used, "%s%s%s", used ? E_NUMBER_LINE_JOIN : "", lead, words);
+  e_number_append(line, n, "%s%s%s", line[0] ? E_NUMBER_LINE_JOIN : "", lead, words);
   lead = "";
  }
 }
@@ -361,9 +387,10 @@ static void e_number_refusals_line(char *line, size_t n, ECNT *cn)
 static void e_number_short_value(char *buf, size_t n, const char *text)
 {
  if (strlen(text) <= E_NUMBER_COMPACT_VALUE_MAX)
-  snprintf(buf, n, "%s", text);
+  (void)wpe_fmt_shown(buf, n, "%s", text);
  else
-  snprintf(buf, n, "%.*s%s", E_NUMBER_COMPACT_VALUE_MAX, text, E_NUMBER_CUT_MARK);
+  (void)wpe_fmt_shown(buf, n, "%.*s%s", wpe_fmt_cut_len(text, E_NUMBER_COMPACT_VALUE_MAX), text,
+                      WPE_FMT_CUT_MARK);
 }
 
 /** e_number_noted_count - How many numbers of the file the start-up line has to name. */
@@ -389,25 +416,24 @@ static int e_number_noted_count(void)
 static void e_number_compact_line(char *line, size_t n, const char *lead, int with_values,
                                   int limit)
 {
- char value[E_NUMBER_COMPACT_VALUE_MAX + sizeof E_NUMBER_CUT_MARK];
+ char value[E_NUMBER_COMPACT_VALUE_MAX + sizeof WPE_FMT_CUT_MARK];
  int k, shown = 0, total = e_number_noted_count();
 
- snprintf(line + strlen(line), n - strlen(line), "%s", lead);
+ e_number_append(line, n, "%s", lead);
  for (k = 0; k < WPE_NUM_KINDS && shown < limit; k++)
  {
   if (!e_number_refused_noted[k])
    continue;
-  snprintf(line + strlen(line), n - strlen(line), "%s%s",
-           shown ? E_NUMBER_COMPACT_JOIN : "", WPE_NUM(k)->key);
+  e_number_append(line, n, "%s%s", shown ? E_NUMBER_COMPACT_JOIN : "", WPE_NUM(k)->key);
   if (with_values)
   {
    e_number_short_value(value, sizeof value, e_number_refused_text[k]);
-   snprintf(line + strlen(line), n - strlen(line), " %s", value);
+   e_number_append(line, n, " %s", value);
   }
   shown++;
  }
  if (shown < total)
-  snprintf(line + strlen(line), n - strlen(line), " +%d", total - shown);
+  e_number_append(line, n, " +%d", total - shown);
 }
 
 /**
@@ -420,7 +446,7 @@ static void e_number_count_line(char *line, size_t n, const char *lead)
 {
  int total = e_number_noted_count();
 
- snprintf(line, n, "%s%d %s not used", lead, total, total == 1 ? "number" : "numbers");
+ (void)wpe_fmt_shown(line, n, "%s%d %s not used", lead, total, total == 1 ? "number" : "numbers");
 }
 
 /**
@@ -471,7 +497,7 @@ static int e_number_join_after_keys(char *line, size_t n, const char *numbers, i
  kind = e_opt_ignored_line(keys, sizeof keys, avail);
  if (kind != E_OPT_IGNORED_LONG && kind != E_OPT_IGNORED_SHORT)
   return 0;
- snprintf(line, n, "%s%s%s", keys, E_NUMBER_LINE_JOIN, numbers);
+ (void)wpe_fmt_shown(line, n, "%s%s%s", keys, E_NUMBER_LINE_JOIN, numbers);
  return 1;
 }
 
@@ -498,7 +524,7 @@ static void e_number_fit_line(char *line, size_t n, ECNT *cn)
  {
   if (!joined && (int)strlen(numbers) <= room)
   {
-   snprintf(line, n, "%s", numbers);
+   (void)wpe_fmt_shown(line, n, "%s", numbers);
    return;
   }
   if (joined && e_number_join_after_keys(line, n, numbers, room))

@@ -139,9 +139,34 @@ build_asan_binary() {
   ln -sfn we-asan "$top/xwpe-asan" # and the graphical rows need the graphical name
 }
 
+# asan_run_unit NAME CFLAGS LIBS SOURCES... - build one C unit with
+# AddressSanitizer and UBSan and run it.  The units that write text into
+# storage hold guard bytes after every storage, so a plain build already fails
+# them; here a byte written past a size is a sanitizer report as well.
+asan_run_unit() {
+  unit=$1; flags=$2; libs=$3; shift 3
+  # shellcheck disable=SC2086
+  ${CC:-cc} -std=gnu17 -g -O1 -fsanitize=address,undefined \
+     -fno-omit-frame-pointer -include config.h -I. $flags \
+     "$@" -o "$asan_src/$unit-asan" $libs &&
+  ASAN_OPTIONS=detect_leaks=1 "$asan_src/$unit-asan"
+}
+
+# asan_units - the units of the owner of a formatted text and of the
+# assistant's HTTP header, under the sanitizers.
+asan_units() {
+  mkdir -p "$asan_src"
+  echo "== formatted-text units under AddressSanitizer and UBSan =="
+  asan_run_unit test_fmt -DWPE_FMT_HEAP_LIMIT=1000 "" tests/test_fmt.c we_fmt.c
+  asan_run_unit test_numtext "" "" tests/test_numtext.c we_fmt.c
+  asan_run_unit test_ai_http "" "-lssl -lcrypto" tests/test_ai_http.c \
+     we_ai_http.c we_ai_http_sync.c we_fdloop.c we_fmt.c
+}
+
 mode=functional
 case "${1:-}" in
   ""|--functional) mode=functional ;;
+  --asan-units)    mode=asan-units ;;
   --asan)          mode=asan ;;
   --asan-build)    mode=asan-build ;;
   --x11)           mode=x11 ;;
@@ -151,6 +176,7 @@ case "${1:-}" in
     echo "  (no arg)  C unit (make check) + pyte suite (./wpe) + X11 GUI (./xwpe)"
     echo "  --asan    build we-asan and run the pyte suite under AddressSanitizer"
     echo "  --asan-build  only build we-asan (in .asan-build, ./we untouched), for the harness"
+    echo "  --asan-units  ONLY the C units of the formatted-text owner under ASan+UBSan"
     echo "  --x11     ONLY the headless X11 GUI suite (./xwpe under Xvfb+matchbox)"
     echo "  --wayland ONLY the native Wayland GUI suite (./xwpe under Xvfb+weston)"
     echo "The pyte tests honour \$WPE_BIN (default ../wpe); X11/Wayland honour \$XWPE_BIN."
@@ -197,6 +223,10 @@ asan-build)
   build_asan_binary
   ;;
 
+asan-units)
+  asan_units
+  ;;
+
 asan)
   # The AddressSanitizer build catches the silent memory bugs (heap overflow,
   # use-after-free) that the functional run cannot see on a normal build.
@@ -211,6 +241,7 @@ asan)
      -fno-omit-frame-pointer -include config.h -I. \
      tests/test_brkmatch.c we_brkmatch.c -o "$asan_src/test_brkmatch-asan" &&
    ASAN_OPTIONS=detect_leaks=0 "$asan_src/test_brkmatch-asan")
+  asan_units
   echo "== pyte suite under AddressSanitizer (WPE_BIN=./wpe-asan) =="
   # ASan runs about twice as slow, so stretch every wait unless the caller
   # already chose a scale.

@@ -109,7 +109,27 @@ jobs:
           make check
           TESTS="tests/check-build-config.sh test_checkheader test_syntax_def test_fdloop test_clipboard
           test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor
-          test_dap test_ai_http test_ai_diff"
+          test_dap test_ai_http test_ai_diff test_fmt test_numtext
+          tests/check-fmt-writes.sh"
+
+      - name: C units under the sanitizers (AddressSanitizer + UBSan)
+        # The owner of a formatted text and its callers (the request header
+        # of the assistant's HTTP client included) run with the sanitizers, so
+        # a byte written past a size is a report here and not only a guard
+        # byte that changed.  The same step takes any further unit that reads
+        # or writes rows of the text.
+        run: |
+          tests/run-tests.sh --asan-units
+          # The rows that drive the editor's own formatted texts, run on
+          # the sanitizer build under the name wpe-asan.  The pytest venv
+          # of the next step does not exist yet, so this step makes its own.
+          tests/run-tests.sh --asan-build
+          python3 -m venv /tmp/asanenv
+          /tmp/asanenv/bin/pip install --quiet pyte==0.8.2 pytest pillow
+          ASAN_OPTIONS=detect_leaks=0:abort_on_error=1 XWPE_TEST_WAIT_SCALE=2 \
+            WPE_BIN="$PWD/wpe-asan" /tmp/asanenv/bin/python -m pytest -q \
+            tests/test_fmt_sites.py tests/test_ai_formatted_requests.py \
+            tests/test_debugger_command_length.py
 
       - name: Set up a pytest venv + a private XDG_RUNTIME_DIR
         run: |

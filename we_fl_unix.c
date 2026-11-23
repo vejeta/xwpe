@@ -9,6 +9,7 @@
 #include "edit.h"
 #include "we_ai.h"
 #include "we_buffer.h"
+#include "we_fmt.h"
 #include "we_lineend.h"
 #include "we_rowfind.h"
 #include "we_child.h"
@@ -36,6 +37,8 @@ extern char    *e_tmp_dir;
 #endif
 
 /** The three transfers; the numbers are the folder walk's `sw`. */
+/* The name Make Directory gives the folder it creates. */
+#define E_NEW_DIR_NAME "new.dir"
 #define FM_TRANSFER_MOVE 0
 #define FM_TRANSFER_COPY 1
 #define FM_TRANSFER_LINK 2
@@ -283,16 +286,15 @@ int WpeCreateFileManager(int sw, ECNT *cn, char *dirct)
     e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
 
 
-  if((sfile = MALLOC(strlen(f->dirct)+strlen(b->rdfile)+2)) == NULL)
-    e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
-
   /* determine current directory */
   b->cd = WpeCreateWorkingDirTree(f->save, cn);
   /* it is necessary to do this, because the file manager may not be
      in the appropriate directory here */
-  sprintf(sfile, "%s/%s", f->dirct, SUDIR);
+  if((sfile = wpe_path_join_dup(f->dirct, SUDIR)) == NULL)
+    e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
   /* find all other directories in the current */
   b->dd = e_find_dir(sfile, f->ed->flopt & FM_SHOW_HIDDEN_DIRS ? 1 : 0);
+  FREE(sfile);
   /* setup the drawing in the dir tree window */
   b->dw->df = WpeGraphicalDirTree(b->cd, b->dd, cn);
 
@@ -301,7 +303,8 @@ int WpeCreateFileManager(int sw, ECNT *cn, char *dirct)
     i |= 2;
 
   /* finds all files matching the pattern */
-  sprintf(sfile, "%s/%s", f->dirct, b->rdfile);
+  if((sfile = wpe_path_join_dup(f->dirct, b->rdfile)) == NULL)
+    e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
   b->df = e_find_files(sfile, i);
 
   FREE(sfile);
@@ -1848,12 +1851,15 @@ int WpeHandleFileManager(ECNT * cn)
           if (cold != AltN)
             WpeFileNameTake(f, filen, *(b->df->name + b->fw->nf));
           dirtmp = cn->f[cn->mxedt - 1]->dirct;
-          ftmp = MALLOC(strlen(f->dirct) + strlen(filen) + 2);
           len = strlen(dirtmp);
+          /* The name as the project stores it: the folder already ends in
+             its separator here, so the two parts are joined as they are. */
           if (strncmp(dirtmp, f->dirct, len) == 0)
-            sprintf(ftmp, "%s%s", f->dirct + len, filen);
+            ftmp = wpe_fmt_dup("%s%s", f->dirct + len, filen);
           else
-            sprintf(ftmp, "%s%s", f->dirct, filen);
+            ftmp = wpe_fmt_dup("%s%s", f->dirct, filen);
+          if (ftmp == NULL)
+            e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
           e_prj_add_file_unique(fw, ftmp, f);
           c = AltN;
         }
@@ -2095,6 +2101,18 @@ int WpeGrepFile(char *file, const FIND *fd)
   return(0);
 }
 
+/**
+ * WpeMakeNewDir - Make the folder "new.dir" inside the File Manager's
+ * folder, or accept it when it is already there.
+ * @f: the File Manager's window.
+ *
+ * The user gets "new.dir" in the folder shown, with a separator added only
+ * when the folder name lacks one.  An empty folder name gives "new.dir" (the
+ * rule of wpe_path_join_dup, frozen by the row "join_dup empty folder" of
+ * tests/test_path.c; the code before it built "/new.dir" after reading the
+ * byte before the name).
+ * Return: 0 when the folder exists or was made, else 1 or the refusal.
+ */
 int WpeMakeNewDir(FENSTER *f)
 {
   char           *dirct;
@@ -2105,13 +2123,10 @@ int WpeMakeNewDir(FENSTER *f)
   umask(msk = umask(077));
   mode = 0777 & ~msk;
 
-  if((dirct = MALLOC(strlen(f->dirct) + 9)) == NULL)
+  /* A folder name that is empty gives "new.dir" (the path owner adds a
+     separator after a folder, never before a name alone). */
+  if((dirct = wpe_path_join_dup(f->dirct, E_NEW_DIR_NAME)) == NULL)
     e_error(e_msg[ERR_LOWMEM], 1, f->ed->fb);
-
-  if(f->dirct[strlen(f->dirct) - 1] != DIRC)
-    sprintf(dirct, "%s/new.dir", f->dirct);
-  else
-    sprintf(dirct, "%snew.dir", f->dirct);
 
   /* check existence and status (whether it is directory) */
   if(stat(dirct, &buf))
@@ -2524,14 +2539,9 @@ struct dirfile *WpeGraphicalFileList(struct dirfile *df, int sw, ECNT *cn)
  */
 static char *WpeTreeLabel(int indent, const char *lead, const char *glyph, const char *name)
 {
-  size_t          pad = indent > 0 ? (size_t)indent : 0;
-  char           *row = MALLOC(pad + strlen(lead) + strlen(glyph) + strlen(name) + 1);
+  int             pad = indent > 0 ? indent : 0;
 
-  if(row == NULL)
-    return(NULL);
-  memset(row, ' ', pad);
-  sprintf(row + pad, "%s%s%s", lead, glyph, name);
-  return(row);
+  return(wpe_fmt_dup("%*s%s%s%s", pad, "", lead, glyph, name));
 }
 
 /**
@@ -3473,6 +3483,35 @@ int WpePrintFile(FENSTER * f)
 }
 #endif
 
+/**
+ * WpeSearchFolder - The folder a Find in Files starts in, written with a
+ * separator at its end, so the name of each file found is appended to it as
+ * it is.
+ * @dirct: the folder, absolute or relative to the working directory.
+ * Return: the text on the heap, or NULL when out of memory.
+ */
+static char *WpeSearchFolder(FENSTER *f, const char *dirct)
+{
+  char           *cwd, *folder;
+  size_t          cwdlen;
+
+  if(*dirct == DIRC)
+  {
+    if(dirct[strlen(dirct) - 1] != DIRC)
+      return(wpe_fmt_dup("%s%c", dirct, DIRC));
+    return(wpe_fmt_dup("%s", dirct));
+  }
+  if((cwd = WpeGetCurrentDir(f->ed)) == NULL)
+    return(NULL);
+  cwdlen = strlen(cwd);
+  if(cwdlen == 0 || cwd[cwdlen - 1] != DIRC)
+    folder = wpe_fmt_dup("%s%c%s%c", cwd, DIRC, dirct, DIRC);
+  else
+    folder = wpe_fmt_dup("%s%s%c", cwd, dirct, DIRC);
+  FREE(cwd);
+  return(folder);
+}
+
 struct dirfile *WpeSearchFiles(FENSTER *f, char *dirct, char *file, const FIND *fd,
                                struct dirfile *df)
 {
@@ -3485,36 +3524,12 @@ struct dirfile *WpeSearchFiles(FENSTER *f, char *dirct, char *file, const FIND *
   if(rec > MAXREC)
     return(df);
 
-  /* if not absolute path is given */
-  if(*dirct != DIRC)
-  {
-    tmp2 = WpeGetCurrentDir(f->ed);
-
-    tmp = REALLOC(tmp2, strlen(tmp2) + strlen(dirct) + 4);
-    if(tmp == NULL)
-      e_error(e_msg[ERR_LOWMEM], 1, f->ed->fb);
-
-    tmp2 = tmp;
-    if(tmp2[strlen(tmp2) - 1] != DIRC)
-      sprintf(tmp2 + strlen(tmp2), "%c%s%c", DIRC, dirct, DIRC);
-    else
-      sprintf(tmp2 + strlen(tmp2), "%s%c", dirct, DIRC);
-  }
-  else
-  {
-    if((tmp2 = MALLOC(strlen(dirct) + 2)) == NULL)
-      e_error(e_msg[ERR_LOWMEM], 1, f->ed->fb);
-
-    if(dirct[strlen(dirct) - 1] != DIRC)
-      sprintf(tmp2, "%s%c", dirct, DIRC);
-    else
-      sprintf(tmp2, "%s", dirct);
-  }
+  if((tmp2 = WpeSearchFolder(f, dirct)) == NULL)
+    e_error(e_msg[ERR_LOWMEM], 1, f->ed->fb);
 
   /* assemble total path, dir + filename */
-  if((tmp = MALLOC(strlen(tmp2) + strlen(file) + 2)) == NULL)
+  if((tmp = wpe_fmt_dup("%s%s", tmp2, file)) == NULL)
     e_error(e_msg[ERR_LOWMEM], 1, f->ed->fb);
-  sprintf(tmp, "%s%s", tmp2, file);
 
   /* initialise structure, only once */
   if(df == NULL)
@@ -3539,10 +3554,8 @@ struct dirfile *WpeSearchFiles(FENSTER *f, char *dirct, char *file, const FIND *
     {
       for(i = 0; i < dd->anz; i++)
       {
-        if((tp = MALLOC(strlen(tmp2) + strlen(dd->name[i]) + 2)) == NULL)
+        if((tp = wpe_fmt_dup("%s%s", tmp2, dd->name[i])) == NULL)
           e_error(e_msg[ERR_LOWMEM], 1, f->ed->fb);
-
-        sprintf(tp, "%s%s", tmp2, dd->name[i]);
 
         df->anz++;
 
@@ -3558,10 +3571,8 @@ struct dirfile *WpeSearchFiles(FENSTER *f, char *dirct, char *file, const FIND *
     {
       for(i = 0; i < dd->anz; i++)
       {
-        if((tp = MALLOC(strlen(tmp2) + strlen(dd->name[i]) + 2)) == NULL)
+        if((tp = wpe_fmt_dup("%s%s", tmp2, dd->name[i])) == NULL)
           e_error(e_msg[ERR_LOWMEM], 1, f->ed->fb);
-
-        sprintf(tp, "%s%s", tmp2, dd->name[i]);
 
         if(WpeGrepFile(tp, fd) > 0)
         {
@@ -3586,13 +3597,8 @@ struct dirfile *WpeSearchFiles(FENSTER *f, char *dirct, char *file, const FIND *
   if(!(sw & 512))
     return(df);
 
-  if((tmp = MALLOC(strlen(dirct) + strlen(SUDIR) + 2)) == NULL)
+  if((tmp = wpe_path_join_dup(dirct, SUDIR)) == NULL)
     e_error(e_msg[ERR_LOWMEM], 1, f->ed->fb);
-
-  if(dirct[strlen(dirct) - 1] != DIRC)
-    sprintf(tmp, "%s%c%s", dirct, DIRC, SUDIR);
-  else
-    sprintf(tmp, "%s%s", dirct, SUDIR);
 
   /* find directories */
   dd = e_find_dir(tmp, 0);
@@ -3605,18 +3611,13 @@ struct dirfile *WpeSearchFiles(FENSTER *f, char *dirct, char *file, const FIND *
   rec++;
   for(i = 0; i < dd->anz; i++)
   {
-    if((tmp = MALLOC(strlen(dirct) + strlen(dd->name[i]) + 3)) == NULL)
+    if((tmp = wpe_path_join_dup(dirct, dd->name[i])) == NULL)
     {
       e_error(e_msg[ERR_LOWMEM], 0, f->ed->fb);
       rec--;
       freedf(dd);
       return(df);
     }
-
-    if(dirct[strlen(dirct) - 1] != DIRC)
-      sprintf(tmp, "%s%c%s", dirct, DIRC, dd->name[i]);
-    else
-      sprintf(tmp, "%s%s", dirct, dd->name[i]);
 
     df = WpeSearchFiles(f, tmp, file, fd, df);
     FREE(tmp);

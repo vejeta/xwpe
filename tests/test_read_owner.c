@@ -1106,6 +1106,15 @@ static void row_sentences(void)
  (void)wpe_read_say(said, sizeof said, "folder", obj_path[OB_REG], &o);
  snprintf(p, sizeof p, "Cannot open folder %s: it is not a folder.", obj_path[OB_REG]);
  chk_str("not a folder sentence", said, p);
+ {
+  /* the length given back is what was written, never what was wanted, and a
+     reason that does not fit ends in the mark */
+  char tight[8];
+  int n = wpe_read_reason(tight, sizeof tight, &o);
+
+  chk_int("a cut reason's length is what was written", n, (int)strlen(tight));
+  chk_str("a cut reason ends in the mark", tight, "it i...");
+ }
 }
 
 /**

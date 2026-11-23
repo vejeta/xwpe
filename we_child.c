@@ -37,6 +37,7 @@
 #include "we_child.h"
 #include "we_childsig.h"
 #include "we_path.h"
+#include "we_fmt.h"
 #include "we_fdloop.h"
 
 extern char **environ;           /* a contained child's environment replaces it */
@@ -149,19 +150,31 @@ void wpe_child_trace_set(void (*trace)(const char *line))
 }
 
 /**
- * wpe_child_trace_start_line - Trace a refused or doubtful start, naming it.
- * @fmt: the line's format with one %s; @spec: the start.
+ * wpe_child_named - What a child is called in a sentence: its own name, or
+ * "a program" for a start that named nothing.
  */
-static void wpe_child_trace_start_line(const char *fmt, const WpeChildSpec *spec)
+static const char *wpe_child_named(const char *what)
+{
+ return(what ? what : WPE_CHILD_UNNAMED);
+}
+
+/**
+ * wpe_child_trace_start_line - Trace a refused or doubtful start, naming it.
+ * @fmt: the line's format; the arguments are what it names (the child
+ * through wpe_child_named).  A line longer than the trace's room ends in
+ * "...".
+ */
+static void wpe_child_trace_start_line(const char *fmt, ...) WPE_FMT_PRINTF(1, 2);
+static void wpe_child_trace_start_line(const char *fmt, ...)
 {
  char line[WPE_CHILD_LINE_MAX];
- const char *what = spec->what;
+ va_list ap;
 
  if (!wpe_child_trace_hook)
   return;
- if (!what)
-  what = WPE_CHILD_UNNAMED;
- snprintf(line, sizeof line, fmt, what);
+ va_start(ap, fmt);
+ (void)wpe_fmt_vshown(line, sizeof line, fmt, ap);
+ va_end(ap);
  wpe_child_trace_hook(line);
 }
 
@@ -189,7 +202,7 @@ static int wpe_child_uncontained(const WpeChildSpec *spec)
   text = spec->contain->refusal;
  if (!text)
   return(0);
- wpe_child_trace_start_line(WPE_CHILD_UNCONTAINED_FMT, spec);
+ wpe_child_trace_start_line(WPE_CHILD_UNCONTAINED_FMT, wpe_child_named(spec->what));
  if (wpe_child_say_hook)
   wpe_child_say_hook(text);
  return(1);
@@ -217,7 +230,7 @@ static int wpe_child_unplanned(const WpeChildSpec *spec)
   return(wpe_child_uncontained(spec));
  if (spec->plan)
   return(0);
- wpe_child_trace_start_line(WPE_CHILD_UNPLANNED_FMT, spec);
+ wpe_child_trace_start_line(WPE_CHILD_UNPLANNED_FMT, wpe_child_named(spec->what));
 #ifdef WPE_CHILD_MECHANICS_TEST
  return(0);
 #else
@@ -229,37 +242,41 @@ static int wpe_child_unplanned(const WpeChildSpec *spec)
 
 /**
  * wpe_child_say - Tell the user something about a child, naming it.
- * @fmt: a format with one %s for what the child is; @what: that.
+ * @fmt: a format with one %s for what the child is; then that, through
+ * wpe_child_named.  A sentence longer than the status row's room ends in
+ * "...".
  */
-static void wpe_child_say(const char *fmt, const char *what)
+static void wpe_child_say(const char *fmt, ...) WPE_FMT_PRINTF(1, 2);
+static void wpe_child_say(const char *fmt, ...)
 {
  char line[WPE_CHILD_LINE_MAX];
+ va_list ap;
 
  if (!wpe_child_say_hook)
   return;
- if (!what)
-  what = WPE_CHILD_UNNAMED;
- snprintf(line, sizeof line, fmt, what);
+ va_start(ap, fmt);
+ (void)wpe_fmt_vshown(line, sizeof line, fmt, ap);
+ va_end(ap);
  wpe_child_say_hook(line);
 }
 
 /**
  * wpe_child_say_reason - Tell the user why a child could not be started,
  * naming it.
- * @fmt: a format with two %s, what the child is and the reason; @what: that;
- * @err: the errno of the refusal.
+ * @what: what the child is; @err: the errno of the refusal.
  *
- * errno is @err when it returns: the editor's hook draws, and the caller
- * hands the refusal's errno on to its own caller.
+ * The sentence is WPE_CHILD_TTY_FAILED_TEXT, with a literal format so the
+ * compiler reads its arguments.  errno is @err when it returns: the
+ * editor's hook draws, and the caller hands the refusal's errno on to its
+ * own caller.
  */
-static void wpe_child_say_reason(const char *fmt, const char *what, int err)
+static void wpe_child_say_reason(const char *what, int err)
 {
  char line[WPE_CHILD_LINE_MAX];
 
  if (wpe_child_say_hook)
  {
-  snprintf(line, sizeof line, fmt, what ? what : WPE_CHILD_UNNAMED,
-           strerror(err));
+  (void)WPE_FMT_SHOWN(line, WPE_CHILD_TTY_FAILED_TEXT, wpe_child_named(what), strerror(err));
   wpe_child_say_hook(line);
  }
  errno = err;
@@ -1473,14 +1490,9 @@ static void wpe_child_head_make(WpeChildHead *h, const char *pre,
 /** wpe_child_reason_make - In the parent: the system's words for @err. */
 static void wpe_child_reason_make(WpeChildReason *r, int err)
 {
- int n = snprintf(r->text, sizeof r->text, "%s", strerror(err));
-
+ (void)WPE_FMT_SHOWN(r->text, "%s", strerror(err));
  r->err = err;
- if (n < 0)
-  n = 0;
- if ((size_t)n >= sizeof r->text)
-  n = (int)sizeof r->text - 1;
- r->len = (size_t)n;
+ r->len = strlen(r->text);
 }
 
 /**
@@ -2323,7 +2335,7 @@ static int wpe_child_refuse(const WpeChildSpec *spec, const sigset_t *saved)
 {
  wpe_child_wake_off_when_idle();
  WpeChildSignalRestore(saved);
- wpe_child_say(WPE_CHILD_NOT_STARTED_FMT, spec->what);
+ wpe_child_say(WPE_CHILD_NOT_STARTED_FMT, wpe_child_named(spec->what));
  errno = EAGAIN;
  return(-1);
 }
@@ -2356,7 +2368,7 @@ static int wpe_child_tty_start_refused(const WpeChildSpec *spec,
  int err = errno;
 
  wpe_child_start_failed(saved);
- wpe_child_say_reason(WPE_CHILD_TTY_FAILED_TEXT, spec->what, err);
+ wpe_child_say_reason(spec->what, err);
  return(-1);
 }
 
@@ -2675,7 +2687,7 @@ static void wpe_child_give_up(WpeChild *c)
   return;
  c->end_stage = WPE_CHILD_END_GIVEN_UP;
  c->pid = 0;
- wpe_child_say(WPE_CHILD_DID_NOT_END_FMT, what);
+ wpe_child_say(WPE_CHILD_DID_NOT_END_FMT, wpe_child_named(what));
  if (ended)
   ended(c, 0, WPE_CHILD_ENDED_UNKNOWN, data);
 }
@@ -3303,7 +3315,7 @@ static int wpe_capture_verdict(WpeCapture *cap)
  if (cap->ended)
   return(WPE_CAPTURE_ENDED);
  wpe_capture_kill(cap);
- wpe_child_say(WPE_CAPTURE_STOPPED_FMT, cap->what);
+ wpe_child_say(WPE_CAPTURE_STOPPED_FMT, wpe_child_named(cap->what));
  return(WPE_CAPTURE_CANCELLED);
 }
 

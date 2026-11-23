@@ -15,6 +15,7 @@
 #include <sys/stat.h>
 
 #include "we_bsp.h"
+#include "we_fmt.h"
 #include "we_child.h"
 #include "we_startplan.h"        /* the server starts through its start plan */
 #include "we_read.h"             /* the folder's .bsp is read through the read owner */
@@ -113,12 +114,11 @@ static int bsp_send(e_bsp_session *b, int id, const char *method,
 
  body = json_object_to_json_string_ext(msg, JSON_C_TO_STRING_PLAIN);
  blen = strlen(body);
- flen = blen + 40;
- frame = malloc(flen);
+ frame = wpe_fmt_dup("Content-Length: %zu\r\n\r\n%s", blen, body);
  if (!frame)
  {  json_object_put(msg);  return -1;  }
- rc = snprintf(frame, flen, "Content-Length: %zu\r\n\r\n%s", blen, body);
- rc = bsp_write_all(b, frame, (size_t)rc);
+ flen = strlen(frame);
+ rc = bsp_write_all(b, frame, flen);
  free(frame);
  json_object_put(msg);
  return rc;

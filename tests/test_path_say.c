@@ -13,6 +13,7 @@
 #include <limits.h>
 #include "linebuf.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 
@@ -49,6 +50,7 @@ static void refused_sentences(void)
 	char b[WPE_PATH_REFUSED_MAX];
 	char tight[16];
 	char longpath[WPE_PATH_SIZE + 8];
+	char *whole;
 	int need;
 
 	wpe_path_say_refused(b, sizeof b, "file", "/x/a", ENOENT);
@@ -72,13 +74,20 @@ static void refused_sentences(void)
 	chk_eq("a byte above 127 is left alone", b, "\xc3\xa9" "x not found: /x/a.");
 	wpe_path_say_refused(b, sizeof b, "Folder", "/x/a", ENOENT);
 	chk_eq("a capital stays", b, "Folder not found: /x/a.");
-	/* a path longer than a buffer: the length is what the whole sentence needs */
+	/* a path longer than a buffer: the sentence is cut and says so, the
+	   length returned is what was written (never a length only wanted), and
+	   the heap form holds the whole sentence */
 	memset(longpath, 'p', sizeof longpath - 1);
 	longpath[sizeof longpath - 1] = '\0';
 	need = wpe_path_say_refused(tight, sizeof tight, "file", longpath, EACCES);
-	chk_num("the needed length of a long sentence", need,
-	        (long)strlen("Cannot open file : Permission denied.") + (long)strlen(longpath));
+	chk_num("the length written of a cut sentence", need, (long)strlen(tight));
 	chk_num("a tight buffer is cut, never run past", (long)strlen(tight), (long)sizeof tight - 1);
+	chk_eq("a cut sentence ends in the mark", tight + strlen(tight) - 3, "...");
+	whole = wpe_path_say_refused_dup("file", longpath, EACCES);
+	chk_num("the heap sentence is whole", whole ? (long)strlen(whole) : -1,
+	        (long)strlen("Cannot open file : Permission denied.") + (long)strlen(longpath));
+	free(whole);
+	chk_num("no room at all writes nothing", wpe_path_say_refused(NULL, 0, "file", "/x", EACCES), 0);
 }
 
 /* One row per line of the owner's table of kinds. */

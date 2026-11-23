@@ -8,12 +8,6 @@
 # Bounded by a check or a size just before, or a fixed text into a larger
 # array; remove the line when the site is moved onto a bounded writer.
 R1|we_ai_ws.c|ws_review_answer|1|fixed text into a 256 byte array
-R1|we_block.c|e_replace_report|3|two numbers and a fixed text into 80 bytes
-R1|we_debug.c|e_d_dap_start|1|adapter name from a fixed table into 160 bytes
-R1|we_debug.c|e_deb_run|10|command words into a line buffer sized for them, not audited site by site
-R1|we_edit.c|e_zlsplt|1|two numbers into 20 bytes; a line number of ten digits would not fit
-R1|we_opt.c|e_about_box_draw|1|the version string
-R1|we_prog.c|e_run_program|1|one number into 256 bytes
 R1|WeXterm.c|x_palette_resource_names|1|fixed text into 8 bytes
 R2|we_errpat.c|note_variable|1|the loop stops at NAME_BYTES and the array holds NAME_BYTES + 1 for the terminator
 R2|we_progn.c|e_find_def_scan|1|the include word is copied out of a line read into an array of the same 256 bytes, so it ends at that line's terminator

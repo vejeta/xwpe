@@ -11,6 +11,7 @@
 #include "we_fdloop.h"
 #include "we_buffer.h"
 #include "we_lineend.h"
+#include "we_numtext.h"
 #include "we_testdump.h"
 #include "we_ai.h"       /* the assistant's key hooks (guarded by WPE_AI) */
 
@@ -4270,12 +4271,12 @@ int e_su_rblk(int xa, char *s)
 /* Prints out the line number and column of cursor */
 void e_zlsplt(FENSTER *f)
 {
- char str[20];
+ char str[E_LINECOL_ROOM];
 
  if (!DTMD_ISTEXT(f->dtmd))
   return;
- sprintf(str,"%5d:%-4d", f->b->b.y + 1, f->b->cl + 1);
- e_puts(str,f->a.x+5,f->e.y,f->fb->er.fb);
+ if (e_linecol_text(str, sizeof str, f->b->b.y + 1, f->b->cl + 1) == WPE_FMT_OK)
+  e_puts(str,f->a.x+5,f->e.y,f->fb->er.fb);
  if (f->save)
   e_pr_char(f->a.x+3, f->e.y, '*', f->fb->er.fb);
  else

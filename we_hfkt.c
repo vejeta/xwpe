@@ -7,6 +7,7 @@
 
 #include "edit.h"
 #include "we_fdloop.h"
+#include "we_fmt.h"
 
 /*   numbers box (numbers input/edit)     */
 int e_num_kst(char *s, int num, const WpeNumberType *type, FENSTER *f, int n, int sw)
@@ -18,7 +19,7 @@ int e_num_kst(char *s, int num, const WpeNumberType *type, FENSTER *f, int n, in
  int dlg_w = inner_w + 2;
  int xa = f->a.x + (f->e.x - f->a.x - dlg_w) / 2;
  int ya = f->a.y + (f->e.y - f->a.y - 8) / 2;
- char *tmp = MALLOC((strlen(s)+2) * sizeof(char));
+ char *tmp = wpe_fmt_dup("%s:", s);
  W_OPTSTR *o = e_init_opt_kst(f);
 
  if (!o || !tmp)
@@ -30,7 +31,6 @@ int e_num_kst(char *s, int num, const WpeNumberType *type, FENSTER *f, int n, in
  o->bgsw = 0;
  o->name = s;
  o->crsw = AltO;
- sprintf(tmp, "%s:", s);
  e_add_numstr(3, 2, label_len + 3, 2, type, n, sw, tmp, num, o);
  FREE(tmp);
  { int btn_w = inner_w - 4;
@@ -119,9 +119,6 @@ POINT e_set_pnt(int x, int y)
  return(p);
 }
 
-/* What a status line that does not fit the screen starts with: it keeps
-   its end, where the part of a long file name the user knows is. */
-#define E_STATUS_CUT_MARK "..."
 /* Columns the bottom row keeps free: the one it is drawn from, and the
    last one. */
 #define E_STATUS_MARGIN 2
@@ -151,19 +148,16 @@ int e_status_room(void)
  */
 void e_status_paint(FARBE *fb, const char *text)
 {
- int room = e_status_room(), len = (int)strlen(text);
+ int room = e_status_room();
  char *shown;
 
- if (!fb || room <= (int)strlen(E_STATUS_CUT_MARK))
+ if (!fb || room <= (int)strlen(WPE_FMT_CUT_MARK))
   return;
- shown = MALLOC(room + 1);
- if (len <= room)
-  strcpy(shown, text);
- else
- {
-  strcpy(shown, E_STATUS_CUT_MARK);
-  strcat(shown, text + len - (room - (int)strlen(E_STATUS_CUT_MARK)));
- }
+ if ((shown = MALLOC(room + 1)) == NULL)
+  return;
+ /* A line too long for the screen keeps its end, where the part of a long
+    file name the user knows is, and starts with "...". */
+ wpe_fmt_shown_tail(shown, (size_t)room + 1, text);
  e_blk(MAXSCOL, 0, MAXSLNS - 1, fb->mt.fb);
  e_pr_str(1, MAXSLNS - 1, shown, fb->ms.fb, -1, -1, fb->ms.fb, fb->mt.fb);
  FREE(shown);

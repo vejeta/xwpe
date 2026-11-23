@@ -302,11 +302,12 @@ static int e_pasted_control_byte(int c)
  * Every input that refuses a character for want of room says it with these
  * same words and its real size, so the user recognises the situation in a
  * dialog field, the assistant's input row and its composer alike.
- * Return: what snprintf returned.
+ * Return: the length written, without the terminator.
  */
 int e_input_limit_words(char *buf, size_t n, int limit)
 {
- return snprintf(buf, n, " Input at its limit (%d bytes)", limit);
+ (void)wpe_fmt_shown(buf, n, " Input at its limit (%d bytes)", limit);
+ return n > 0 ? (int)strlen(buf) : 0;
 }
 
 /* Room for the limit words and the largest number they carry. */

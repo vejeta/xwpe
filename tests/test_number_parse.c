@@ -405,6 +405,17 @@ static void the_file(void)
 	        "keys line; xwperc: Tab : 0 is not 1 to 99, 5 used (the file keeps 0); "
 	        "AutoIndent : -1 is not 0 to 99, 3 used (the file keeps -1)");
 
+	/* a long file text in a sentence is cut where it ends and says so */
+	chk_int("load Tab with 60 digits for the sentence",
+	        e_number_load(&cn, WPE_NUM(WPE_NUM_TAB),
+	                      "123456789012345678901234567890123456789012345678901234567890"), -1);
+	e_number_say_refused(&cn);
+	chk_str("a long text ends in the mark", held_by_owner,
+	        "keys line; xwperc: Tab : 123456789012345678901... is not 1 to 99, 5 used "
+	        "(the file keeps 123456789012345678901...); "
+	        "AutoIndent : -1 is not 0 to 99, 3 used (the file keeps -1)");
+	chk_int("load Tab 0 back", e_number_load(&cn, WPE_NUM(WPE_NUM_TAB), "0"), -1);
+
 	/* a narrow row: the compact form names every key, with a short value */
 	room_columns = 78;
 	held[0] = '\0';

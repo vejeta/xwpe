@@ -703,9 +703,10 @@ int e_add_synt_tl(char *filename, FENSTER *f)
 static int e_aopen_in_folder(char *out, size_t n, const char *folder, size_t dlen,
  const char *name)
 {
- int wrote = snprintf(out, n, "%.*s/%s", (int)dlen, folder, name);
-
- return(wrote < 0 || (size_t)wrote >= n ? -1 : 0);
+ /* The folder is an exact slice of the path list: its byte count is kept. */
+ if (wpe_fmt_whole(out, n, "%.*s/%s", (int)dlen, folder, name) != WPE_FMT_OK)
+  return(-1);
+ return(0);
 }
 
 /* Has the search in progress told the user about an include folder that is

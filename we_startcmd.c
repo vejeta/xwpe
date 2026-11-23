@@ -9,6 +9,7 @@
  * the assistant can write, could otherwise approve itself.
  */
 #include "we_startcmd.h"
+#include "we_fmt.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -176,10 +177,8 @@ static int startcmd_state_dir(char *out, size_t sz)
 static int startcmd_path_of(const char *name, char *out, size_t sz)
 {
  char dir[WPE_STARTCMD_FOLDER_MAX];
- int n;
  if (startcmd_state_dir(dir, sizeof dir) < 0) return -1;
- n = snprintf(out, sz, "%s/%s", dir, name);
- if (n < 0 || (size_t)n >= sz) return -1;
+ if (wpe_fmt_whole(out, sz, "%s/%s", dir, name) != WPE_FMT_OK) return -1;
  return 0;
 }
 
@@ -975,13 +974,13 @@ void wpe_startcmd_built_free(WpeBuiltSet *set)
 static int built_real_path(const WpeBuiltSet *set, const char *output, char *out)
 {
  char joined[WPE_STARTCMD_FOLDER_MAX];
- int n;
+ int how;
  if (!output || !*output || !set->folder[0]) return -1;
  if (output[0] == '/')
-  n = snprintf(joined, sizeof joined, "%s", output);
+  how = WPE_FMT_WHOLE(joined, "%s", output);
  else
-  n = snprintf(joined, sizeof joined, "%s/%s", set->folder, output);
- if (n < 0 || (size_t)n >= sizeof joined) return -1;
+  how = WPE_FMT_WHOLE(joined, "%s/%s", set->folder, output);
+ if (how != WPE_FMT_OK) return -1;
  return realpath(joined, out) ? 0 : -1;
 }
 

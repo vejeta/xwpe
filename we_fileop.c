@@ -28,6 +28,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "we_fmt.h"
 #include "we_write.h"
 #include "we_places.h"
 #include "we_fileop.h"
@@ -235,11 +236,11 @@ static int fileop_split(const char *path, char *dir, size_t dn, char *name, size
  *  a very long destination name falls back to one without it. */
 static int fileop_temp_name(char *out, size_t size, const char *name, int n)
 {
- int len = snprintf(out, size, ".%s.xwpe-copy.%ld.%d", name, (long)getpid(), n);
+ int how = wpe_fmt_whole(out, size, ".%s.xwpe-copy.%ld.%d", name, (long)getpid(), n);
 
- if (len < 0 || len > FILEOP_NAME_LIMIT)
-  len = snprintf(out, size, ".xwpe-copy.%ld.%d", (long)getpid(), n);
- return(len < 0 || (size_t)len >= size ? ENAMETOOLONG : 0);
+ if (how != WPE_FMT_OK || strlen(out) > FILEOP_NAME_LIMIT)
+  how = wpe_fmt_whole(out, size, ".xwpe-copy.%ld.%d", (long)getpid(), n);
+ return(how != WPE_FMT_OK ? ENAMETOOLONG : 0);
 }
 
 /* --- the way a name is put where none is ---------------------------------- */
@@ -879,8 +880,16 @@ static int fileop_job_place(FileJob *j, int fromfd, const char *from, int is_tem
  }
  else
  {
-  if (fileop_test_hook(FILEOP_HOOK_PLANT))
-   (void)symlinkat(FILEOP_PLANTED_TARGET, j->dirfd, j->name);
+  /* A test plants a name at the last moment; a plant that fails would let
+     the rows that need it pass without it, so it fails the step. */
+  if (fileop_test_hook(FILEOP_HOOK_PLANT) &&
+      symlinkat(FILEOP_PLANTED_TARGET, j->dirfd, j->name) != 0)
+  {
+   err = errno;
+   if (is_temp)
+    unlinkat(fromfd, from, 0);
+   return(fileop_fail(o, WPE_FILEOP_STEP_CREATE, err));
+  }
   if (fileop_test_hook(FILEOP_HOOK_RENAME))
    err = EIO;
   else
@@ -2816,9 +2825,9 @@ static void fileop_note_append(char *out, size_t n, const WpeFileOpOutcome *o)
  fileop_bits_count_target(target, sizeof target, &o->note);
  fileop_bits_clause(clause, sizeof clause, &o->note, target);
  if (used > 0)
-  snprintf(out + used, n - used, " The %s.", clause);
+  (void)wpe_fmt_shown(out + used, n - used, " The %s.", clause);
  else
-  snprintf(out, n, "The %s.", clause);
+  (void)wpe_fmt_shown(out, n, "The %s.", clause);
 }
 
 /**

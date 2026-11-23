@@ -21,6 +21,7 @@
 #include <strings.h>
 
 #include "we_errpat.h"
+#include "we_fmt.h"
 
 /* Spare bytes a walk's scratch has beyond the longest row, the widest
    pattern row and the source name: the marks a variable adds to its text
@@ -135,18 +136,20 @@ static int refuse_near(Lex *cx, const char *what, const char *at)
  * Notes tell the user about a reading that differs from what was written.
  * Once the notes buffer is full the rest is only counted.
  */
+static void add_note(WpeErrPat *p, const char *fmt, ...) WPE_FMT_PRINTF(2, 3);
 static void add_note(WpeErrPat *p, const char *fmt, ...)
 {
  char one[WPE_ERRPAT_NOTES];
  size_t have = strlen(p->notes);
  va_list ap;
+ int how;
 
  va_start(ap, fmt);
- vsnprintf(one, sizeof one, fmt, ap);
+ how = wpe_fmt_vwhole(one, sizeof one, fmt, ap);
  va_end(ap);
  p->nnotes++;
- if (have + strlen(one) + 3 > sizeof p->notes)
-  return;
+ if (how != WPE_FMT_OK || have + strlen(one) + 3 > sizeof p->notes)
+  return;   /* a note that does not fit whole is only counted */
  if (have)
   strcat(p->notes, "; ");
  strcat(p->notes, one);

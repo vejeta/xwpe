@@ -10,6 +10,7 @@
 #include "we_clip.h"
 #include "we_buffer.h"
 #include "we_lineend.h"
+#include "we_numtext.h"
 #include "we_rowfind.h"
 #include <ctype.h>
 
@@ -2923,8 +2924,6 @@ static void e_rep_search_on_after(BUFFER *b, SCHIRM *s, int backwards, int y, in
 #define E_REPLACE_SCROLL_ROW 11
 /* Change All, in the words of the status row when it was not made. */
 #define E_CHANGE_ALL_WHAT "Change All"
-/* The box's third line when a replacement ran out of memory. */
-#define E_REPLACE_SAY_NOMEM "Out of memory: the replacement was not made"
 
 /* What Search > Replace did, for the box it ends with. */
 typedef struct {
@@ -3171,7 +3170,10 @@ static void e_change_all_whole(FENSTER *f, FIND *fd, EReplaceReport *r)
  */
 static void e_replace_report(FENSTER *f, const EReplaceReport *r)
 {
- char line[80];
+ /* The room of the longest report, so the counts and the reason are always
+    whole; a refusal of the builder opens no box. */
+ char line[E_REPLACE_REPORT_ROOM(sizeof E_REPLACE_SAY_NOMEM + sizeof E_SAY_READ_ONLY)];
+ int built;
 
  if (r->not_made)
   return;
@@ -3181,11 +3183,13 @@ static void e_replace_report(FENSTER *f, const EReplaceReport *r)
   return;
  }
  if (r->out_of_memory)
-  sprintf(line, "Found %d\nReplaced %d\n%s", r->found, r->replaced, E_REPLACE_SAY_NOMEM);
+  built = e_replace_report_text(line, sizeof line, r->found, r->replaced, E_REPLACE_SAY_NOMEM);
  else if (r->read_only)
-  sprintf(line, "Found %d\nReplaced %d\n%s", r->found, r->replaced, E_SAY_READ_ONLY);
+  built = e_replace_report_text(line, sizeof line, r->found, r->replaced, E_SAY_READ_ONLY);
  else
-  sprintf(line, "Found %d\nReplaced %d", r->found, r->replaced);
+  built = e_replace_report_text(line, sizeof line, r->found, r->replaced, NULL);
+ if (built != WPE_FMT_OK)
+  return;
  e_message(0, line, f);
 }
 

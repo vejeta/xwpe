@@ -176,14 +176,19 @@ const char *e_prj_status_label(void)
  return NULL;
 }
 
+/* The two messages of e_p_msg that take a value; the table and the call that
+   writes them read the same literal, so the compiler checks both. */
+#define E_P_RETCODE_FMT  "Return-Code: %d"
+#define E_P_NO_CFILE_FMT "no compiler entry for %s; add one in Options > Compiler"
+
 char *e_p_msg[] = {
  "Not a C - File",
  "Can\'t open Pipe",
  "Error in Process",
  "Error in Pipe\n Pipe Nr.: %d\n",
  "Error at Command: ",
- "Return-Code: %d",      /*   Number 5   */
- "no compiler entry for %s; add one in Options > Compiler",
+ E_P_RETCODE_FMT,        /*   Number 5   */
+ E_P_NO_CFILE_FMT,
  "No Compiler specified",
  "No Files to compile",
  "No Project-Window",
@@ -565,15 +570,15 @@ static void e_build_record_begin(FENSTER *f)
 static int e_build_stat(const char *output, struct stat *st)
 {
  char path[WPE_PATH_SIZE];
- int n;
+ int refused;
 
  if (!g_built.folder[0])
   return(-1);
  if (output[0] == DIRC)
-  n = snprintf(path, sizeof path, "%s", output);
+  refused = wpe_path_copy(path, sizeof path, output);
  else
-  n = snprintf(path, sizeof path, "%s/%s", g_built.folder, output);
- if (n < 0 || (size_t)n >= sizeof path)
+  refused = wpe_path_join(path, sizeof path, g_built.folder, output);
+ if (refused)
   return(-1);
  return(stat(path, st));
 }
@@ -1500,7 +1505,6 @@ int e_run(FENSTER *f)
    the user's own Arguments follow as his own shell text (a "< input" of his
    keeps working), a folder's follow as more words, never as shell text. */
 #define E_RUN_LINE_ALL     "\"$@\""
-#define E_RUN_WORD_REF_ROOM 12      /* room of one "$N" and the blank after it */
 #define E_RUN_WORDS_FILE   1        /* an interpreter or a program: one word, the file */
 #define E_RUN_WORDS_VM     2        /* a VM: the java and the class */
 #define E_RUN_REFUSED_FMT  "not run: the class %s would be read by %s as an option"
@@ -1542,7 +1546,7 @@ static int e_java_tool_path(const char *tool, char *out, size_t n)
 {
  if (!strchr(tool, DIRC))
   return(e_java_find_in_path(tool, out, n));
- if (snprintf(out, n, "%s", tool) >= (int)n)
+ if (wpe_path_copy(out, n, tool) != 0)
   return(0);
  return(access(out, X_OK) == 0);
 }
@@ -1568,16 +1572,13 @@ static int e_vm_path_named(const char *beside, const char *name, char *out, size
  {
   slash[1] = '\0';
   /* A path that does not fit is no runner found: PATH is tried next. */
-  if (snprintf(out, n, "%s%s", real, name) < (int)n && access(out, X_OK) == 0)
+  if (wpe_path_join(out, n, real, name) == 0 && access(out, X_OK) == 0)
    return(0);
  }
  if (e_java_find_in_path(name, out, n))
   return(0);
- if (snprintf(out, n, "%s", name) >= (int)n)
- {
-  out[0] = '\0';
+ if (wpe_path_copy(out, n, name) != 0)
   return(-1);
- }
  return(0);
 }
 
@@ -1791,26 +1792,22 @@ static int e_run_word_count(int kind)
 /**
  * e_run_line_words - The shell's references to the first @k words of a Run.
  * @k: how many.
- * Return: the malloc'd text "$1" "$2" ... "$k", sized from @k; NULL out of
- * memory.
+ * Return: the malloc'd text "$1" "$2" ... "$k"; NULL out of memory.
  */
 static char *e_run_line_words(int k)
 {
- char *text = MALLOC((size_t)k * E_RUN_WORD_REF_ROOM + 1);
- size_t used = 0;
+ WpeFmtText words;
  int i;
 
- if (!text)
-  return(NULL);
- text[0] = '\0';
+ wpe_fmt_begin_heap(&words);
  for (i = 1; i <= k; i++)
  {
   if (i > 1)
-   used += (size_t)sprintf(text + used, " \"$%d\"", i);
+   wpe_fmt_add(&words, " \"$%d\"", i);
   else
-   used += (size_t)sprintf(text + used, "\"$%d\"", i);
+   wpe_fmt_add(&words, "\"$%d\"", i);
  }
- return(text);
+ return(wpe_fmt_end_heap(&words, NULL));
 }
 
 /**
@@ -2387,7 +2384,7 @@ static int e_run_program(ECNT *cn)
  e_repaint_desk(cn->f[cn->mxedt]);
 
  e_view_append(b, "--- End output ---");
- sprintf(estr, e_p_msg[ERR_RETCODE], ret);
+ WPE_FMT_SHOWN(estr, E_P_RETCODE_FMT, ret);
  e_view_append(b, estr);
 
  e_buffer_cursor_set(b, b->mxlines - 1, b->b.x);
@@ -3010,7 +3007,7 @@ static int e_comp_start(FENSTER *f, e_build_cont done, void *data,
  }
  if (i == 0)
  {
-  snprintf(ostr, sizeof(ostr), e_p_msg[ERR_S_NO_CFILE], e_p_file_type(f->datnam));
+  WPE_FMT_SHOWN(ostr, E_P_NO_CFILE_FMT, e_p_file_type(f->datnam));
   e_error(ostr, 0, f->fb);
   return(WPE_ESC);
  }
@@ -4350,6 +4347,7 @@ static char g_build_count_line[160];
 static void e_build_print_count(BUFFER *b, int result)
 {
  char line[160];
+ WpeFmtText text;
  int i, errors = 0, warnings = 0;
 
  for (i = 0; i < err_num; i++)
@@ -4359,13 +4357,13 @@ static void e_build_print_count(BUFFER *b, int result)
   if (err_li[i].kind == E_ROW_ERROR)
    errors++;
  }
- snprintf(line, sizeof line, "%d error%s, %d warning%s",
-          errors, e_build_plural(errors), warnings, e_build_plural(warnings));
+ wpe_fmt_begin_shown(&text, line, sizeof line);
+ wpe_fmt_add(&text, "%d error%s, %d warning%s",
+             errors, e_build_plural(errors), warnings, e_build_plural(warnings));
  if (result && errors == 0)
-  snprintf(line + strlen(line), sizeof line - strlen(line),
-           "; the build failed (exit status %d)", g_build_chain_exit);
+  wpe_fmt_add(&text, "; the build failed (exit status %d)", g_build_chain_exit);
  e_view_append(b, line);
- snprintf(g_build_count_line, sizeof g_build_count_line, "%s", line);
+ WPE_FMT_SHOWN(g_build_count_line, "%s", line);
 }
 
 /* What the last e_make_error_list found to say about the compiler's message
@@ -6255,21 +6253,17 @@ static void e_prog_note_typed_compile(int his)
 static void e_prog_postfix_list(char *out, size_t sz)
 {
  int i, j = WpeExpArrayGetSize(e_s_prog.filepostfix);
- size_t used = 0;
+ WpeFmtText text;
 
- out[0] = '\0';
+ /* An extension that does not fit is left out whole, with every one after
+    it: a half extension would name a file the language does not have. */
+ wpe_fmt_begin_block(&text, out, sz);
  for (i = 0; i < j; i++)
  {
-  size_t len = strlen(e_s_prog.filepostfix[i]);
-  if (i)
-   len++;
-  if (used + len >= sz)
+  if (i && !wpe_fmt_add_block(&text, " %s", e_s_prog.filepostfix[i]))
    break;
-  if (i)
-   snprintf(out + used, sz - used, " %s", e_s_prog.filepostfix[i]);
-  else
-   snprintf(out + used, sz - used, "%s", e_s_prog.filepostfix[i]);
-  used += len;
+  if (!i && !wpe_fmt_add_block(&text, "%s", e_s_prog.filepostfix[i]))
+   break;
  }
 }
 
@@ -6650,19 +6644,17 @@ static int e_write_default_prj(FENSTER *f, const char *path)
  WpeWriteOutcome o;
  char exe[WPE_NAME_SIZE];
  char text[WPE_PATH_SIZE + WPE_NAME_SIZE + 256];
- int room;
 
  wpe_progname_project_default(exe, sizeof exe, path);
- room = snprintf(text, sizeof text,
-                 "#\n# xwpe - project-file: %s\n"
-                 "# created by xwpe version %s\n#\n\n"
-                 "CMP=\tgcc\n"
-                 "CMPFLAGS=\t-g\n"
-                 "LDFLAGS=\t\n"
-                 "EXENAME=\t%s\n"
-                 "CMPSWTCH=\tgnu\n\n"
-                 "FILES=\t\n", path, VERSION, exe);
- if (room < 0 || (size_t)room >= sizeof text)
+ if (WPE_FMT_WHOLE(text,
+                   "#\n# xwpe - project-file: %s\n"
+                   "# created by xwpe version %s\n#\n\n"
+                   "CMP=\tgcc\n"
+                   "CMPFLAGS=\t-g\n"
+                   "LDFLAGS=\t\n"
+                   "EXENAME=\t%s\n"
+                   "CMPSWTCH=\tgnu\n\n"
+                   "FILES=\t\n", path, VERSION, exe) != WPE_FMT_OK)
  {
   memset(&o, 0, sizeof o);
   o.status = WPE_WRITE_FAILED;
@@ -8091,6 +8083,25 @@ char *e_expand_var(char *string, FENSTER *f)
 }
 
 /**
+ * e_prj_skip_comment_rest - Skip what is left of a comment line of a
+ * project file.
+ * @fp: the file; @str: the part of the line already read, in a buffer of
+ * 256 bytes.
+ *
+ * A project file whose last line is a comment with no line end is read to
+ * its end: the skip stops at the end of the file and does not wait for a
+ * line end that never comes.
+ */
+static void e_prj_skip_comment_rest(FILE *fp, char *str)
+{
+ while (str[0] && str[strlen(str) - 1] != '\n')
+ {
+  if (fgets(str, 256, fp) == NULL)
+   return;
+ }
+}
+
+/**
  * e_read_var - Read the open project's variables into p_v.
  * @f: a window of the desktop; @why: receives the refusal, or NULL.
  * Return: 0 when read; E_PRJ_READ_NOT_OPENED when the read owner refused the
@@ -8138,8 +8149,7 @@ int e_read_var(FENSTER *f, WpeReadOutcome *why)
   if (!str[i]) continue;
   else if (str[i] == '#')
   {
-   while (str[strlen(str)-1] != '\n')
-   {  fgets(str, 256, fp);  }
+   e_prj_skip_comment_rest(fp, str);
    continue;
   }
   sp1 = str + i;
@@ -9885,11 +9895,9 @@ static struct dirfile **e_make_prj_opt_read(FENSTER *f, WpeReadOutcome *why)
    if (!(e_p_df[1]->name = REALLOC(tmp =
 				e_p_df[1]->name, e_p_df[1]->anz * sizeof(char *))))
    {  e_p_df[1]->anz--;  e_p_df[1]->name = tmp;  return(e_make_prj_opt_finish(save_df));  }
-   if (!(e_p_df[1]->name[e_p_df[1]->anz-1] = MALLOC((strlen(p_v[i]->var)
-			+ strlen(p_v[i]->string) + 2)*sizeof(char))))
+   if (!(e_p_df[1]->name[e_p_df[1]->anz-1] =
+			wpe_fmt_dup("%s=%s", p_v[i]->var, p_v[i]->string)))
    {  e_p_df[1]->anz--;  return(e_make_prj_opt_finish(save_df));  }
-   sprintf(e_p_df[1]->name[e_p_df[1]->anz-1], "%s=%s",
-					p_v[i]->var, p_v[i]->string);
   }
  }
  if (!e_s_prog.compiler)
@@ -10478,7 +10486,7 @@ static void e_p_pattern_name(int own, char name[E_P_PATTERN_NAME_SIZE])
  */
 static void e_p_say_refused(const char *name, const char *reason)
 {
- snprintf(g_build_pattern_say, sizeof g_build_pattern_say,
+ WPE_FMT_SHOWN(g_build_pattern_say,
    "%s not used: %s; no error rows recognised", name, reason);
 }
 
@@ -10491,16 +10499,14 @@ static void e_p_say_refused(const char *name, const char *reason)
  */
 static void e_p_say_piece(const char *name, const char *piece)
 {
- size_t have = strlen(g_build_pattern_say);
+ WpeFmtText text;
 
- if (have == 0)
- {
-  snprintf(g_build_pattern_say, sizeof g_build_pattern_say, "%s: %s",
-    name, piece);
-  return;
- }
- snprintf(g_build_pattern_say + have, sizeof g_build_pattern_say - have,
-   "; %s", piece);
+ /* The row is one sentence: what does not fit ends it in "...". */
+ wpe_fmt_resume_shown(&text, g_build_pattern_say, sizeof g_build_pattern_say);
+ if (wpe_fmt_len(&text) == 0)
+  wpe_fmt_add(&text, "%s: %s", name, piece);
+ else
+  wpe_fmt_add(&text, "; %s", piece);
 }
 
 /**
@@ -10521,7 +10527,7 @@ static void e_p_say_costly_row(const struct e_p_run *run)
  row = wpe_errpat_walk_costly_row(run->walk);
  if (row < 0)
   return;
- snprintf(piece, sizeof piece, "pattern too costly for row %d", row + 1);
+ WPE_FMT_SHOWN(piece, "pattern too costly for row %d", row + 1);
  e_p_say_piece(run->name, piece);
 }
 

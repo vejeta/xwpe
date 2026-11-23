@@ -28,6 +28,7 @@
 #include <limits.h>
 #include "we_paint.h"
 #include "we_path.h"        /* how long a path or a name the editor holds may be */
+#include "we_fmt.h"         /* the one owner of a formatted text written into storage */
 #include "we_read.h"        /* the one owner of reading a file by a name the editor did not choose */
 #include "we_places.h"      /* where the user's home, state and configuration folders are */
 #include "we_number.h"      /* what a number the user or a file gives the editor may be */

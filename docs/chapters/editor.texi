@@ -109,6 +109,15 @@ needs memory for a copy of the text it searches; when there is not enough,
 nothing is replaced and the status row says so.  The assistant's pane, when it cannot get a row, does the same:
 it keeps what it shows and the status row says so.
 
+@cindex cut sentence
+A sentence that does not fit its place (a status row, a message box, a
+list row, a line of the assistant's pane, the debugger's sentences) is cut
+where a character ends and ends in @samp{...}, so you can tell it was cut
+and never see half a letter.  A name the editor needs whole, such as a
+path, a command or a key, is never cut: the action is refused with a
+sentence instead.  The line and column of a window's frame and the counts
+of Search > Replace are always shown in full.
+
 @cindex read-only window
 A file opened read-only (its title shows a padlock) and the clipboard
 viewer (@kbd{Alt-Y}) keep their text through every command.  Typing and the

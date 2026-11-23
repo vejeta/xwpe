@@ -19,7 +19,9 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 
-#define WPE_PATH_MAX   4096          /* PATH_MAX of Linux; the BSDs' and macOS's 1024 are within it */
+#include "we_fmt.h"
+
+#define WPE_PATH_MAX  4096          /* PATH_MAX of Linux; the BSDs' and macOS's 1024 are within it */
 #define WPE_NAME_MAX   511           /* the largest NAME_MAX of the systems built on: NetBSD's; Linux, FreeBSD, OpenBSD and macOS have 255 */
 #define WPE_PATH_SIZE  WPE_PATH_MAX  /* room for a path and its terminator: a path is under PATH_MAX bytes */
 #define WPE_NAME_SIZE  (WPE_NAME_MAX + 1)
@@ -84,14 +86,14 @@
  *  @out holds @n bytes, WPE_PATH_MSG_MAX is enough. */
 static inline void wpe_path_say_too_long(char *out, size_t n, const char *what)
 {
-  snprintf(out, n, WPE_PATH_TOO_LONG_FMT, what, (int)WPE_PLATFORM_PATH_MAX);
+  (void)wpe_fmt_shown(out, n, WPE_PATH_TOO_LONG_FMT, what, (int)WPE_PLATFORM_PATH_MAX);
 }
 
 /** wpe_path_say_name_too_long - The same sentence for one file name, with
  *  the system's limit for a name (255 on most systems), not the editor's. */
 static inline void wpe_path_say_name_too_long(char *out, size_t n, const char *what)
 {
-  snprintf(out, n, WPE_PATH_TOO_LONG_FMT, what, (int)WPE_PLATFORM_NAME_MAX);
+  (void)wpe_fmt_shown(out, n, WPE_PATH_TOO_LONG_FMT, what, (int)WPE_PLATFORM_NAME_MAX);
 }
 
 /* The only writers of a path into fixed storage.  Each returns 0, or -1 and
@@ -140,19 +142,23 @@ typedef enum {
 /* "not found" for ENOENT, the system's own words for any other errno.  The
    one place in the editor that may say "not found" about a path. */
 const char *wpe_path_refused_reason(int err);
-/* The sentence for a refusal of the system.  Returns the length it needs, as
-   snprintf, so a caller with a path longer than any array can allocate. */
+/* The sentence for a refusal of the system.  A sentence longer than @out ends
+   in "...".  Returns the length written, never a length only wanted. */
 int wpe_path_say_refused(char *out, size_t n, const char *what, const char *path, int err);
+/* The same sentence at its real length on the heap (free it), for a caller
+   with a path longer than any array.  NULL when out of memory. */
+char *wpe_path_say_refused_dup(const char *what, const char *path, int err);
 /* The same sentence with a reason the editor found itself.  Never the
    not-found shape. */
 int wpe_path_say_refused_because(char *out, size_t n, const char *what,
                                  const char *path, const char *reason);
+char *wpe_path_say_refused_because_dup(const char *what, const char *path, const char *reason);
 /* What a thing that is not a regular file is called: "it is a pipe", "it is a
    socket", "it is a device", "it is a folder"; a descriptor that was opened
    and is a terminal says "it is a terminal".  A kind found by a look cannot
    say terminal: only isatty on a descriptor can. */
 const char *wpe_path_kind_reason(mode_t kind, int tty);
-/* "it is larger than 1 MiB", from a bound in bytes.  Returns the length it needs. */
+/* "it is larger than 1 MiB", from a bound in bytes.  Returns the length written. */
 int wpe_path_too_large_reason(char *out, size_t n, size_t bound);
 /* The fixed words of the refusals the editor finds itself. */
 const char *wpe_path_reason_of(WpePathWhy why);

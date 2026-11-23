@@ -10,6 +10,7 @@
 #include "we_keymap.h"        /* the key table: curses codes and escape tails to editor keys */
 #ifdef UNIX
 
+#include <errno.h>
 #include <termios.h>
 #include <sys/ioctl.h>
 #include <fcntl.h>
@@ -463,9 +464,7 @@ char *init_spchr(char c)
   ;
  if (spc_st[i] && spc_st[i+1])
  {
-  pt = MALLOC((strlen(spc_bg)+strlen(spc_nd)+2)*sizeof(char));
-  if(pt)
-   sprintf(pt, "%s%c%s", spc_bg, spc_st[i+1], spc_nd);
+  pt = wpe_fmt_dup("%s%c%s", spc_bg, spc_st[i+1], spc_nd);
  }
  return(pt);
 }
@@ -2939,7 +2938,10 @@ static void e_t_wait_for_any_key(void)
  raw.c_cc[VMIN] = 1;
  raw.c_cc[VTIME] = 0;
  tcsetattr(0, TCSANOW, &raw);
- (void)read(0, &c, 1);
+ /* A signal that interrupts the wait does not end it; the end of the input
+    or any other failure does. */
+ while (read(0, &c, 1) < 0 && errno == EINTR)
+  ;
  tcsetattr(0, TCSANOW, &old);
 }
 

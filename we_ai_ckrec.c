@@ -7,12 +7,14 @@
    never from "the name is not in the before list". */
 #include <dirent.h>
 #include <errno.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
 #include "we_ai_ckrec.h"
+#include "we_fmt.h"
 
 /** The noun of the read owner's sentences for what the walk opens. */
 #define CK_READ_WHAT "file"
@@ -218,7 +220,7 @@ static void ck_say_trace(const WpeCkRecord *r, const char *fmt, const char *arg)
 {
  char line[WPE_PATH_SIZE + 120];
  if (!r->ask.trace) return;
- snprintf(line, sizeof line, fmt, arg);
+ WPE_FMT_SHOWN(line, fmt, arg);
  r->ask.trace(line);
 }
 
@@ -245,7 +247,7 @@ static void ck_note(WpeCkRecord *r, WpeCkSide side, WpeCkWhy why, const char *wh
  n->side = side;
  n->why = why;
  n->count = count;
- if (reason) snprintf(n->reason, sizeof n->reason, "%s", reason);
+ if (reason) WPE_FMT_SHOWN(n->reason, "%s", reason);
  r->nnotes[side]++;
 }
 
@@ -269,8 +271,8 @@ static int ck_bound(const WpeCkRecord *r)
 static int ck_join(const char *dir, const char *name, char *out, size_t sz)
 {
  int at_top = dir[0] == '/' && dir[1] == '\0';
- int n = snprintf(out, sz, "%s/%s", at_top ? "" : dir, name);
- return (n < 0 || (size_t)n >= sz) ? -1 : 0;
+ if (wpe_fmt_whole(out, sz, "%s/%s", at_top ? "" : dir, name) != WPE_FMT_OK) return -1;
+ return 0;
 }
 
 /** Does the now walk go into this folder?  Not into one the checkpoint could not read. */
@@ -366,8 +368,10 @@ static void ck_hidden_cap_reached(WpeCkRecord *r, WpeCkSide side, const char *pa
  char dir[WPE_PATH_SIZE];
  if (s->hidden_noted) return;
  s->hidden_noted = 1;
- snprintf(dir, sizeof dir, "%s", path);
- (void)ckrec_parent(dir);
+ /* a path too long for the array is noted as no place: the note still says
+    that hidden entries were left out */
+ if (WPE_FMT_WHOLE(dir, "%s", path) == WPE_FMT_OK)
+  (void)ckrec_parent(dir);
  ck_note(r, side, WPE_CK_WHY_NOT_LISTED, dir, NULL, s->hidden_counted);
 }
 
@@ -738,7 +742,7 @@ static void ck_add_tool_parents(WpeCkRecord *r, WpeCkSide side, const char *path
  size_t rl;
  if (!root) return;
  rl = strlen(root);
- snprintf(anc, sizeof anc, "%s", path);
+ if (WPE_FMT_WHOLE(anc, "%s", path) != WPE_FMT_OK) return;
  while (ckrec_parent(anc) && strlen(anc) > rl && !strncmp(anc, root, rl)) {
   if (ck_find(r, side, anc)) return;
   if (!ck_look_folder_entry(r, side, anc, 0, CK_F_LISTED)) return;
@@ -946,7 +950,10 @@ static CkUnder ck_under_moved(WpeCkRecord *r, const CkEntry *t, const char *anc,
 static CkUnder ck_judge_under(WpeCkRecord *r, const char *path, const CkEntry **from, WpeCkWhy *why)
 {
  char anc[WPE_PATH_SIZE];
- snprintf(anc, sizeof anc, "%s", path);
+ if (WPE_FMT_WHOLE(anc, "%s", path) != WPE_FMT_OK) {
+  *why = WPE_CK_WHY_NOT_LISTED;
+  return CK_UNDER_UNSAID;
+ }
  while (ckrec_parent(anc)) {
   CkEntry *t = ck_find(r, WPE_CK_THEN, anc), *n = ck_find(r, WPE_CK_NOW, anc);
   int absent;
@@ -1007,7 +1014,10 @@ static void ck_judge_present(WpeCkRecord *r, const CkEntry *now, CkCall *c)
 static int ck_now_reached(WpeCkRecord *r, const char *path, WpeCkWhy *why)
 {
  char anc[WPE_PATH_SIZE];
- snprintf(anc, sizeof anc, "%s", path);
+ if (WPE_FMT_WHOLE(anc, "%s", path) != WPE_FMT_OK) {
+  *why = WPE_CK_WHY_NOT_LISTED;
+  return 0;
+ }
  while (ckrec_parent(anc)) {
   CkEntry *n = ck_find(r, WPE_CK_NOW, anc);
   if (!n || !n->is_folder) continue;
@@ -1055,7 +1065,8 @@ static WpeCkFolderNow ck_folder_now(const char *path)
  char anc[WPE_PATH_SIZE];
  WpeSeen seen;
  int direct = 1;
- snprintf(anc, sizeof anc, "%s", path);
+ /* a path too long to look at is a folder nobody can show to be there */
+ if (WPE_FMT_WHOLE(anc, "%s", path) != WPE_FMT_OK) return WPE_CK_FOLDER_GONE;
  while (ckrec_parent(anc)) {
   if (wpe_seen_look_name(anc, 1, &seen) == 0) {
    if (wpe_seen_kind(&seen) != S_IFDIR) return WPE_CK_FOLDER_IS_A_FILE;
@@ -1163,7 +1174,7 @@ static int ck_under_moved_folder(WpeCkRecord *r, const CkEntry *e, const CkCall 
 {
  char par[WPE_PATH_SIZE];
  int pos;
- snprintf(par, sizeof par, "%s", e->path);
+ if (WPE_FMT_WHOLE(par, "%s", e->path) != WPE_FMT_OK) return 0;
  if (!ckrec_parent(par)) return 0;
  if (ck_locate(ck_side(r, WPE_CK_NOW), par, &pos) < 0) return 0;
  return calls[pos].kind == WPE_CK_MOVED;
@@ -1559,17 +1570,39 @@ static const char *ck_why_words(WpeCkWhy why)
  return "it was not reached";
 }
 
+/**
+ * ck_say - Write one sentence of the review into the caller's room.
+ * @out/@n: the room; @fmt: the sentence.
+ * Return: the bytes written, 0 when nothing could be said.
+ *
+ * What the user gets: a path or a reason too long for the pane's line is cut
+ * where a character ends and ends in "...", so a sentence never shows half a
+ * letter and never runs past its room.
+ */
+static int ck_say(char *out, size_t n, const char *fmt, ...) WPE_FMT_PRINTF(3, 4);
+static int ck_say(char *out, size_t n, const char *fmt, ...)
+{
+ va_list ap;
+ int said;
+ if (n == 0) return 0;
+ va_start(ap, fmt);
+ said = wpe_fmt_vshown(out, n, fmt, ap);
+ va_end(ap);
+ if (said == WPE_FMT_FAILED) out[0] = '\0';
+ return (int)strlen(out);
+}
+
 /** ck_sentence_removed - The pane sentence for a removed file, never promising a copy back where its folder is gone. */
 static int ck_sentence_removed(char *out, size_t n, const WpeCkVerdict *v)
 {
  switch (v->folder_now) {
  case WPE_CK_FOLDER_THERE:
-  return snprintf(out, n, "removed by the run: %s. r puts it back.", v->path);
+  return ck_say(out, n,"removed by the run: %s. r puts it back.", v->path);
  case WPE_CK_FOLDER_GONE:
-  return snprintf(out, n, "removed by the run: %s, and its folder is gone too. r cannot put it back.",
+  return ck_say(out, n,"removed by the run: %s, and its folder is gone too. r cannot put it back.",
                   v->path);
  case WPE_CK_FOLDER_IS_A_FILE:
-  return snprintf(out, n, "removed by the run: %s, and its folder is now a file. r cannot put it back.",
+  return ck_say(out, n,"removed by the run: %s, and its folder is now a file. r cannot put it back.",
                   v->path);
  }
  return 0;
@@ -1580,14 +1613,15 @@ static int ck_sentence_unreadable(char *out, size_t n, const WpeCkVerdict *v)
 {
  char reason[WPE_PATH_MSG_MAX];
  (void)wpe_read_reason(reason, sizeof reason, &v->read);
- return snprintf(out, n, "cannot be read now: %s: %s. Whether the run changed it is not known. "
+ return ck_say(out, n,"cannot be read now: %s: %s. Whether the run changed it is not known. "
                  "r puts the checkpoint's copy back.", v->path, reason);
 }
 
 /**
  * wpe_ckrec_sentence - The sentence the pane says for one verdict.
  * @out/@n: the buffer; @v: the verdict.
- * Return: the length, as snprintf; 0 for a verdict that needs no sentence.
+ * Return: the bytes written (cut with "..." when the room is short); 0 for a
+ * verdict that needs no sentence.
  */
 int wpe_ckrec_sentence(char *out, size_t n, const WpeCkVerdict *v)
 {
@@ -1602,20 +1636,20 @@ int wpe_ckrec_sentence(char *out, size_t n, const WpeCkVerdict *v)
   return 0;
  case WPE_CK_REMOVED:          return ck_sentence_removed(out, n, v);
  case WPE_CK_REMOVED_NO_COPY:
-  return snprintf(out, n, "removed by the run: %s. The checkpoint holds no copy of it, so r cannot "
+  return ck_say(out, n,"removed by the run: %s. The checkpoint holds no copy of it, so r cannot "
                   "put it back.", v->path);
  case WPE_CK_MOVED:
-  return snprintf(out, n, "moved by the run: %s is now %s. r leaves it where it is.", from, v->path);
+  return ck_say(out, n,"moved by the run: %s is now %s. r leaves it where it is.", from, v->path);
  case WPE_CK_MOVED_HIDDEN:
-  return snprintf(out, n, "moved by the run: %s is now %s, a hidden name the review does not list. "
+  return ck_say(out, n,"moved by the run: %s is now %s, a hidden name the review does not list. "
                   "r leaves it where it is.", v->path, from);
  case WPE_CK_LINKED:
-  return snprintf(out, n, "%s is a second name of %s, added by the run. r leaves it.", v->path, from);
+  return ck_say(out, n,"%s is a second name of %s, added by the run. r leaves it.", v->path, from);
  case WPE_CK_MAYBE_COPY:
-  return snprintf(out, n, "%s is new, and it is as large as %s, which the run removed and the "
+  return ck_say(out, n,"%s is new, and it is as large as %s, which the run removed and the "
                   "checkpoint holds no copy of. r keeps it.", v->path, from);
  case WPE_CK_REPLACED:
-  return snprintf(out, n, "%s was replaced by another file, and the checkpoint holds no copy of the "
+  return ck_say(out, n,"%s was replaced by another file, and the checkpoint holds no copy of the "
                   "old one. r leaves it.", v->path);
  case WPE_CK_NOT_READABLE_NOW: return ck_sentence_unreadable(out, n, v);
  case WPE_CK_CANNOT_SAY:
@@ -1623,7 +1657,7 @@ int wpe_ckrec_sentence(char *out, size_t n, const WpeCkVerdict *v)
    if (n) out[0] = '\0';
    return 0;
   }
-  return snprintf(out, n, "cannot say what the run did to %s: %s.", v->path, ck_why_words(v->why));
+  return ck_say(out, n,"cannot say what the run did to %s: %s.", v->path, ck_why_words(v->why));
  }
  return 0;
 }
@@ -1631,7 +1665,7 @@ int wpe_ckrec_sentence(char *out, size_t n, const WpeCkVerdict *v)
 /**
  * wpe_ckrec_note_sentence - The sentence the pane says for one place that was not reached.
  * @out/@n: the buffer; @note: the note.
- * Return: the length, as snprintf.
+ * Return: the bytes written (cut with "..." when the room is short).
  */
 int wpe_ckrec_note_sentence(char *out, size_t n, const WpeCkNote *note)
 {
@@ -1641,30 +1675,30 @@ int wpe_ckrec_note_sentence(char *out, size_t n, const WpeCkNote *note)
   break;
  case WPE_CK_WHY_REFUSED:
   if (then)
-   return snprintf(out, n, "not watched: %s: %s. What the run makes or removes in it is not listed, "
+   return ck_say(out, n,"not watched: %s: %s. What the run makes or removes in it is not listed, "
                    "and r keeps it.", note->where, note->reason);
-  return snprintf(out, n, "not seen after the run: %s: %s. What the run made or removed in it is not "
+  return ck_say(out, n,"not seen after the run: %s: %s. What the run made or removed in it is not "
                   "listed, and r keeps it.", note->where, note->reason);
  case WPE_CK_WHY_BOUND:
   if (then)
-   return snprintf(out, n, "the snapshot watches %d files under %s; a file the run creates beyond "
+   return ck_say(out, n,"the snapshot watches %d files under %s; a file the run creates beyond "
                    "them is unseen", note->count, note->where);
-  return snprintf(out, n, "the review saw %d new files under %s and stopped; more new files are not "
+  return ck_say(out, n,"the review saw %d new files under %s and stopped; more new files are not "
                   "listed, and r keeps them", note->count, note->where);
  case WPE_CK_WHY_NOT_LISTED:
-  return snprintf(out, n, "not read: %s. What the run did in it is not listed, and r keeps it.",
+  return ck_say(out, n,"not read: %s. What the run did in it is not listed, and r keeps it.",
                   note->where);
  case WPE_CK_WHY_ROOT_REPLACED:
-  return snprintf(out, n, "the workspace folder was replaced since the checkpoint; nothing in it is "
+  return ck_say(out, n,"the workspace folder was replaced since the checkpoint; nothing in it is "
                   "listed, restored or taken away");
  case WPE_CK_WHY_TOOL:
-  return snprintf(out, n, "git could not list %s after the run. New files are not listed, and r "
+  return ck_say(out, n,"git could not list %s after the run. New files are not listed, and r "
                   "keeps them.", note->where);
  case WPE_CK_WHY_IMAGE_LOST:
-  return snprintf(out, n, "the checkpoint's copy of %s cannot be read: %s. r cannot put it back.",
+  return ck_say(out, n,"the checkpoint's copy of %s cannot be read: %s. r cannot put it back.",
                   note->where, note->reason);
  }
- return snprintf(out, n, "not seen: %s", note->where);
+ return ck_say(out, n,"not seen: %s", note->where);
 }
 
 /** The cause of a note, as one word of the trace. */
@@ -1689,14 +1723,14 @@ static const char *ck_why_word(WpeCkWhy why)
 int wpe_ckrec_note_trace(char *out, size_t n, const WpeCkNote *note, const char *stage)
 {
  if (note->why == WPE_CK_WHY_BOUND)
-  return snprintf(out, n, "%s note bound seen=%d dir=%s", stage, note->count, note->where);
- return snprintf(out, n, "%s note %s %s", stage, ck_why_word(note->why), note->where);
+  return ck_say(out, n,"%s note bound seen=%d dir=%s", stage, note->count, note->where);
+ return ck_say(out, n,"%s note %s %s", stage, ck_why_word(note->why), note->where);
 }
 
 /** wpe_ckrec_more_notes - The pane line that stands for the notes not shown. */
 int wpe_ckrec_more_notes(char *out, size_t n, int more)
 {
- return snprintf(out, n, "and %d more not seen (all of them are in the trace)", more);
+ return ck_say(out, n,"and %d more not seen (all of them are in the trace)", more);
 }
 
 /**
@@ -1706,26 +1740,26 @@ int wpe_ckrec_more_notes(char *out, size_t n, int more)
 int wpe_ckrec_header(char *out, size_t n, int changes, int unseen)
 {
  if (changes == 0 && unseen == 0)
-  return snprintf(out, n, "=== AI changeset: no files changed ===");
+  return ck_say(out, n,"=== AI changeset: no files changed ===");
  if (changes == 0)
-  return snprintf(out, n, "=== AI changeset: no change seen, %d not seen ===", unseen);
+  return ck_say(out, n,"=== AI changeset: no change seen, %d not seen ===", unseen);
  if (unseen == 0)
-  return snprintf(out, n, "=== AI changeset: %d change%s (Alt-T / Alt-V to step) ===", changes,
+  return ck_say(out, n,"=== AI changeset: %d change%s (Alt-T / Alt-V to step) ===", changes,
                   changes == 1 ? "" : "s");
- return snprintf(out, n, "=== AI changeset: %d change%s, %d not seen (Alt-T / Alt-V to step) ===",
+ return ck_say(out, n,"=== AI changeset: %d change%s, %d not seen (Alt-T / Alt-V to step) ===",
                  changes, changes == 1 ? "" : "s", unseen);
 }
 
 /** wpe_ckrec_more_sentences - The pane line that stands for the file sentences not shown. */
 int wpe_ckrec_more_sentences(char *out, size_t n, int more)
 {
- return snprintf(out, n, "and %d more like these (all of them are in the trace)", more);
+ return ck_say(out, n,"and %d more like these (all of them are in the trace)", more);
 }
 
 /** wpe_ckrec_unseen_line - The Messages line that points at the notes in the pane. */
 int wpe_ckrec_unseen_line(char *out, size_t n, int unseen)
 {
- return snprintf(out, n, "[AI] %d not seen (the pane says why)", unseen);
+ return ck_say(out, n,"[AI] %d not seen (the pane says why)", unseen);
 }
 
 /**
@@ -1739,11 +1773,11 @@ int wpe_ckrec_unseen_line(char *out, size_t n, int unseen)
 int wpe_ckrec_last_line(char *out, size_t n, int failed, int kept, int unseen)
 {
  if (failed == 0 && kept == 0 && unseen == 0)
-  return snprintf(out, n, "[AI] ALL changes reverted to the checkpoint");
+  return ck_say(out, n,"[AI] ALL changes reverted to the checkpoint");
  if (kept == 0 && unseen == 0)
-  return snprintf(out, n, "[AI] %d file%s kept the change (the pane says why)", failed,
+  return ck_say(out, n,"[AI] %d file%s kept the change (the pane says why)", failed,
                   failed == 1 ? "" : "s");
- return snprintf(out, n, "[AI] reverted; %d kept, %d not seen (the pane says why)", failed + kept,
+ return ck_say(out, n,"[AI] reverted; %d kept, %d not seen (the pane says why)", failed + kept,
                  unseen);
 }
 
@@ -1755,5 +1789,5 @@ int wpe_ckrec_kept_question(char *out, size_t n, WpeCkVerdictKind kind, const ch
  memset(&v, 0, sizeof v);
  v.kind = kind;
  row = wpe_ckrec_row_text(&v);
- return snprintf(out, n, "%s: %s; r leaves it. Enter = next", shown, row ? row + 5 : "kept");
+ return ck_say(out, n,"%s: %s; r leaves it. Enter = next", shown, row ? row + 5 : "kept");
 }

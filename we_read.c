@@ -567,37 +567,46 @@ int wpe_read_outcome_missing(const WpeReadOutcome *o)
 }
 
 /**
- * wpe_read_reason - The words of a refusal, as the words owner spells them.
- * @out/@n: the buffer; @o: the outcome.
- * Return: the length the reason needs, as snprintf; 0 for no refusal.
+ * read_reason_words - The fixed words of a refusal that is not a size.
+ * Return: the words, never NULL; "" for no refusal.
  */
-int wpe_read_reason(char *out, size_t n, const WpeReadOutcome *o)
+static const char *read_reason_words(const WpeReadOutcome *o)
 {
  switch (o->why)
  {
  case WPE_READ_DONE:
-  if (n > 0)
-   out[0] = '\0';
-  return 0;
+  return "";
  case WPE_READ_REFUSED_BY_SYSTEM:
-  return snprintf(out, n, "%s", wpe_path_refused_reason(o->err));
+  return wpe_path_refused_reason(o->err);
  case WPE_READ_NOT_A_FILE:
   if (o->want_folder)
-   return snprintf(out, n, "%s", wpe_path_reason_of(WPE_PATH_REASON_NOT_FOLDER));
-  return snprintf(out, n, "%s", wpe_path_kind_reason(o->kind, o->tty));
+   return wpe_path_reason_of(WPE_PATH_REASON_NOT_FOLDER);
+  return wpe_path_kind_reason(o->kind, o->tty);
  case WPE_READ_IS_A_LINK:
-  return snprintf(out, n, "%s", wpe_path_reason_of(WPE_PATH_REASON_LINK));
- case WPE_READ_TOO_LARGE:
-  return wpe_path_too_large_reason(out, n, o->bound);
+  return wpe_path_reason_of(WPE_PATH_REASON_LINK);
  case WPE_READ_OTHER_FILE:
-  return snprintf(out, n, "%s",
-                  wpe_path_reason_of(o->unsure ? WPE_PATH_REASON_CHANGED : WPE_PATH_REASON_OTHER));
+  return wpe_path_reason_of(o->unsure ? WPE_PATH_REASON_CHANGED : WPE_PATH_REASON_OTHER);
  case WPE_READ_NO_WRITER:
-  return snprintf(out, n, "%s", wpe_path_reason_of(WPE_PATH_REASON_NO_WRITER));
+  return wpe_path_reason_of(WPE_PATH_REASON_NO_WRITER);
  case WPE_READ_NO_MEMORY:
-  return snprintf(out, n, "%s", strerror(ENOMEM));
+  return strerror(ENOMEM);
+ case WPE_READ_TOO_LARGE:
+  break;
  }
- return snprintf(out, n, "%s", strerror(EIO));
+ return strerror(EIO);
+}
+
+/**
+ * wpe_read_reason - The words of a refusal, as the words owner spells them.
+ * @out/@n: the buffer; @o: the outcome.
+ * Return: the length written, without the terminator; 0 for no refusal.
+ */
+int wpe_read_reason(char *out, size_t n, const WpeReadOutcome *o)
+{
+ if (o->why == WPE_READ_TOO_LARGE)
+  return wpe_path_too_large_reason(out, n, o->bound);
+ (void)wpe_fmt_shown(out, n, "%s", read_reason_words(o));
+ return n > 0 ? (int)strlen(out) : 0;
 }
 
 /**
@@ -606,8 +615,9 @@ int wpe_read_reason(char *out, size_t n, const WpeReadOutcome *o)
  * @o: the outcome.
  *
  * A caller with no box (the assistant's pane, the start plan's text) says
- * this in its own sink.
- * Return: the length the sentence needs, as snprintf.
+ * this in its own sink.  A sentence longer than the buffer ends in "...";
+ * wpe_read_say_dup gives it at its real length.
+ * Return: the length written, without the terminator.
  */
 int wpe_read_say(char *out, size_t n, const char *what, const char *path,
                  const WpeReadOutcome *o)
@@ -618,4 +628,20 @@ int wpe_read_say(char *out, size_t n, const char *what, const char *path,
   return wpe_path_say_refused(out, n, what, path, o->err);
  (void)wpe_read_reason(reason, sizeof reason, o);
  return wpe_path_say_refused_because(out, n, what, path, reason);
+}
+
+/**
+ * wpe_read_say_dup - The sentence a refusal gets, at its real length.
+ * Used by a box that shows a long path with the reason after it, so the
+ * reason is not cut off.
+ * Return: the sentence (free it), or NULL when out of memory.
+ */
+char *wpe_read_say_dup(const char *what, const char *path, const WpeReadOutcome *o)
+{
+ char reason[WPE_PATH_MSG_MAX];
+
+ if (o->why == WPE_READ_REFUSED_BY_SYSTEM)
+  return wpe_path_say_refused_dup(what, path, o->err);
+ (void)wpe_read_reason(reason, sizeof reason, o);
+ return wpe_path_say_refused_because_dup(what, path, reason);
 }

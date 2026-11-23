@@ -879,8 +879,9 @@ static void case_startup_program_scripts(void)
 
 /* A small ELF file built by hand: a header, one section of gdb scripts, the
    table of the sections' names, three section headers (null, scripts,
-   names).  Both classes, both byte orders. */
-#define ELF_ROOM        512
+   names).  Both classes, both byte orders.  The room holds a payload that
+   names a path past the editor's path limit. */
+#define ELF_ROOM        8192
 #define ELF_SECTIONS    3
 #define ELF_NULL        0
 #define ELF_SCRIPTS     1
@@ -1216,6 +1217,24 @@ static void case_embedded_listed(void)
  expect_int("kind 5, which gdb calls invalid, is not shown whole",
             wpe_startplan_reads_too_long(p), 1);
  wpe_startplan_free(p);
+
+ {
+  /* a file entry that names an absolute path longer than a path the editor
+     holds: it is not opened by the front of that name, it is not shown whole */
+  char entry[PATH_ROOM + 64];
+  size_t at = 0;
+
+  entry[at++] = '\001';
+  entry[at++] = '/';
+  while (at < PATH_ROOM + 32)
+   entry[at++] = 'a';
+  entry[at++] = '\0';
+  p = embedded_plan(entry, at);
+  expect_int("a file entry with a name past the path limit is listed", p->npath, 1);
+  expect_int("but not shown whole: it is not read by a cut name",
+             wpe_startplan_reads_too_long(p), 1);
+  wpe_startplan_free(p);
+ }
 
  unlink(exe);
  p = gdb_plan_of("t.e");

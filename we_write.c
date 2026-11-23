@@ -1553,7 +1553,7 @@ static void write_test_swap_bak(const char *bak)
 {
  char swap[WPE_PATH_SIZE];
 
- if (snprintf(swap, sizeof swap, "%s%s", bak, WPE_WRITE_TEST_SWAP_SUFFIX) < (int)sizeof swap)
+ if (WPE_FMT_WHOLE(swap, "%s%s", bak, WPE_WRITE_TEST_SWAP_SUFFIX) == WPE_FMT_OK)
   (void)rename(swap, bak);
 }
 
@@ -4398,8 +4398,8 @@ int wpe_write_written_clause(char *out, size_t n, const WpeWriteOutcome *o)
  write_written_bits_clause(out, n, o);
  used = strlen(out);
  if (o->backup_err != 0)
-  snprintf(out + used, n - used, "%sno backup was made: %s", used > 0 ? "; " : "",
-           strerror(o->backup_err));
+  (void)wpe_fmt_shown(out + used, n - used, "%sno backup was made: %s", used > 0 ? "; " : "",
+                      strerror(o->backup_err));
  return((int)strlen(out));
 }
 
@@ -4450,7 +4450,7 @@ int wpe_write_sentence(char *out, size_t n, const WpeWriteOutcome *o, WpeWriteTh
  out[0] = '\0';
  if (o->not_a_file)
  {
-  snprintf(out, n, "%s", WPE_WRITE_NOT_A_FILE_SENTENCE);
+  wpe_fmt_shown(out, n, "%s", WPE_WRITE_NOT_A_FILE_SENTENCE);
   return((int)strlen(out));
  }
  if (o->status == WPE_WRITE_DECLINED)

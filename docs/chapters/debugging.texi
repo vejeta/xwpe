@@ -918,7 +918,10 @@ a line break (a project file's watch or breakpoint, Arguments, a file
 name) is never written to a debugger, where the rest of the line would
 be a command of its own; the status row says @samp{not sent: a watch
 with a line break}.  Nor is one holding @samp{;;}, where pdb ends a
-command and starts the next one.
+command and starts the next one.  Arguments too long for the run command
+are refused the same way: the status row says @samp{Run not started: the
+Arguments are too long}, nothing is sent, and the editor answers the next
+key.
 
 @quotation Note
 Debugging @emph{runs} your program; for IDE features that @emph{understand}

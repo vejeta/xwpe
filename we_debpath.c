@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "we_debpath.h"
+#include "we_fmt.h"
 
 int e_d_copy_arg(char *out, size_t n, const char *src)
 {
@@ -21,9 +22,7 @@ int e_d_copy_arg(char *out, size_t n, const char *src)
 
 int e_d_debuggee_path(char *out, size_t n, const char *dir, const char *name)
 {
-	int len = snprintf(out, n, "%s/%s", dir, name);
-
-	if (len < 0 || (size_t)len >= n) {
+	if (wpe_fmt_whole(out, n, "%s/%s", dir, name) != WPE_FMT_OK) {
 		out[0] = '\0';
 		return (-1);
 	}

@@ -29,7 +29,6 @@
 /* The longest dialog title the header names; longer ones are cut. */
 #define DUMP_TITLE_MAX        64
 /* The dump buffer grows by at least this much. */
-#define DUMP_CHUNK            4096
 /* The first byte above printable ASCII, and the last printable one. */
 #define DUMP_PRINT_FIRST      0x20
 #define DUMP_PRINT_LAST       0x7e
@@ -52,9 +51,7 @@ typedef struct
 /* The text of one dump, built before it is written in one go. */
 typedef struct
 {
- char *s;
- size_t len, size;
- int failed;              /* memory ran out: the dump is not written */
+ WpeFmtText text;         /* a heap text: it ends in memory out and the dump is not written */
 } DumpBuf;
 
 static int dump_fd = DUMP_FD_NONE;
@@ -73,53 +70,19 @@ static int dump_menu_count = 0;             /* how many rows it has */
 /* ---- the buffer ---- */
 
 /**
- * dump_room - Make room for @n more bytes in @d.
- * Return: 1 when there is room, 0 when memory ran out (the dump is dropped).
- */
-static int dump_room(DumpBuf *d, size_t n)
-{
- size_t want;
- char *s;
-
- if (d->failed)
-  return 0;
- if (d->len + n + 1 <= d->size)
-  return 1;
- want = d->size + n + DUMP_CHUNK;
- s = realloc(d->s, want);
- if (s == NULL)
- {
-  d->failed = 1;
-  return 0;
- }
- d->s = s;
- d->size = want;
- return 1;
-}
-
-/**
  * dump_printf - Add formatted text to @d.
+ * The dump has no bound: it grows with the text, and when memory runs out
+ * the dump is dropped whole instead of being written cut.
  */
-static void dump_printf(DumpBuf *d, const char *fmt, ...)
-#ifdef __GNUC__
-    __attribute__((format(printf, 2, 3)))
-#endif
-    ;
+static void dump_printf(DumpBuf *d, const char *fmt, ...) WPE_FMT_PRINTF(2, 3);
 
 static void dump_printf(DumpBuf *d, const char *fmt, ...)
 {
  va_list ap;
- int n;
 
  va_start(ap, fmt);
- n = vsnprintf(NULL, 0, fmt, ap);
+ wpe_fmt_vadd(&d->text, fmt, ap);
  va_end(ap);
- if (n < 0 || !dump_room(d, (size_t)n))
-  return;
- va_start(ap, fmt);
- vsnprintf(d->s + d->len, d->size - d->len, fmt, ap);
- va_end(ap);
- d->len += (size_t)n;
 }
 
 /**
@@ -147,10 +110,7 @@ static void dump_bytes(DumpBuf *d, const unsigned char *s, int n, int space_plai
  for (i = 0; i < n; i++)
  {
   if (dump_byte_is_plain(s[i], space_plain))
-  {
-   if (dump_room(d, 1))
-    d->s[d->len++] = (char)s[i];
-  }
+   wpe_fmt_add_bytes(&d->text, (const char *)&s[i], 1);
   else
    dump_printf(d, "\\x%02x", s[i]);
  }
@@ -176,14 +136,14 @@ static void dump_string(DumpBuf *d, const char *s)
  * that stopped reading does; a test that closed its end ends the dumps
  * (the editor ignores SIGPIPE) and the editor goes on.
  */
-static void dump_write(DumpBuf *d)
+static void dump_write(const char *s, size_t len)
 {
  size_t done = 0;
  ssize_t n;
 
- while (done < d->len)
+ while (done < len)
  {
-  n = write(dump_fd, d->s + done, d->len - done);
+  n = write(dump_fd, s + done, len - done);
   if (n < 0 && errno == EINTR)
    continue;
   if (n <= 0)
@@ -434,9 +394,12 @@ static void dump_find(DumpBuf *d)
  */
 static void dump_state(int waiting)
 {
- DumpBuf d = { NULL, 0, 0, 0 };
+ DumpBuf d;
+ char *text;
+ size_t len;
  int top = DUMP_TOP_NONE;
 
+ wpe_fmt_begin_heap(&d.text);
  if (WpeEditor != NULL)
   top = WpeEditor->mxedt;
  dump_printf(&d, "S %ld ctx=", dump_keys);
@@ -446,9 +409,10 @@ static void dump_state(int waiting)
  dump_menu(&d);
  dump_find(&d);
  dump_printf(&d, "E %ld\n", dump_keys);
- if (!d.failed)
-  dump_write(&d);
- free(d.s);
+ text = wpe_fmt_end_heap(&d.text, &len);
+ if (text != NULL)
+  dump_write(text, len);
+ free(text);
  dump_autosaved = 0;
  dump_says = 0;
  dump_last_seq = dump_keys;

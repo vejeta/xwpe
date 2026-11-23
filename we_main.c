@@ -156,10 +156,7 @@ static char *e_info_search_path(const char *fallback)
 #ifdef XWPE_INFODIR
  if (XWPE_INFODIR[0])
  {
-  path = MALLOC(strlen(XWPE_INFODIR) + strlen(fallback) + 2);
-  if (path)
-   sprintf(path, "%s%c%s", XWPE_INFODIR, PTHD, fallback);
-  return(path);
+  return(wpe_fmt_dup("%s%c%s", XWPE_INFODIR, PTHD, fallback));
  }
 #endif
  path = MALLOC(strlen(fallback) + 1);
@@ -288,11 +285,10 @@ static void e_leave_moved_note(const char *xdgfile)
 {
  char text[WPE_PATH_SIZE + sizeof WPE_PLACES_MOVED_NOTE_FMT + sizeof XWPE_HOME];
  WpeWriteOutcome o;
- int len = snprintf(text, sizeof text, WPE_PLACES_MOVED_NOTE_FMT, xdgfile, XWPE_HOME);
 
- if (len < 0 || (size_t)len >= sizeof text)
+ if (WPE_FMT_WHOLE(text, WPE_PLACES_MOVED_NOTE_FMT, xdgfile, XWPE_HOME) != WPE_FMT_OK)
   return;
- if (wpe_write_own_bytes(WPE_OWN_LEGACY, NULL, E_MOVED_NOTE_LEAF, text, (size_t)len, &o) != 0)
+ if (wpe_write_own_bytes(WPE_OWN_LEGACY, NULL, E_MOVED_NOTE_LEAF, text, strlen(text), &o) != 0)
   return;
 }
 

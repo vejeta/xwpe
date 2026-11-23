@@ -281,7 +281,7 @@ char *wpe_ai_take_dropped_model(void);
 
 /* ----- observability ----------------------------------------------------- */
 /* Append one line to $XWPE_AI_TRACE, if set (same idiom as XWPE_UI_TRACE).    */
-void wpe_ai_trace(const char *fmt, ...);
+void wpe_ai_trace(const char *fmt, ...) WPE_FMT_PRINTF(1, 2);
 
 /* ----- chat request model ------------------------------------------------ */
 typedef struct { const char *role; const char *content; } wpe_ai_msg;

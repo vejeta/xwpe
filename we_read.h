@@ -194,12 +194,17 @@ void wpe_read_outcome_errno(WpeReadOutcome *o, int err);
 int wpe_read_outcome_missing(const WpeReadOutcome *o);
 
 /* The reason a refusal gets, as the words owner spells it ("it is a pipe").
-   Returns the length the reason needs, as snprintf. */
+   Returns the length written. */
 int wpe_read_reason(char *out, size_t n, const WpeReadOutcome *o);
 
 /* The whole sentence of a refusal: "Cannot open <what> <path>: <reason>.",
-   or "<What> not found: <path>." for a missing name.  Returns the length the
-   sentence needs, as snprintf. */
+   or "<What> not found: <path>." for a missing name.  A sentence longer than
+   @out ends in "...".  Returns the length written, never a length only
+   wanted. */
 int wpe_read_say(char *out, size_t n, const char *what, const char *path, const WpeReadOutcome *o);
+
+/* The same sentence at its real length on the heap (free it), for a path
+   longer than any array.  NULL when out of memory. */
+char *wpe_read_say_dup(const char *what, const char *path, const WpeReadOutcome *o);
 
 #endif

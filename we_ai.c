@@ -1272,12 +1272,14 @@ const char *wpe_ai_ollama_endpoint_fixup(const char *url)
  */
 static int ai_key_leaf(const char *provider, char *out, size_t n)
 {
- int len;
- if (provider && *provider)
-  len = snprintf(out, n, "%s-%s", AI_KEY_FILE_BASE, provider);
- else
-  len = snprintf(out, n, "%s", AI_KEY_FILE_BASE);
- return (len < 0 || (size_t)len >= n) ? -1 : 0;
+ if (provider && *provider) {
+  if (wpe_fmt_whole(out, n, "%s-%s", AI_KEY_FILE_BASE, provider) != WPE_FMT_OK)
+   return -1;
+  return 0;
+ }
+ if (wpe_fmt_whole(out, n, "%s", AI_KEY_FILE_BASE) != WPE_FMT_OK)
+  return -1;
+ return 0;
 }
 
 /**
@@ -1310,14 +1312,12 @@ static int ai_config_file(const char *leaf, char *out, size_t n)
 int wpe_ai_write_openai_key(const char *provider, const char *key, WpeWriteOutcome *o)
 {
  char leaf[WPE_NAME_SIZE], text[AI_KEY_LINE_MAX];
- int len;
  memset(o, 0, sizeof *o);
  o->status = WPE_WRITE_FAILED;
  o->err = EINVAL;
  if (!key || ai_key_leaf(provider, leaf, sizeof leaf) != 0) return -1;
- len = snprintf(text, sizeof text, "%s\n", key);
- if (len < 0 || (size_t)len >= sizeof text) return -1;
- return wpe_write_own_bytes(WPE_OWN_CONFIG, NULL, leaf, text, (size_t)len, o);
+ if (WPE_FMT_WHOLE(text, "%s\n", key) != WPE_FMT_OK) return -1;
+ return wpe_write_own_bytes(WPE_OWN_CONFIG, NULL, leaf, text, strlen(text), o);
 }
 
 /* Read the stored OpenAI key for a provider from its file (NULL/"" => the generic
@@ -1684,6 +1684,30 @@ void wpe_ai_web_fetch_cancel(wpe_ai_fetch *f)
 
 /* ===================== reachability / models ============================= */
 
+/* What is added to a refused connection to an OpenAI-compatible endpoint. */
+#define AI_BRIDGE_HINT \
+ " -- start the local server/bridge that serves this endpoint, " \
+ "or set it in Options > AI > Endpoint (Alt-U)"
+
+/* The words that tell the user which key lengthens the wait. */
+#define AI_ANSWER_TIMEOUT_KEY " (AIAnswerTimeout)"
+
+/**
+ * ai_append_shown - Add @tail to the sentence already in @buf.
+ * @buf/@size: the sentence and its place; @tail: what follows it.
+ *
+ * Used where an error line is given the step that fixes it.  A line that
+ * would not fit ends in "..." where a character ends, so the user sees it was
+ * cut and never half a letter.
+ */
+static void ai_append_shown(char *buf, size_t size, const char *tail)
+{
+ char *head = wpe_fmt_dup("%s", buf);
+ if (!head) return;
+ (void) wpe_fmt_shown(buf, size, "%s%s", head, tail);
+ free(head);
+}
+
 /**
  * ai_unreachable_hint - Turn "cannot reach host:port" into what to do about it.
  * @backend: the backend whose endpoint did not take the connection;
@@ -1696,19 +1720,15 @@ void wpe_ai_web_fetch_cancel(wpe_ai_fetch *f)
  */
 static void ai_unreachable_hint(int backend, char *errbuf, size_t errsz)
 {
- size_t n;
  if (!errbuf || !errsz) return;
  if (backend == WPE_AI_OLLAMA) {
-  snprintf(errbuf, errsz,
+  (void) wpe_fmt_shown(errbuf, errsz,
            "Ollama not reachable at %s - is it running? (try `ollama serve`)",
            e_ai_endpoint ? e_ai_endpoint : "?");
   return;
  }
  if (backend != WPE_AI_OPENAI) return;
- n = strlen(errbuf);
- snprintf(errbuf + n, errsz > n ? errsz - n : 0,
-          " -- start the local server/bridge that serves this endpoint, "
-          "or set it in Options > AI > Endpoint (Alt-U)");
+ ai_append_shown(errbuf, errsz, AI_BRIDGE_HINT);
 }
 
 /* Room for the line a failed reachability check gives the user. */
@@ -2208,19 +2228,14 @@ static const char *ai_role_label(const char *role)
 
 static char *ai_flatten_prompt(const wpe_ai_req *req)
 {
- size_t cap = 1024, len = 0;
- char *p = malloc(cap);
+ WpeFmtText t;
  int i;
- if (!p) return NULL;
- p[0] = '\0';
+ wpe_fmt_begin_heap(&t);
  for (i = 0; i < req->nmsgs; i++) {
   const char *c = req->msgs[i].content ? req->msgs[i].content : "";
-  const char *lbl = ai_role_label(req->msgs[i].role);
-  size_t need = len + strlen(lbl) + strlen(c) + 3;
-  if (need > cap) { char *np; while (need > cap) cap *= 2; np = realloc(p, cap); if (!np) { free(p); return NULL; } p = np; }
-  len += (size_t)snprintf(p + len, cap - len, "%s%s\n\n", lbl, c);
+  wpe_fmt_add(&t, "%s%s\n\n", ai_role_label(req->msgs[i].role), c);
  }
- return p;
+ return wpe_fmt_end_heap(&t, NULL);
 }
 
 /**
@@ -2920,7 +2935,6 @@ static int ai_stream_advance_open(struct wpe_ai_stream *st)
 static int ai_stream_fail_overdue(struct wpe_ai_stream *st)
 {
  char why[AI_STREAM_WHY_MAX];
- int n;
  long now = wpe_http_now_ms();
  if (ai_stream_connect_overdue(st, now)) {
   wpe_http_describe_timeout(&st->conn, WPE_AI_REACH_DEADLINE_MS, why, sizeof why);
@@ -2933,9 +2947,8 @@ static int ai_stream_fail_overdue(struct wpe_ai_stream *st)
  }
  wpe_http_describe_timeout(&st->conn, e_ai_answer_timeout * (int)AI_MS_PER_S,
                            why, sizeof why);
- n = (int)strlen(why);
- if (n > 0 && n < (int)sizeof why - 1)
-  snprintf(why + n, sizeof why - (size_t)n, " (AIAnswerTimeout)");
+ if (why[0])
+  ai_append_shown(why, sizeof why, AI_ANSWER_TIMEOUT_KEY);
  return ai_stream_fail(st, why);
 }
 /* True once the completed stream carried a backend failure (e.g. the claude CLI

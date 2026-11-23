@@ -330,11 +330,73 @@ static void test_reach_tells_a_listening_and_a_refusing_port_apart(void)
        "reach: a refusing port is told, with host and port");
 }
 
+/* The room the request's header gets in the editor, and the guard after it.
+ * The guard is wide: the defect wrote at the offset the request line needed
+ * (the path's length), not right behind the room. */
+#define HDR_ROOM 8192
+#define HDR_GUARD 2048
+#define HDR_GUARD_BYTE 0x55
+
+/* The bytes of @mem past its first @n were not written. */
+static int guard_intact(const unsigned char *mem, size_t n)
+{
+ size_t i;
+ for (i = n; i < n + HDR_GUARD; i++)
+  if (mem[i] != HDR_GUARD_BYTE)
+   return 0;
+ return 1;
+}
+
+/* H1: a request line or a header that does not fit the header's room is
+ * refused (0), and nothing is written past the room: the guard after the
+ * storage keeps its bytes.  A request that fits is built whole. */
+static void test_header_text_bounds(void)
+{
+ static unsigned char mem[HDR_ROOM + HDR_GUARD];
+ static char path[9001];
+ static char big_header[HDR_ROOM];
+ const char *hdrs[2];
+ wpe_http_conn c;
+ size_t n;
+
+ memset(&c, 0, sizeof c);
+ strcpy(c.host, "localhost");
+ c.port = 8080;
+
+ memset(path, 'a', sizeof path - 1);
+ path[0] = '/';
+ path[sizeof path - 1] = '\0';
+ memset(mem, HDR_GUARD_BYTE, sizeof mem);
+ n = wpe_http_header_text((char *) mem, HDR_ROOM, &c, "GET", path, NULL, NULL);
+ check(n == 0, "H1: a 9000 byte path is refused");
+ check(guard_intact(mem, HDR_ROOM), "H1: nothing written past the room (path)");
+
+ memset(mem, HDR_GUARD_BYTE, sizeof mem);
+ n = wpe_http_header_text((char *) mem, HDR_ROOM, &c, "GET", "/v1/x", NULL, NULL);
+ check(n > 0 && n < HDR_ROOM, "H1: a short request is built");
+ check(!strncmp((char *) mem, "GET /v1/x HTTP/1.1\r\nHost: localhost:8080\r\n", 42),
+       "H1: its first lines");
+ check(n >= 4 && !strcmp((char *) mem + n - 4, "\r\n\r\n"), "H1: it ends with the blank line");
+ check(guard_intact(mem, HDR_ROOM), "H1: nothing written past the room (short)");
+
+ /* The request line fits; a header does not. */
+ memset(big_header, 'h', sizeof big_header - 1);
+ big_header[sizeof big_header - 1] = '\0';
+ hdrs[0] = big_header;
+ hdrs[1] = NULL;
+ memset(mem, HDR_GUARD_BYTE, sizeof mem);
+ n = wpe_http_header_text((char *) mem, HDR_ROOM, &c, "POST", "/v1/x", hdrs, "{}");
+ check(n == 0, "H1: a header that does not fit refuses the request");
+ check(guard_intact(mem, HDR_ROOM), "H1: nothing written past the room (header)");
+}
+
 int main(void)
 {
  char *line;
  size_t len;
  int got;
+
+ test_header_text_bounds();
 
  /* --- non-chunked NDJSON, pushed in two fragments (reassembly) --- */
  {

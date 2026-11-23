@@ -1,5 +1,6 @@
 /* we_path.c -- the writers of a path into fixed storage (see we_path.h). */
 #include "we_path.h"
+#include "we_fmt.h"
 
 #include <errno.h>
 #include <stdlib.h>
@@ -220,31 +221,74 @@ const char *wpe_path_refused_reason(int err)
 }
 
 /**
+ * path_said_length - The bytes a sentence took in @out of @n bytes.
+ * Used by the sentence writers below so that none of them hands back a
+ * length that was only wanted: a caller can add what they return to an
+ * offset.
+ */
+static int path_said_length(const char *out, size_t n)
+{
+ return n > 0 ? (int)strlen(out) : 0;
+}
+
+/**
  * wpe_path_say_refused_because - "Cannot open <what> <path>: <reason>."
  * @out/@n: the buffer; @what: an ASCII noun; @path; @reason: the words.
- * Return: the length the sentence needs, as snprintf.
+ *
+ * A sentence longer than the buffer ends in "..." where a character ends.
+ * Return: the length written, without the terminator.
  */
 int wpe_path_say_refused_because(char *out, size_t n, const char *what,
                                  const char *path, const char *reason)
 {
- return snprintf(out, n, "Cannot open %s %s: %s.", what, path, reason);
+ (void)wpe_fmt_shown(out, n, "Cannot open %s %s: %s.", what, path, reason);
+ return path_said_length(out, n);
 }
 
 /**
- * wpe_path_say_not_found - "<What> not found: <path>." with the first letter raised.
- * @out/@n: the buffer; @what: an ASCII noun; @path.
- * Return: the length the sentence needs, as snprintf.
- *
+ * wpe_path_say_refused_because_dup - The same sentence at its real length,
+ * for a reader with a path longer than any array.
+ * Return: the sentence (free it), or NULL when out of memory.
+ */
+char *wpe_path_say_refused_because_dup(const char *what, const char *path, const char *reason)
+{
+ return wpe_fmt_dup("Cannot open %s %s: %s.", what, path, reason);
+}
+
+/**
+ * path_not_found_first - The first letter of the noun, raised.
  * Only an ASCII a to z is raised: a byte above 127 is left alone, because a
  * locale's toupper would change it.
  */
-static int wpe_path_say_not_found(char *out, size_t n, const char *what, const char *path)
+static char path_not_found_first(const char *what)
 {
  char first = what[0];
 
  if (first >= 'a' && first <= 'z')
   first = (char)(first - 'a' + 'A');
- return snprintf(out, n, "%c%s not found: %s.", first, what[0] ? what + 1 : what, path);
+ return first;
+}
+
+/**
+ * wpe_path_say_not_found - "<What> not found: <path>." with the first letter raised.
+ * @out/@n: the buffer; @what: an ASCII noun; @path.
+ * Return: the length written, without the terminator.
+ */
+static int wpe_path_say_not_found(char *out, size_t n, const char *what, const char *path)
+{
+ (void)wpe_fmt_shown(out, n, "%c%s not found: %s.", path_not_found_first(what),
+                     what[0] ? what + 1 : what, path);
+ return path_said_length(out, n);
+}
+
+/**
+ * wpe_path_say_not_found_dup - The not-found sentence at its real length.
+ * Return: the sentence (free it), or NULL when out of memory.
+ */
+static char *wpe_path_say_not_found_dup(const char *what, const char *path)
+{
+ return wpe_fmt_dup("%c%s not found: %s.", path_not_found_first(what),
+                    what[0] ? what + 1 : what, path);
 }
 
 /**
@@ -253,13 +297,26 @@ static int wpe_path_say_not_found(char *out, size_t n, const char *what, const c
  *
  * The user reads the path and the system's reason, and "not found" only when
  * the path does not exist.
- * Return: the length the whole sentence needs, as snprintf.
+ * Return: the length written, without the terminator.
  */
 int wpe_path_say_refused(char *out, size_t n, const char *what, const char *path, int err)
 {
  if (err == ENOENT)
   return wpe_path_say_not_found(out, n, what, path);
  return wpe_path_say_refused_because(out, n, what, path, wpe_path_refused_reason(err));
+}
+
+/**
+ * wpe_path_say_refused_dup - The sentence for a path the system refused, at
+ * its real length: a long path is read whole, the reason after it is not
+ * cut off.
+ * Return: the sentence (free it), or NULL when out of memory.
+ */
+char *wpe_path_say_refused_dup(const char *what, const char *path, int err)
+{
+ if (err == ENOENT)
+  return wpe_path_say_not_found_dup(what, path);
+ return wpe_path_say_refused_because_dup(what, path, wpe_path_refused_reason(err));
 }
 
 /**
@@ -290,15 +347,17 @@ const char *wpe_path_kind_reason(mode_t kind, int tty)
 /**
  * wpe_path_too_large_reason - "it is larger than 1 MiB", from a bound in bytes.
  * @out/@n: the buffer; @bound: the bound in bytes.
- * Return: the length the reason needs, as snprintf.
+ * Return: the length written, without the terminator.
  */
 int wpe_path_too_large_reason(char *out, size_t n, size_t bound)
 {
  if (bound >= WPE_PATH_MIB && bound % WPE_PATH_MIB == 0)
-  return snprintf(out, n, "it is larger than %lu MiB", (unsigned long)(bound / WPE_PATH_MIB));
- if (bound >= WPE_PATH_KIB && bound % WPE_PATH_KIB == 0)
-  return snprintf(out, n, "it is larger than %lu KiB", (unsigned long)(bound / WPE_PATH_KIB));
- return snprintf(out, n, "it is larger than %lu bytes", (unsigned long)bound);
+  (void)wpe_fmt_shown(out, n, "it is larger than %lu MiB", (unsigned long)(bound / WPE_PATH_MIB));
+ else if (bound >= WPE_PATH_KIB && bound % WPE_PATH_KIB == 0)
+  (void)wpe_fmt_shown(out, n, "it is larger than %lu KiB", (unsigned long)(bound / WPE_PATH_KIB));
+ else
+  (void)wpe_fmt_shown(out, n, "it is larger than %lu bytes", (unsigned long)bound);
+ return path_said_length(out, n);
 }
 
 /**

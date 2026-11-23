@@ -16,6 +16,7 @@
 #include <sys/resource.h>
 #include <sys/stat.h>
 
+#include "we_fmt.h"
 #include "we_path.h"
 #include "we_platform.h"
 #include "we_contain.h"
@@ -908,6 +909,26 @@ static unsigned long long contain_fsize_in_force(void)
 
 /* ---- the report ----------------------------------------------------------- */
 
+/* What a list entry needs besides its own bytes: the comma before it. */
+#define CONTAIN_LIST_SEPARATOR_ROOM 1
+
+/**
+ * contain_list_add - Add one prefix to a comma list for the report.
+ * @list: the list being built; @tok: the prefix.
+ *
+ * A prefix that does not fit is left out whole, so the report never shows a
+ * name that is not the one the user wrote; the entries before it stay.
+ */
+static void contain_list_add(WpeFmtText *list, const char *tok)
+{
+ if (wpe_fmt_room(list) < strlen(tok) + CONTAIN_LIST_SEPARATOR_ROOM)
+  return;
+ if (wpe_fmt_len(list) > 0)
+  (void) wpe_fmt_add_block(list, ",%s", tok);
+ else
+  (void) wpe_fmt_add_block(list, "%s", tok);
+}
+
 /**
  * contain_collect_pass - Which test-seam prefixes are in force and which were refused.
  * @r: the report to fill.
@@ -916,19 +937,18 @@ static void contain_collect_pass(WpeContainReport *r)
 {
  const char *c = getenv(WPE_CONTAIN_ENV_PASS);
  char tok[CONTAIN_VARNAME_LIMIT];
+ WpeFmtText pass, refused;
  int rc;
 
- r->pass[0] = '\0';
- r->refused[0] = '\0';
+ wpe_fmt_begin_block(&pass, r->pass, sizeof r->pass);
+ wpe_fmt_begin_block(&refused, r->refused, sizeof r->refused);
  while (c && (rc = contain_word_next(&c, tok, sizeof tok)) != CONTAIN_WORD_END) {
-  char *dst = contain_pass_prefix_refused(tok) ? r->refused : r->pass;
-  size_t have = strlen(dst);
-
   if (rc == CONTAIN_WORD_TOO_LONG)
    continue;
-  if (have + strlen(tok) + 2 > sizeof r->pass)
-   continue;
-  snprintf(dst + have, sizeof r->pass - have, "%s%s", have ? "," : "", tok);
+  if (contain_pass_prefix_refused(tok))
+   contain_list_add(&refused, tok);
+  else
+   contain_list_add(&pass, tok);
  }
 }
 

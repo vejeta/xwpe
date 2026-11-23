@@ -30,6 +30,7 @@
 #endif
 
 #include "we_ai_http.h"
+#include "we_fmt.h"
 #include "we_fdloop.h"   /* the GET is driven by the loop's descriptors and timers */
 
 /* The extra CA/self-signed cert to trust, owned by we_ai.c (AICAFile /
@@ -707,40 +708,43 @@ ssize_t wpe_http_read(wpe_http_conn *c, void *buf, size_t n)
 #define AI_HTTP_HEADER_MAX 8192
 
 /**
- * ai_http_header_text - Write the request line and the headers into @hdr.
+ * wpe_http_header_text - Write the request line and the headers into @hdr.
  * @c: the connection (Host); @method, @path: the request; @headers: the
  * caller's extra headers, NULL-terminated, or NULL; @body: the body or NULL.
  *
+ * A request whose line or headers do not fit is not built at all (a request
+ * with a header missing would reach the server as a different request), and
+ * nothing is written past @sz.
  * Return: the header's length, or 0 when it does not fit.
  */
-static size_t ai_http_header_text(char *hdr, size_t sz, const wpe_http_conn *c,
-                                  const char *method, const char *path,
-                                  const char *const *headers, const char *body)
+size_t wpe_http_header_text(char *hdr, size_t sz, const wpe_http_conn *c,
+                            const char *method, const char *path,
+                            const char *const *headers, const char *body)
 {
- size_t off = 0;
+ WpeFmtText t;
+ size_t len;
  int i;
- off += snprintf(hdr + off, sz - off, "%s %s HTTP/1.1\r\n",
-                 method, (path && *path) ? path : "/");
- off += snprintf(hdr + off, sz - off, "Host: %s:%d\r\n", c->host, c->port);
- off += snprintf(hdr + off, sz - off, "User-Agent: xwpe\r\n");
- off += snprintf(hdr + off, sz - off, "Accept: */*\r\n");
- off += snprintf(hdr + off, sz - off, "Connection: close\r\n");
- for (i = 0; headers && headers[i] && off < sz; i++)
-  off += snprintf(hdr + off, sz - off, "%s\r\n", headers[i]);
- if (body && off < sz)
-  off += snprintf(hdr + off, sz - off, "Content-Length: %zu\r\n", strlen(body));
- if (off < sz)
-  off += snprintf(hdr + off, sz - off, "\r\n");
- if (off >= sz)
+ wpe_fmt_begin_whole(&t, hdr, sz);
+ wpe_fmt_add(&t, "%s %s HTTP/1.1\r\n", method, (path && *path) ? path : "/");
+ wpe_fmt_add(&t, "Host: %s:%d\r\n", c->host, c->port);
+ wpe_fmt_add(&t, "User-Agent: xwpe\r\n");
+ wpe_fmt_add(&t, "Accept: */*\r\n");
+ wpe_fmt_add(&t, "Connection: close\r\n");
+ for (i = 0; headers && headers[i]; i++)
+  wpe_fmt_add(&t, "%s\r\n", headers[i]);
+ if (body)
+  wpe_fmt_add(&t, "Content-Length: %zu\r\n", strlen(body));
+ wpe_fmt_add(&t, "\r\n");
+ if (wpe_fmt_end(&t, &len) != WPE_FMT_OK)
   return 0;
- return off;
+ return len;
 }
 
 int wpe_http_send_begin(wpe_http_conn *c, const char *method, const char *path,
                         const char *const *headers, const char *body)
 {
  char hdr[AI_HTTP_HEADER_MAX];
- size_t hlen = ai_http_header_text(hdr, sizeof hdr, c, method, path, headers, body);
+ size_t hlen = wpe_http_header_text(hdr, sizeof hdr, c, method, path, headers, body);
  size_t blen = body ? strlen(body) : 0;
  if (hlen == 0)
   return -1;

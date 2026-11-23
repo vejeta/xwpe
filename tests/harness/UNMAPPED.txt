@@ -10,6 +10,7 @@
 # still undocumented.
 tests/test_ai_async_live.py
 tests/test_ai_claude_workspace_header.py
+tests/test_ai_formatted_requests.py
 tests/test_ai_cancel.py
 tests/test_ai_chat_investigate_live.py
 tests/test_ai_claudecli_live.py

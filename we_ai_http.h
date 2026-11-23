@@ -107,6 +107,12 @@ ssize_t wpe_http_read(wpe_http_conn *c, void *buf, size_t n);
  * WPE_HTTP_SEND_STALL_MS; describe_stall gives the line for it. */
 int  wpe_http_send_begin(wpe_http_conn *c, const char *method, const char *path,
                          const char *const *headers, const char *body);
+/* The request line and headers send_begin builds, into the caller's @hdr of
+ * @sz bytes: the length, or 0 when they do not fit (nothing is written past
+ * @sz and a request is never sent with a header missing). */
+size_t wpe_http_header_text(char *hdr, size_t sz, const wpe_http_conn *c,
+                            const char *method, const char *path,
+                            const char *const *headers, const char *body);
 int  wpe_http_send_step(wpe_http_conn *c);
 int  wpe_http_send_stalled(const wpe_http_conn *c, long now_ms);
 void wpe_http_describe_stall(const wpe_http_conn *c, char *errbuf, size_t errsz);

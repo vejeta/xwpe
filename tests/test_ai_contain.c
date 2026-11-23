@@ -424,6 +424,27 @@ static void test_the_test_seam_keeps_a_prefix_but_never_one_that_would_pass_a_ke
 	clear_settings();
 }
 
+/* @scenario SC-ai-contain-05 */
+static void test_a_prefix_that_does_not_fit_the_report_is_left_out_whole(void)
+{
+	WpeContainReport r;
+	char list[256];
+	const char *first = "XWPE_STUB_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";      /* 40 bytes */
+	const char *too_long = "XWPE_STUB_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"; /* 60 */
+	const char *fits_after = "XWPE_STUB_cccccccccc";                       /* 20 bytes */
+
+	clear_settings();
+	snprintf(list, sizeof list, "%s,%s,%s", first, too_long, fits_after);
+	setenv(WPE_CONTAIN_ENV_PASS, list, 1);
+	wpe_contain_report(&wpe_contain_tool, &r);
+	/* The one that does not fit is not in the report, not even its start;
+	   the one after it still has its turn. */
+	snprintf(list, sizeof list, "%s,%s", first, fits_after);
+	chk_true("the report keeps the prefixes that fit, whole", !strcmp(r.pass, list));
+	chk_true("and shows no start of the one that did not", strstr(r.pass, "bbbb") == NULL);
+	clear_settings();
+}
+
 /* ---- folders the PATH rows need ------------------------------------------- */
 
 static char root[PATH_MAX];
@@ -1344,6 +1365,7 @@ int main(int argc, char **argv)
 	test_the_users_lists_add_names_but_never_a_key_or_a_preload();
 	test_only_a_commit_signed_with_ssh_keeps_the_agent_socket();
 	test_the_test_seam_keeps_a_prefix_but_never_one_that_would_pass_a_key();
+	test_a_prefix_that_does_not_fit_the_report_is_left_out_whole();
 	test_a_path_drops_the_entries_a_hostile_folder_could_use();
 	test_a_program_is_found_in_the_parent_along_the_safe_path();
 	test_the_file_size_limit_reads_its_text();

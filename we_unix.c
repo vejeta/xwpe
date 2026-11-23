@@ -692,6 +692,32 @@ static int wpe_crash_file_open(void)
              WPE_CRASH_FILE_MODE));
 }
 
+/**
+ * wpe_crash_say - Add one line to the crash file.
+ * Used only when the editor is going down on a signal: a line that did not
+ * fit its buffer is left out, never written cut.  A partial write goes on
+ * and an interrupted one is retried, so the file ends at a whole line.
+ * Return: 0, or -1 when the line could not be written (the caller adds no
+ * more lines).
+ */
+static int wpe_crash_say(int fd, const char *line)
+{
+ size_t left = strlen(line);
+
+ while (left > 0)
+ {
+  ssize_t put = write(fd, line, left);
+
+  if (put < 0 && errno == EINTR)
+   continue;
+  if (put <= 0)
+   return(-1);
+  line += put;
+  left -= (size_t) put;
+ }
+ return(0);
+}
+
 void WpeSignalUnknown(int sig)
 {
  wpe_end_children_from_handler();
@@ -699,24 +725,25 @@ void WpeSignalUnknown(int sig)
  if (fd >= 0)
  {
   char line[256];
-  int len;
   void *bt[32];
   int n;
+  int writing = 1;       /* 0 once a write failed: the file ends at a whole line */
 
-  len = snprintf(line, sizeof(line), "CRASH: signal %d\n", sig);
-  write(fd, line, len);
+  if (WPE_FMT_WHOLE(line, "CRASH: signal %d\n", sig) == WPE_FMT_OK)
+   writing = (wpe_crash_say(fd, line) == 0);
 #if WPE_HAS_BACKTRACE
   n = backtrace(bt, 32);
-  backtrace_symbols_fd(bt, n, fd);
+  if (writing)
+   backtrace_symbols_fd(bt, n, fd);
 #else
   /* No backtrace on this system: the crash file names the signal only. */
   (void) bt;
   (void) n;
-  len = snprintf(line, sizeof(line), "no backtrace on this system\n");
-  write(fd, line, len);
+  if (writing && WPE_FMT_WHOLE(line, "no backtrace on this system\n") == WPE_FMT_OK)
+   writing = (wpe_crash_say(fd, line) == 0);
 #endif
-  len = snprintf(line, sizeof(line), "MAXSLNS=%d MAXSCOL=%d\n", MAXSLNS, MAXSCOL);
-  write(fd, line, len);
+  if (writing && WPE_FMT_WHOLE(line, "MAXSLNS=%d MAXSCOL=%d\n", MAXSLNS, MAXSCOL) == WPE_FMT_OK)
+   writing = (wpe_crash_say(fd, line) == 0);
   close(fd);
  }
  (*WpeDisplayReleaseFromHandler)();

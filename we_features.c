@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "we_features.h"
+#include "we_fmt.h"
 
 /* The words are configure's options; the order is the order configure.ac
    states the facts in (WPE_BUILT lines).  tests/check-build-config.sh fails
@@ -57,21 +58,17 @@ const WpeFeature *wpe_features(size_t *n)
 const char *wpe_features_line(void)
 {
  static char line[WPE_FEATURES_LINE_MAX];
- size_t i, used;
- int len;
+ WpeFmtText text;
+ size_t i;
 
  if (line[0] != '\0')
   return(line);
- used = strlen(WPE_FEATURES_PREFIX);
- memcpy(line, WPE_FEATURES_PREFIX, used + 1);
+ wpe_fmt_begin_shown(&text, line, sizeof line);
+ wpe_fmt_add(&text, "%s", WPE_FEATURES_PREFIX);
  for (i = 0; i < WPE_FEATURE_COUNT; i++)
- {
-  len = snprintf(line + used, sizeof line - used, " %s=%s",
-                 wpe_feature_table[i].word,
-                 wpe_feature_table[i].built ? "yes" : "no");
-  if (len < 0 || (size_t)len >= sizeof line - used)
-   break;
-  used += (size_t)len;
- }
+  wpe_fmt_add(&text, " %s=%s", wpe_feature_table[i].word,
+              wpe_feature_table[i].built ? "yes" : "no");
+ if (wpe_fmt_end(&text, NULL) == WPE_FMT_FAILED)
+  line[0] = '\0';
  return(line);
 }

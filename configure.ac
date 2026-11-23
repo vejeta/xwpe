@@ -124,6 +124,20 @@ done
 AC_MSG_RESULT([$XWPE_FORMATFLAGS])
 AC_SUBST([XWPE_FORMATFLAGS])
 
+# A result the editor must read is an error when it is ignored: the refusal
+# of a whole formatted text (WPE_FMT_MUST_READ) and, under a fortified libc,
+# the C library's own checked results.  The editor's objects only; the
+# probe keeps a compiler that does not know the flag building.
+AC_MSG_CHECKING([for a flag that makes an ignored result an error])
+XWPE_RESULTFLAG=
+ace_save_CFLAGS="$CFLAGS"
+CFLAGS="$CFLAGS -Werror=unused-result"
+AC_COMPILE_IFELSE([AC_LANG_PROGRAM([], [])],
+  [XWPE_RESULTFLAG=-Werror=unused-result])
+CFLAGS="$ace_save_CFLAGS"
+AC_MSG_RESULT([${XWPE_RESULTFLAG:-no}])
+AC_SUBST([XWPE_RESULTFLAG])
+
 # A call to an undeclared function is an error, whatever the compiler's
 # default: gcc 14 and clang 16 already refuse it, but NetBSD 9's gcc 7 only
 # warns, and a build that only warns hides the missing header on exactly the

@@ -13,6 +13,7 @@
 #include <sys/types.h>
 
 #include "we_lsp.h"
+#include "we_fmt.h"
 #include "we_child.h"
 #include "we_startplan.h"        /* the server starts through its start plan */
 #include "we_dap_proto.h"        /* e_dap_reader: shared Content-Length framing */
@@ -172,12 +173,11 @@ static int lsp_send(e_lsp_session *s, int id, const char *method,
 
  body = json_object_to_json_string_ext(msg, JSON_C_TO_STRING_PLAIN);
  blen = strlen(body);
- flen = blen + 40;
- frame = malloc(flen);
+ frame = wpe_fmt_dup("Content-Length: %zu\r\n\r\n%s", blen, body);
  if (!frame)
  {  json_object_put(msg);  return -1;  }
- rc = snprintf(frame, flen, "Content-Length: %zu\r\n\r\n%s", blen, body);
- rc = lsp_write_all(s, frame, (size_t)rc);
+ flen = strlen(frame);
+ rc = lsp_write_all(s, frame, flen);
  free(frame);
  json_object_put(msg);
  return rc;
@@ -194,19 +194,17 @@ static void lsp_reply(e_lsp_session *s, struct json_object *id_field,
  const char *body;
  char *frame;
  size_t blen, flen;
- int rc;
 
  json_object_object_add(msg, "jsonrpc", json_object_new_string("2.0"));
  json_object_object_add(msg, "id", id_field ? json_object_get(id_field) : NULL);
  json_object_object_add(msg, "result", result ? result : NULL);
  body = json_object_to_json_string_ext(msg, JSON_C_TO_STRING_PLAIN);
  blen = strlen(body);
- flen = blen + 40;
- frame = malloc(flen);
+ frame = wpe_fmt_dup("Content-Length: %zu\r\n\r\n%s", blen, body);
  if (frame)
  {
-  rc = snprintf(frame, flen, "Content-Length: %zu\r\n\r\n%s", blen, body);
-  lsp_write_all(s, frame, (size_t)rc);
+  flen = strlen(frame);
+  lsp_write_all(s, frame, flen);
   free(frame);
  }
  json_object_put(msg);

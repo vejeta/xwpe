@@ -108,7 +108,6 @@ static char *e_opt_user_file;
 /* What the status line says when a start-folder xwperc named user-only keys. */
 #define E_OPT_IGNORED_FMT "./xwperc may not set (only your own config may): %s"
 #define E_OPT_IGNORED_SHORT_FMT "./xwperc may not set: %s"
-#define E_OPT_IGNORED_CUT_MARK "..."
 #define E_OPT_IGNORED_LINE_MAX (E_OPT_IGNORED_MAX + 80)
 
 /* What the box says when a start-folder xwperc names a project outside its folder. */
@@ -297,7 +296,7 @@ static WpeBoxDrawn e_about_box_draw(WpeBox *box)
  if (wpe_box_frame(box, NULL, f->fb->nr.fb, f->fb->nt.fb, f->fb->ne.fb) != 0)
   return(WPE_BOX_NO_MEMORY);
 
- sprintf(tmp, "Version %s", VERSION);
+ WPE_FMT_SHOWN(tmp, "Version %s", VERSION);
 #ifdef UNIX
  if (WpeIsXwin() && WpeIsProg())
   e_info_line(box, 9, 2, "XWindow Programming Environment", f->fb->et.fb);
@@ -3354,14 +3353,12 @@ static struct {
 #define E_OPT_BAD_BOX_FMT   "Can't read Option-File, line %d:\n%s"
 #define E_OPT_BAD_MORE_FMT  "\n%d more lines could not be read"
 #define E_OPT_BAD_HELD_TEXT "\nOptions are not saved at quit until this file is fixed or saved with Options > Save"
-#define E_OPT_ELLIPSIS      "..."
 #define E_OPT_ROW_PERCENT   0.8
 #define E_OPT_BAD_ROW_SLACK 4
 #define E_OPT_BAD_ROW_MIN   12
-#define E_OPT_INT_DIGITS    11
 /* The longest box text: the fixed sentences, two numbers and a whole path. */
 #define E_OPT_BAD_BOX_MAX   (sizeof E_OPT_BAD_BOX_FMT + sizeof E_OPT_BAD_MORE_FMT + \
-                             sizeof E_OPT_BAD_HELD_TEXT + 2 * E_OPT_INT_DIGITS + WPE_PATH_SIZE)
+                             sizeof E_OPT_BAD_HELD_TEXT + 2 * WPE_FMT_INT_ROOM + WPE_PATH_SIZE)
 
 /** e_opt_bad_reset - Forget the bad lines of an earlier read. */
 static void e_opt_bad_reset(void)
@@ -3459,13 +3456,13 @@ static int e_opt_bad_path_room(void)
 /**
  * e_opt_cut_path - The tail of a file name that fits a row.
  * @path: the name; @room: the columns; @out/@sz: receive it, cut from the
- * left with "..." only when it is longer than @room.
+ * left with "..." only when it is longer than @room, where a character starts.
  */
 static void e_opt_cut_path(const char *path, int room, char *out, size_t sz)
 {
- size_t len = strlen(path), keep = (size_t)room - strlen(E_OPT_ELLIPSIS);
- if (len <= (size_t)room) snprintf(out, sz, "%s", path);
- else snprintf(out, sz, "%s%s", E_OPT_ELLIPSIS, path + len - keep);
+ size_t place = (size_t)room + 1;
+ if (place > sz) place = sz;
+ wpe_fmt_shown_tail(out, place, path);
 }
 
 /**
@@ -3479,13 +3476,14 @@ static void e_opt_cut_path(const char *path, int room, char *out, size_t sz)
 void e_opt_report_unreadable(ECNT *cn)
 {
  char path[WPE_PATH_SIZE], text[E_OPT_BAD_BOX_MAX];
- size_t used;
+ WpeFmtText box;
  e_opt_cut_path(e_opt_bad.path, e_opt_bad_path_room(), path, sizeof path);
- used = (size_t)snprintf(text, sizeof text, E_OPT_BAD_BOX_FMT, e_opt_bad.line, path);
+ wpe_fmt_begin_shown(&box, text, sizeof text);
+ wpe_fmt_add(&box, E_OPT_BAD_BOX_FMT, e_opt_bad.line, path);
  if (e_opt_bad.count > 1)
-  used += (size_t)snprintf(text + used, sizeof text - used, E_OPT_BAD_MORE_FMT, e_opt_bad.count - 1);
+  wpe_fmt_add(&box, E_OPT_BAD_MORE_FMT, e_opt_bad.count - 1);
  if (e_opt_bad.in_saved_file)
-  snprintf(text + used, sizeof text - used, "%s", E_OPT_BAD_HELD_TEXT);
+  wpe_fmt_add(&box, "%s", E_OPT_BAD_HELD_TEXT);
  e_message(0, text, cn->f[0]);
 }
 
@@ -3832,17 +3830,19 @@ int e_opt_read(ECNT *cn)
  */
 int e_opt_ignored_line(char *buf, size_t n, int room)
 {
- size_t mark = strlen(E_OPT_IGNORED_CUT_MARK), width;
+ size_t place;
 
  buf[0] = '\0';
  if (!e_opt_ignored_keys[0]) return E_OPT_IGNORED_NONE;
- snprintf(buf, n, E_OPT_IGNORED_FMT, e_opt_ignored_keys);
+ wpe_fmt_shown(buf, n, E_OPT_IGNORED_FMT, e_opt_ignored_keys);
  if ((int)strlen(buf) <= room) return E_OPT_IGNORED_LONG;
- snprintf(buf, n, E_OPT_IGNORED_SHORT_FMT, e_opt_ignored_keys);
+ wpe_fmt_shown(buf, n, E_OPT_IGNORED_SHORT_FMT, e_opt_ignored_keys);
  if ((int)strlen(buf) <= room) return E_OPT_IGNORED_SHORT;
- width = room > (int)mark ? (size_t)room - mark : 0;
- if (width >= strlen(buf)) width = strlen(buf);
- snprintf(buf + width, n - width, "%s", E_OPT_IGNORED_CUT_MARK);
+ /* The short sentence still does not fit the row: it is cut, where a
+    character ends, to the row's width and ends in "...". */
+ place = room > 0 ? (size_t)room + 1 : 1;
+ if (place > n) place = n;
+ wpe_fmt_shown(buf, place, E_OPT_IGNORED_SHORT_FMT, e_opt_ignored_keys);
  return E_OPT_IGNORED_CUT;
 }
 
@@ -3944,7 +3944,7 @@ int e_add_arguments(char *str, size_t size, char *head, FENSTER *f, int n, int s
 
  if (!str || size < 2)
   return(-1);
- tmp = MALLOC((strlen(head)+2) * sizeof(char));
+ tmp = wpe_fmt_dup("%s:", head);
  o = e_init_opt_kst(f);
  if (!o || !tmp)
   return(-1);
@@ -3952,7 +3952,6 @@ int e_add_arguments(char *str, size_t size, char *head, FENSTER *f, int n, int s
  o->bgsw = 0;
  o->name = head;
  o->crsw = AltO;
- sprintf(tmp, "%s:", head);
  e_add_wrstr(4, 2, 4, 3, 30, e_arguments_field_max(size), n, sw, tmp, str, df, o);
  e_add_bttstr(7, 5, 1, AltO, " Ok ", NULL, o);
  e_add_bttstr(24, 5, -1, WPE_ESC, "Cancel", NULL, o);

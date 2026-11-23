@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "we_debsess.h"
+#include "we_fmt.h"
 
 /* jdb groups the digits of a line number past 999: "line=1,004". */
 #define E_DS_JDB_DIGIT_GROUP ','
@@ -1787,9 +1788,10 @@ static void e_ds_mi_args_of(const E_GDBMI_RECORD *args, int level, char *out,
 {
  const E_GDBMI_NODE *fr, *arg;
  const char *name, *value;
- size_t have;
+ WpeFmtText text;
 
- out[0] = '\0';
+ /* A list too long for the row is cut and ends in "...". */
+ wpe_fmt_begin_shown(&text, out, n);
  if (!args)
   return;
  for (fr = e_gdbmi_first_item(args, e_gdbmi_find(args, "stack-args")); fr;
@@ -1803,11 +1805,14 @@ static void e_ds_mi_args_of(const E_GDBMI_RECORD *args, int level, char *out,
   {
    name = e_gdbmi_get_in(args, arg, "name");
    value = e_gdbmi_get_in(args, arg, "value");
-   have = strlen(out);
-   if (!name || have + 1 >= n)
+   if (!name)
     continue;
-   snprintf(out + have, n - have, "%s%s=%s", have ? E_DS_MI_ARG_SEP : "",
-            name, value ? value : "");
+   if (value == NULL)
+    value = "";
+   if (wpe_fmt_len(&text) > 0)
+    wpe_fmt_add(&text, "%s%s=%s", E_DS_MI_ARG_SEP, name, value);
+   else
+    wpe_fmt_add(&text, "%s=%s", name, value);
   }
   return;
  }
@@ -1831,13 +1836,14 @@ static void e_ds_mi_addr_of(const E_GDBMI_RECORD *frames,
 }
 
 /**
- * e_ds_mi_row_of - One row of the Stack window for frame tuple @fn.
- * @out, @n: the row with its line end.
- * Return: the bytes the row takes, as snprintf counts them.
+ * e_ds_mi_row_add - Add one row of the Stack window for frame tuple @fn to
+ * the rows kept so far.
+ * @rows: the rows; @frames, @fn: the frame; @args: the arguments' record.
+ * Return: 1 when the row, with its line end, was added whole; 0 when it did
+ * not fit (only whole rows are kept).
  */
-static int e_ds_mi_row_of(const E_GDBMI_RECORD *frames,
-                          const E_GDBMI_NODE *fn, const E_GDBMI_RECORD *args,
-                          char *out, size_t n)
+static int e_ds_mi_row_add(WpeFmtText *rows, const E_GDBMI_RECORD *frames,
+                           const E_GDBMI_NODE *fn, const E_GDBMI_RECORD *args)
 {
  char argtext[E_DS_LINE_MAX];
  char addr[E_DS_MI_ADDR_MAX];
@@ -1853,33 +1859,27 @@ static int e_ds_mi_row_of(const E_GDBMI_RECORD *frames,
  if (!func)
   func = E_DS_MI_NO_FUNC;
  if (file && line)
-  return(snprintf(out, n, E_DS_MI_ROW_AT_FMT, level, addr, func, argtext,
-                  file, line));
+  return(wpe_fmt_add_block(rows, E_DS_MI_ROW_AT_FMT, level, addr, func,
+                           argtext, file, line));
  if (from)
-  return(snprintf(out, n, E_DS_MI_ROW_FROM_FMT, level, addr, func, argtext,
-                  from));
- return(snprintf(out, n, E_DS_MI_ROW_FMT, level, addr, func, argtext));
+  return(wpe_fmt_add_block(rows, E_DS_MI_ROW_FROM_FMT, level, addr, func,
+                           argtext, from));
+ return(wpe_fmt_add_block(rows, E_DS_MI_ROW_FMT, level, addr, func, argtext));
 }
 
 int e_ds_mi_where_rows(const E_GDBMI_RECORD *frames,
                        const E_GDBMI_RECORD *args, char *out, size_t n)
 {
  const E_GDBMI_NODE *fn;
- size_t have = 0;
- int rows = 0, len;
+ WpeFmtText text;
+ int rows = 0;
 
- if (n > 0)
-  out[0] = '\0';
+ wpe_fmt_begin_block(&text, out, n);
  for (fn = e_gdbmi_first_item(frames, e_gdbmi_find(frames, "stack")); fn;
       fn = e_gdbmi_next_item(frames, fn))
  {
-  len = e_ds_mi_row_of(frames, fn, args, out + have, n - have);
-  if (len < 0 || have + (size_t)len >= n)
-  {
-   out[have] = '\0';      /* only whole rows are kept */
-   break;
-  }
-  have += (size_t)len;
+  if (!e_ds_mi_row_add(&text, frames, fn, args))
+   break;                 /* only whole rows are kept */
   rows++;
  }
  return(rows);

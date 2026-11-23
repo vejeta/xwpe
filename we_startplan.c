@@ -12,6 +12,7 @@
 #include "we_startplan.h"
 #include "we_startcmd.h"
 #include "we_places.h"
+#include "we_fmt.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -66,6 +67,7 @@ void wpe_startplan_trace_set(void (*trace)(const char *line))
 }
 
 /** startplan_trace - Write one trace line, when the editor traces. */
+static void startplan_trace(const char *fmt, ...) WPE_FMT_PRINTF(1, 2);
 static void startplan_trace(const char *fmt, ...)
 {
  char line[STARTPLAN_TRACE_MAX];
@@ -74,7 +76,7 @@ static void startplan_trace(const char *fmt, ...)
  if (!startplan_trace_hook)
   return;
  va_start(ap, fmt);
- vsnprintf(line, sizeof line, fmt, ap);
+ wpe_fmt_vshown(line, sizeof line, fmt, ap);
  va_end(ap);
  startplan_trace_hook(line);
 }
@@ -293,9 +295,7 @@ void wpe_startplan_free(WpeStartPlan *p)
  */
 int wpe_startplan_key(const WpeStartPlan *p, char *out, size_t sz)
 {
- int n = snprintf(out, sz, "%s/%s", wpe_startplan_kind_name(p->kind), p->name);
-
- if (n < 0 || (size_t)n >= sz)
+ if (wpe_fmt_whole(out, sz, "%s/%s", wpe_startplan_kind_name(p->kind), p->name) != WPE_FMT_OK)
   return -1;
  return 0;
 }
@@ -590,7 +590,7 @@ int wpe_startplan_operand(char *out, size_t n, const char *dir, const char *name
 {
  size_t len = dir ? strlen(dir) : 0;
  const char *prefix = "", *first;
- int wrote;
+ int how;
 
  if (!out || !n || !name)
   return -1;
@@ -601,12 +601,12 @@ int wpe_startplan_operand(char *out, size_t n, const char *dir, const char *name
  if (startplan_needs_prefix(first))
   prefix = STARTPLAN_OPERAND_PREFIX;
  if (len == 0)
-  wrote = snprintf(out, n, "%s%s", prefix, name);
+  how = wpe_fmt_whole(out, n, "%s%s", prefix, name);
  else if (dir[len - 1] == STARTPLAN_SEP)
-  wrote = snprintf(out, n, "%s%s%s", prefix, dir, name);
+  how = wpe_fmt_whole(out, n, "%s%s%s", prefix, dir, name);
  else
-  wrote = snprintf(out, n, "%s%s%c%s", prefix, dir, STARTPLAN_SEP, name);
- if (wrote < 0 || (size_t)wrote >= n)
+  how = wpe_fmt_whole(out, n, "%s%s%c%s", prefix, dir, STARTPLAN_SEP, name);
+ if (how != WPE_FMT_OK)
   return -1;
  return 0;
 }
@@ -1255,36 +1255,30 @@ static int plan_from_folder(const WpeStartPlan *p)
 
 /* A growing text, for the canonical form. */
 typedef struct {
- char *s;
- size_t len, room;
+ WpeFmtText text;
  int bad;
 } startplan_buf;
 
-/** startplan_put - Append a line part to the canonical text. */
+/**
+ * startplan_put - Append a line part to the canonical text.
+ *
+ * A plan whose text would pass WPE_STARTPLAN_TEXT_MAX is refused before the
+ * part is added, so the store never holds a text of no bound.
+ */
 static void startplan_put(startplan_buf *b, const char *a, const char *c)
 {
  size_t need = strlen(a) + (c ? strlen(c) : 0) + 2;
- char *grown;
 
  if (b->bad)
   return;
- if (b->len + need > WPE_STARTPLAN_TEXT_MAX)
+ if (wpe_fmt_len(&b->text) + need > WPE_STARTPLAN_TEXT_MAX)
  {
   b->bad = 1;
   return;
  }
- if (b->len + need > b->room)
- {
-  size_t room = (b->room ? b->room * 2 : 256) + need;
-  if (!(grown = realloc(b->s, room)))
-  {
-   b->bad = 1;
-   return;
-  }
-  b->s = grown;
-  b->room = room;
- }
- b->len += (size_t)sprintf(b->s + b->len, "%s%s\n", a, startplan_or_empty(c));
+ wpe_fmt_add(&b->text, "%s%s\n", a, startplan_or_empty(c));
+ if (wpe_fmt_failed(&b->text))
+  b->bad = 1;
 }
 
 /** startplan_cmp_str - qsort's comparison of two texts. */
@@ -1365,9 +1359,13 @@ static const char *startplan_path_word(int role)
  */
 static char *startplan_build_text(const WpeStartPlan *p)
 {
- startplan_buf b = { NULL, 0, 0, 0 };
+ startplan_buf b;
+ char *text;
+ size_t len;
  int i;
 
+ wpe_fmt_begin_heap(&b.text);
+ b.bad = 0;
  startplan_put(&b, WPE_STARTPLAN_TEXT_MAGIC, NULL);
  startplan_put(&b, "kind ", wpe_startplan_kind_name(p->kind));
  startplan_put(&b, "cwd ", startplan_or_empty(startplan_base(p)));
@@ -1388,14 +1386,15 @@ static char *startplan_build_text(const WpeStartPlan *p)
   startplan_put(&b, "runs ", p->runs_code);
  if (p->chose)
   startplan_put(&b, "chose ", p->chose);
+ text = wpe_fmt_end_heap(&b.text, &len);
  if (b.bad)
  {
-  free(b.s);
+  free(text);
   return NULL;
  }
- if (b.len > 0)
-  b.s[b.len - 1] = '\0';               /* no newline after the last line */
- return b.s;
+ if (text && len > 0)
+  text[len - 1] = '\0';                /* no newline after the last line */
+ return text;
 }
 
 /**
@@ -2324,7 +2323,7 @@ static int startplan_same_file_as_in(const char *dir, const char *name, const st
 
  if (!dir || !*dir)
   return 0;
- if (snprintf(path, sizeof path, "%s%c%s", dir, STARTPLAN_SEP, name) >= (int)sizeof path)
+ if (WPE_FMT_WHOLE(path, "%s%c%s", dir, STARTPLAN_SEP, name) != WPE_FMT_OK)
   return 0;
  if (stat(path, &other) != 0)
   return 0;
@@ -2445,10 +2444,10 @@ static int startplan_add_startup(WpeStartPlan *p, const startplan_startup_file *
  char full[WPE_STARTPLAN_PATH_MAX], given[WPE_STARTPLAN_PATH_MAX];
  struct stat st;
 
- if (snprintf(full, sizeof full, "%s%c%s", startplan_base(p), STARTPLAN_SEP, row->file) >=
-     (int)sizeof full)
+ if (WPE_FMT_WHOLE(full, "%s%c%s", startplan_base(p), STARTPLAN_SEP, row->file) != WPE_FMT_OK)
   return 0;
- snprintf(given, sizeof given, ".%c%s", STARTPLAN_SEP, row->file);
+ if (WPE_FMT_WHOLE(given, ".%c%s", STARTPLAN_SEP, row->file) != WPE_FMT_OK)
+  return 0;
  return startplan_add_startup_at(p, row, full, given, row->file, &st);
 }
 
@@ -2478,20 +2477,20 @@ static int startplan_program_paths(const WpeStartPlan *p, const char *program, c
 
  if (program[0] == STARTPLAN_SEP)
  {
-  n = snprintf(full, sz, "%s%s", program, suffix);
-  m = snprintf(given, sz, "%s%s", program, suffix);
+  n = wpe_fmt_whole(full, sz, "%s%s", program, suffix);
+  m = wpe_fmt_whole(given, sz, "%s%s", program, suffix);
  }
  else if (strncmp(program, "." STARTPLAN_SEP_TEXT, 2) == 0)
  {
-  n = snprintf(full, sz, "%s%c%s%s", startplan_base(p), STARTPLAN_SEP, program + 2, suffix);
-  m = snprintf(given, sz, "%s%s", program, suffix);
+  n = wpe_fmt_whole(full, sz, "%s%c%s%s", startplan_base(p), STARTPLAN_SEP, program + 2, suffix);
+  m = wpe_fmt_whole(given, sz, "%s%s", program, suffix);
  }
  else
  {
-  n = snprintf(full, sz, "%s%c%s%s", startplan_base(p), STARTPLAN_SEP, program, suffix);
-  m = snprintf(given, sz, ".%c%s%s", STARTPLAN_SEP, program, suffix);
+  n = wpe_fmt_whole(full, sz, "%s%c%s%s", startplan_base(p), STARTPLAN_SEP, program, suffix);
+  m = wpe_fmt_whole(given, sz, ".%c%s%s", STARTPLAN_SEP, program, suffix);
  }
- if (n < 0 || m < 0 || (size_t)n >= sz || (size_t)m >= sz)
+ if (n != WPE_FMT_OK || m != WPE_FMT_OK)
   return -1;
  return 0;
 }
@@ -2507,7 +2506,6 @@ static int startplan_program_real(const char *full, const char *suffix, char *ou
 {
  char program[WPE_STARTPLAN_PATH_MAX], real[WPE_PATH_SIZE];
  size_t len = strlen(full) - strlen(suffix);
- int n;
 
  if (len >= sizeof program)
   return 0;
@@ -2515,8 +2513,7 @@ static int startplan_program_real(const char *full, const char *suffix, char *ou
  program[len] = '\0';
  if (!realpath(program, real) || strcmp(real, program) == 0)
   return 0;
- n = snprintf(out, sz, "%s%s", real, suffix);
- return n >= 0 && (size_t)n < sz;
+ return wpe_fmt_whole(out, sz, "%s%s", real, suffix) == WPE_FMT_OK;
 }
 
 /**
@@ -2889,7 +2886,7 @@ static void startplan_embedded_put_reason(WpeStartPath *s, int err)
 {
  char note[WPE_PATH_MSG_MAX];
 
- snprintf(note, sizeof note, "(%s)", wpe_path_refused_reason(err));
+ WPE_FMT_SHOWN(note, "(%s)", wpe_path_refused_reason(err));
  startplan_embedded_put(s, note, strlen(note));
  if (err != ENOENT)
   s->refused = err;
@@ -2932,10 +2929,13 @@ static void startplan_embedded_file(WpeStartPath *s, const char *cwd, const char
  char full[WPE_STARTPLAN_PATH_MAX];
  WpeStartPath file;
  char real[WPE_PATH_SIZE];
+ int how;
 
  if (name[0] == STARTPLAN_SEP)
-  snprintf(full, sizeof full, "%s", name);
- else if (snprintf(full, sizeof full, "%s%c%s", cwd, STARTPLAN_SEP, name) >= (int)sizeof full)
+  how = WPE_FMT_WHOLE(full, "%s", name);
+ else
+  how = WPE_FMT_WHOLE(full, "%s%c%s", cwd, STARTPLAN_SEP, name);
+ if (how != WPE_FMT_OK)
  {
   s->too_long = 1;
   return;
@@ -3031,7 +3031,7 @@ static int startplan_add_embedded_startup(WpeStartPlan *p, const startplan_start
   return 0;
  if (!wpe_startplan_elf_section(full, row->file, raw, sizeof raw, &size))
   return 0;
- if (snprintf(shown, sizeof shown, "%s (%s)", given, row->file) >= (int)sizeof shown)
+ if (WPE_FMT_WHOLE(shown, "%s (%s)", given, row->file) != WPE_FMT_OK)
   return 0;
  if (wpe_startplan_path(p, shown, WPE_PATH_READS, WPE_FROM_FOLDER, row->file, startplan_base(p)) < 0)
   return -1;
@@ -3441,8 +3441,8 @@ char *wpe_startplan_debug_dir_new(const char *base)
 {
  char tmpl[WPE_STARTPLAN_PATH_MAX], real[WPE_PATH_SIZE];
 
- if (snprintf(tmpl, sizeof tmpl, "%s%c%s", startplan_debug_base_of(base), STARTPLAN_SEP,
-              STARTPLAN_DEBUG_DIR_NAME) >= (int)sizeof tmpl)
+ if (WPE_FMT_WHOLE(tmpl, "%s%c%s", startplan_debug_base_of(base), STARTPLAN_SEP,
+                    STARTPLAN_DEBUG_DIR_NAME) != WPE_FMT_OK)
   return NULL;
  if (!mkdtemp(tmpl))
   return NULL;
@@ -3820,27 +3820,27 @@ static int startplan_lines_style(const startplan_row *row, startplan_lines *l)
 static int startplan_cd_text(const startplan_row *row, const char *path, char *out, size_t n)
 {
  char arg[E_D_REQ_CMD_MAX];
- int wrote;
+ int how;
 
  if (row->move == STARTPLAN_MOVE_MI)
  {
   if (wpe_startplan_mi_cstring(arg, sizeof arg, path) < 0)
    return -1;
-  wrote = snprintf(out, n, "-environment-cd %s", arg);
+  how = wpe_fmt_whole(out, n, "-environment-cd %s", arg);
  }
  else if (row->move == STARTPLAN_MOVE_PDB)
  {
   if (wpe_startplan_python_bytes(arg, sizeof arg, path) < 0)
    return -1;
-  wrote = snprintf(out, n, STARTPLAN_PDB_CHDIR_FMT, arg);
+  how = wpe_fmt_whole(out, n, STARTPLAN_PDB_CHDIR_FMT, arg);
  }
  else
  {
   if (wpe_startplan_gdb_arg(arg, sizeof arg, path, WPE_GDB_ARG_RAW) < 0)
    return -1;
-  wrote = snprintf(out, n, "cd %s", arg);
+  how = wpe_fmt_whole(out, n, "cd %s", arg);
  }
- if (wrote < 0 || (size_t)wrote >= n)
+ if (how != WPE_FMT_OK)
   return -1;
  return 0;
 }
@@ -4347,8 +4347,8 @@ static int startplan_history_fix_line(const startplan_row *row, const WpeStartPl
  char path[WPE_STARTPLAN_PATH_MAX + sizeof STARTPLAN_GDB_HISTORY_NAME + 1];
  char arg[E_D_REQ_CMD_MAX], cmd[E_D_REQ_CMD_MAX];
 
- if (snprintf(path, sizeof path, "%s%c%s", p->program_dir, STARTPLAN_SEP,
-              STARTPLAN_GDB_HISTORY_NAME) >= (int)sizeof path)
+ if (WPE_FMT_WHOLE(path, "%s%c%s", p->program_dir, STARTPLAN_SEP,
+                    STARTPLAN_GDB_HISTORY_NAME) != WPE_FMT_OK)
   return -1;
  if (wpe_startplan_gdb_arg(arg, sizeof arg, path, WPE_GDB_ARG_RAW) < 0)
   return -1;

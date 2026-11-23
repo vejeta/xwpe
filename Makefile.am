@@ -36,7 +36,7 @@ dist-hook:
 # format checks, without the editor's library flags.
 TEST_CFLAGS = $(XWPE_STDFLAG) $(XWPE_DECLFLAG) $(XWPE_FORMATFLAGS)
 
-AM_CFLAGS = $(XWPE_STDFLAG) $(XWPE_DECLFLAG) $(XWPE_FORMATFLAGS) \
+AM_CFLAGS = $(XWPE_STDFLAG) $(XWPE_DECLFLAG) $(XWPE_FORMATFLAGS) $(XWPE_RESULTFLAG) \
   $(NCURSESW_CFLAGS) \
   $(X_CFLAGS) \
   $(XFT_CFLAGS) \
@@ -100,6 +100,7 @@ we_SOURCES = \
   we_progname.c \
   we_listsel.c \
   we_helpbuf.c \
+  we_fmt.c \
   we_errpat.c \
   we_optval.c \
   we_wind.c \
@@ -288,6 +289,8 @@ noinst_HEADERS = \
   we_progname.h \
   we_listsel.h \
   we_helpbuf.h \
+  we_fmt.h \
+  we_numtext.h \
   we_errpat.h \
   we_optval.h \
   we_fieldtake.h \
@@ -412,7 +415,22 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_brkmatch test_shtok test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease test_child test_childsig test_childfds test_childfds_loop test_childsafe test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner test_fileop edit_driver test_startcmd test_startplan test_path test_path_say test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_nocontext test_rowfind_macsim test_rowfind_reject test_rowfind_illseq test_rowfind_badengine test_rowfind_badengine_copy test_rowfind_boundary test_rowfind_boundary_copy test_rowfind_nolocale test_rowfind_illseq_copy test_listsel test_helpbuf test_number_parse test_errpat test_optval
+check_PROGRAMS = test_brkmatch test_shtok test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease test_child test_childsig test_childfds test_childfds_loop test_childsafe test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner test_fileop edit_driver test_startcmd test_startplan test_path test_path_say test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_nocontext test_rowfind_macsim test_rowfind_reject test_rowfind_illseq test_rowfind_badengine test_rowfind_badengine_copy test_rowfind_boundary test_rowfind_boundary_copy test_rowfind_nolocale test_rowfind_illseq_copy test_listsel test_helpbuf test_number_parse test_errpat test_optval test_fmt test_numtext
+
+# The owner of a formatted text written into storage (we_fmt.c): a number is
+# shown in full or refused, a command or a path is never written cut, a
+# sentence that does not fit is cut at a character and ends in "...", a
+# request built in blocks never carries a mark.  Every storage has guard
+# bytes after it, so a byte written past the size fails in a plain build.
+# The heap limit is lowered so its refusal can be reached.
+test_fmt_SOURCES = tests/test_fmt.c we_fmt.c
+test_fmt_CFLAGS = $(TEST_CFLAGS) -DWPE_FMT_HEAP_LIMIT=1000
+
+# The line:column of a window's frame and the counts of a replace
+# (we_numtext.h): shown in full at any size, or refused, never written past
+# the caller's storage.
+test_numtext_SOURCES = tests/test_numtext.c we_fmt.c
+test_numtext_CFLAGS = $(TEST_CFLAGS)
 
 # The owner of the selected entry of a list window (we_listsel.c): a
 # selection names an entry or nothing, the blank row that ends a project
@@ -444,7 +462,7 @@ test_brkmatch_CFLAGS = $(TEST_CFLAGS)
 # once into rows and warning tests, a text cut inside a token is refused with
 # a reason, a surprising reading is noted, and no byte outside the text is
 # read, whatever the text.
-test_errpat_SOURCES = tests/test_errpat.c we_errpat.c
+test_errpat_SOURCES = tests/test_errpat.c we_errpat.c we_fmt.c
 test_errpat_CFLAGS = $(TEST_CFLAGS)
 
 # The owner of an option value's stored form (we_optval.c): a value reads
@@ -461,20 +479,20 @@ sigstate_CFLAGS = $(TEST_CFLAGS)
 
 # The owner of how long a path the editor holds may be (we_path.c): copy,
 # join and cat that refuse instead of cutting, at the boundary of a buffer.
-test_path_SOURCES = tests/test_path.c we_path.c
+test_path_SOURCES = tests/test_path.c we_path.c we_fmt.c
 test_path_CFLAGS = $(TEST_CFLAGS)
 
 # The sentence a refused path gets (we_path.h), checked against a system whose
 # PATH_MAX is 1024 and NAME_MAX 255: the number is the system's, not the
 # editor's room.  Its own program, because test_path.c reads the real PATH_MAX.
-test_path_say_SOURCES = tests/test_path_say.c we_path.c
+test_path_say_SOURCES = tests/test_path_say.c we_path.c we_fmt.c
 test_path_say_CFLAGS = $(TEST_CFLAGS)
 
 # The owner of the name of what a build makes from a source (we_progname.c):
 # the extension and stem of a name, the program, the object and the debug
 # binary under Exedir through the start plan's operand, a result that does
 # not fit refused whole, and the project's two names.
-test_progname_SOURCES = tests/test_progname.c we_progname.c we_path.c we_places.c we_startplan.c we_startcmd.c we_child.c we_fdloop.c we_debreq.c
+test_progname_SOURCES = tests/test_progname.c we_progname.c we_path.c we_places.c we_startplan.c we_startcmd.c we_child.c we_fdloop.c we_debreq.c we_fmt.c
 test_progname_CFLAGS = $(TEST_CFLAGS)
 test_progname_LDADD = $(UTIL_LIBS)
 
@@ -482,7 +500,7 @@ test_progname_LDADD = $(UTIL_LIBS)
 # the parser reads a text whole and refuses overflow and trailing text, the
 # range of each kind, and the field's accept (saturating Go to Line).  Links
 # the editor's string helpers only; the status row is a stub of the test.
-test_number_parse_SOURCES = tests/test_number_parse.c we_number.c WeString.c
+test_number_parse_SOURCES = tests/test_number_parse.c we_number.c WeString.c we_fmt.c
 test_number_parse_CFLAGS = $(AM_CFLAGS)
 
 # The owner of the copy out of a dialog field (we_fieldtake.h): a text that
@@ -493,7 +511,7 @@ test_fieldtake_CFLAGS = $(TEST_CFLAGS)
 # The pattern Function Index looks for in every MANPATH folder
 # (we_manpat.h): built through the path owner, whole or refused.
 check_PROGRAMS += test_manpat
-test_manpat_SOURCES = tests/test_manpat.c we_path.c
+test_manpat_SOURCES = tests/test_manpat.c we_path.c we_fmt.c
 test_manpat_CFLAGS = $(TEST_CFLAGS)
 
 # The owner of the start plan: we_startplan.c with the store (we_startcmd.c)
@@ -502,7 +520,7 @@ test_manpat_CFLAGS = $(TEST_CFLAGS)
 # folder, a removal outside dropped and a write outside asked, the home
 # folder never a root, a plan equal in effect to the user's own, one
 # record per plan, the cover check of a step, and mutants of the rules.
-test_startplan_SOURCES = tests/test_startplan.c we_places.c we_path.c we_startplan.c we_startcmd.c we_child.c we_fdloop.c we_debreq.c
+test_startplan_SOURCES = tests/test_startplan.c we_places.c we_path.c we_startplan.c we_startcmd.c we_child.c we_fdloop.c we_debreq.c we_fmt.c
 test_startplan_CFLAGS = $(TEST_CFLAGS)
 # The rows that make an allocation fail take over malloc and realloc, which
 # needs a linker with --wrap.  Without one (Apple's ld) the test is built
@@ -518,7 +536,7 @@ test_startplan_LDADD = $(UTIL_LIBS)
 # and key, the cap), every way a store fails closed (missing, another
 # version, a bad line, a link), folders through a link, the user's own and
 # the built-in texts, and the printable form of a command.
-test_startcmd_SOURCES = tests/test_startcmd.c we_startcmd.c we_places.c we_path.c
+test_startcmd_SOURCES = tests/test_startcmd.c we_startcmd.c we_places.c we_path.c we_fmt.c
 test_startcmd_CFLAGS = $(TEST_CFLAGS)
 
 # The text's owner: we_buffer.c alone (the editor's side of its seam is
@@ -539,7 +557,7 @@ test_lineend_CFLAGS = $(TEST_CFLAGS)
 # (private, counted as made only when whole), the restore after a write
 # that fails half way (by rename, through a link, with a hard link, one that
 # fails), the size limit as an outcome and SIGXFSZ put back.
-test_write_owner_SOURCES = tests/test_write_owner.c tests/seen_rows.h tests/testdir.h we_write.c we_places.c we_path.c we_seen.c
+test_write_owner_SOURCES = tests/test_write_owner.c tests/seen_rows.h tests/testdir.h we_write.c we_places.c we_path.c we_seen.c we_fmt.c
 test_write_owner_CFLAGS = $(TEST_CFLAGS)
 test_write_owner_LDFLAGS = $(TEST_EXPORT_DYNAMIC)
 
@@ -548,7 +566,7 @@ test_write_owner_LDFLAGS = $(TEST_EXPORT_DYNAMIC)
 # stubs: the atom (a copy is new, private, whole or absent, and one rename
 # puts it in place), the name that is not replaced, the sentence per step,
 # the wastebasket.
-test_fileop_SOURCES = tests/test_fileop.c we_fileop.c we_write.c we_path.c we_places.c we_seen.c
+test_fileop_SOURCES = tests/test_fileop.c we_fileop.c we_write.c we_path.c we_places.c we_seen.c we_fmt.c
 test_fileop_CFLAGS = $(TEST_CFLAGS)
 test_fileop_LDFLAGS = $(TEST_EXPORT_DYNAMIC)
 
@@ -584,7 +602,7 @@ test_interpose_LDFLAGS = $(TEST_EXPORT_DYNAMIC)
 # build tree, or XWPE_TEST_REUSE_DIR) and print which one; on one that never
 # gives a number back they say SKIP and why.
 check_PROGRAMS += test_seen
-test_seen_SOURCES = tests/test_seen.c tests/seen_rows.h tests/testdir.h we_seen.c
+test_seen_SOURCES = tests/test_seen.c tests/seen_rows.h tests/testdir.h we_seen.c we_fmt.c
 test_seen_CFLAGS = $(TEST_CFLAGS)
 
 # The owner of "a file is read by a name the editor did not choose"
@@ -594,7 +612,7 @@ test_seen_CFLAGS = $(TEST_CFLAGS)
 # folder face.  The open is hooked, so a row can say a device was never
 # opened.
 check_PROGRAMS += test_read_owner
-test_read_owner_SOURCES = tests/test_read_owner.c tests/testdir.h we_read.c we_seen.c we_path.c
+test_read_owner_SOURCES = tests/test_read_owner.c tests/testdir.h we_read.c we_seen.c we_path.c we_fmt.c
 test_read_owner_CFLAGS = $(TEST_CFLAGS)
 test_read_owner_LDFLAGS = $(TEST_EXPORT_DYNAMIC)
 
@@ -741,7 +759,7 @@ test_menus_CPPFLAGS = $(AM_CPPFLAGS) -DWPE_MENU_TABLE_ONLY
 # by a start plan, so this one program is built with the refusal of
 # unplanned starts off (WPE_CHILD_MECHANICS_TEST); tests/check-start-plan.sh
 # fails if any other target or the editor names that switch.
-test_child_SOURCES = tests/test_child.c we_child.c we_fdloop.c
+test_child_SOURCES = tests/test_child.c we_child.c we_fdloop.c we_fmt.c
 test_child_CFLAGS = $(TEST_CFLAGS) -DWPE_CHILD_MECHANICS_TEST
 test_child_LDFLAGS = $(TEST_EXPORT_DYNAMIC)
 test_child_LDADD = $(UTIL_LIBS)
@@ -749,7 +767,7 @@ test_child_LDADD = $(UTIL_LIBS)
 # A read that waits survives the editor's SIGCHLD: the handler is installed
 # by the editor's own function, children end during a blocking read.  Also
 # the short commands' cases live in test_child.
-test_childsig_SOURCES = tests/test_childsig.c we_child.c we_fdloop.c
+test_childsig_SOURCES = tests/test_childsig.c we_child.c we_fdloop.c we_fmt.c
 test_childsig_CFLAGS = $(TEST_CFLAGS)
 test_childsig_LDADD = $(UTIL_LIBS)
 
@@ -759,10 +777,10 @@ test_childsig_LDADD = $(UTIL_LIBS)
 # the second build takes the descriptor-by-descriptor loop that macOS runs, on
 # any system, so Linux proves the loop and its ceiling, and it prints what the
 # close step cost.
-test_childfds_SOURCES = tests/test_childfds.c we_child.c we_fdloop.c
+test_childfds_SOURCES = tests/test_childfds.c we_child.c we_fdloop.c we_fmt.c
 test_childfds_CFLAGS = $(TEST_CFLAGS) -DWPE_CHILD_MECHANICS_TEST
 test_childfds_LDADD = $(UTIL_LIBS)
-test_childfds_loop_SOURCES = tests/test_childfds.c we_child.c we_fdloop.c
+test_childfds_loop_SOURCES = tests/test_childfds.c we_child.c we_fdloop.c we_fmt.c
 test_childfds_loop_CFLAGS = $(TEST_CFLAGS) -DWPE_CHILD_MECHANICS_TEST -DWPE_CHILD_CLOSE_LOOP_ONLY
 test_childfds_loop_LDADD = $(UTIL_LIBS)
 
@@ -773,7 +791,7 @@ test_childfds_loop_LDADD = $(UTIL_LIBS)
 # strerror) and around chdir, which a row uses to raise a signal inside the
 # child.  Without a linker that has --wrap (Apple's ld) the test is built
 # without those rows and reports them as SKIP.
-test_childsafe_SOURCES = tests/test_childsafe.c we_child.c we_fdloop.c
+test_childsafe_SOURCES = tests/test_childsafe.c we_child.c we_fdloop.c we_fmt.c
 test_childsafe_CFLAGS = $(TEST_CFLAGS) -DWPE_CHILD_MECHANICS_TEST
 test_childsafe_LDADD = $(UTIL_LIBS) $(PTHREAD_LIBS)
 if HAVE_LD_WRAP
@@ -823,7 +841,7 @@ test_debprompt_CFLAGS = $(TEST_CFLAGS)
 # A source path too long to hand to a debugger is refused whole, never cut;
 # no file system lets the editor be driven into that case, so it is checked
 # here at the exact buffer edge.
-test_debpath_SOURCES = tests/test_debpath.c we_debpath.c
+test_debpath_SOURCES = tests/test_debpath.c we_debpath.c we_fmt.c
 test_debpath_CFLAGS = $(TEST_CFLAGS)
 
 # Debugger session state unit test: we_debsess.c only, no editor, no
@@ -831,7 +849,7 @@ test_debpath_CFLAGS = $(TEST_CFLAGS)
 # tests/transcripts/) is read into the session as the editor reads it: watch
 # values and errors, the frame a stop marks, pdb's and a68g's stop lines,
 # and jdb's set answer written into the middle of a breakpoint hit.
-test_debsess_SOURCES = tests/test_debsess.c we_debsess.c we_gdbmi.c
+test_debsess_SOURCES = tests/test_debsess.c we_debsess.c we_gdbmi.c we_fmt.c
 test_debsess_CFLAGS = $(TEST_CFLAGS)
 
 # gdb/MI parser unit test: we_gdbmi.c and we_debsess.c only, no editor, no
@@ -840,7 +858,7 @@ test_debsess_CFLAGS = $(TEST_CFLAGS)
 # at every byte position, and taken into the session: the stop's file and
 # line, a breakpoint answered or refused with gdb's words, a SIGINT stop
 # told from the user's, the exit code, and the console words for Messages.
-test_gdbmi_SOURCES = tests/test_gdbmi.c we_gdbmi.c we_debsess.c
+test_gdbmi_SOURCES = tests/test_gdbmi.c we_gdbmi.c we_debsess.c we_fmt.c
 test_gdbmi_CFLAGS = $(TEST_CFLAGS)
 
 # Debugger request engine unit test: we_debreq.c only, no editor, no
@@ -848,7 +866,7 @@ test_gdbmi_CFLAGS = $(TEST_CFLAGS)
 # the deadline and the waiting line, requests going out one at a time with
 # the queue's bound, cancel ending every request, and a stop line that comes
 # in the middle of an answer going to the editor instead of the request.
-test_debreq_SOURCES = tests/test_debreq.c we_debreq.c
+test_debreq_SOURCES = tests/test_debreq.c we_debreq.c we_fmt.c
 test_debreq_CFLAGS = $(TEST_CFLAGS)
 
 # Dropdown highlight unit test: we_menurows.c only, no editor, always runs.
@@ -889,13 +907,13 @@ test_syntax_def_LDFLAGS =
 # LSP buffer-serialization unit test: the pure e_lsp_join_lines invariant (one
 # '\n' per editor line, WPE_WR not doubled).  Links we_lsp.c only; no server,
 # always runs (no skip).
-test_lsp_buffer_SOURCES = tests/test_lsp_buffer.c we_places.c we_path.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c
+test_lsp_buffer_SOURCES = tests/test_lsp_buffer.c we_places.c we_path.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
 test_lsp_buffer_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
 test_lsp_buffer_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # LSP Doctor dedup unit test: the pure e_lsp_doc_is_new gate (re-pushed Doctor
 # rendered only when changed; reset per session shows it again).  we_lsp.c only.
-test_lsp_doctor_SOURCES = tests/test_lsp_doctor.c we_places.c we_path.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c
+test_lsp_doctor_SOURCES = tests/test_lsp_doctor.c we_places.c we_path.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
 test_lsp_doctor_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
 test_lsp_doctor_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
@@ -907,19 +925,19 @@ test_lsp_positions_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
 test_lsp_positions_LDADD = $(JSONC_LIBS)
 
 # LSP semantic-tokens decode unit test: the pure delta-decode (we_lsp_pos.c).
-test_lsp_semantic_SOURCES = tests/test_lsp_semantic.c we_places.c we_path.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c
+test_lsp_semantic_SOURCES = tests/test_lsp_semantic.c we_places.c we_path.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
 test_lsp_semantic_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
 test_lsp_semantic_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # LSP requests answered on the loop: each answer reaches its own request,
 # the server's own requests are answered meanwhile, Esc, the deadline, the
 # server's end and the close.  The test plays the server itself.
-test_lsp_requests_SOURCES = tests/test_lsp_requests.c we_places.c we_path.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c
+test_lsp_requests_SOURCES = tests/test_lsp_requests.c we_places.c we_path.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
 test_lsp_requests_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
 test_lsp_requests_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # Semantic-token truecolor palette unit test: pure token->RGB-slot lookup.
-test_lsp_truecolor_SOURCES = tests/test_lsp_truecolor.c we_places.c we_path.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c
+test_lsp_truecolor_SOURCES = tests/test_lsp_truecolor.c we_places.c we_path.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
 test_lsp_truecolor_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
 test_lsp_truecolor_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
@@ -929,30 +947,30 @@ test_lsp_truecolor_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 # follows the engine from its loop and never waits on an adapter.  An
 # adapter starts through its start plan (we_startplan.c, with its store
 # we_startcmd.c), in these tests too.
-test_dap_SOURCES = tests/test_dap.c we_places.c we_path.c we_dap.c we_dap_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c
+test_dap_SOURCES = tests/test_dap.c we_places.c we_path.c we_dap.c we_dap_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
 test_dap_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
 test_dap_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # DAP engine integration test: drives a real `dlv dap` (SKIPs without dlv+go).
-test_dap_dlv_SOURCES = tests/test_dap_dlv.c we_places.c we_path.c we_dap.c we_dap_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c
+test_dap_dlv_SOURCES = tests/test_dap_dlv.c we_places.c we_path.c we_dap.c we_dap_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
 test_dap_dlv_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
 test_dap_dlv_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # DAP stdio transport integration test: drives a real `gdb --interpreter=dap`
 # on a rustc-built binary (the Rust slice).  SKIPs without gdb+rustc.
-test_dap_gdb_SOURCES = tests/test_dap_gdb.c we_places.c we_path.c we_dap.c we_dap_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c
+test_dap_gdb_SOURCES = tests/test_dap_gdb.c we_places.c we_path.c we_dap.c we_dap_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
 test_dap_gdb_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
 test_dap_gdb_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # Same stdio transport against `lldb-dap` (the LLVM adapter; native on macOS).
 # SKIPs without lldb-dap+rustc.
-test_dap_lldb_SOURCES = tests/test_dap_lldb.c we_places.c we_path.c we_dap.c we_dap_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c
+test_dap_lldb_SOURCES = tests/test_dap_lldb.c we_places.c we_path.c we_dap.c we_dap_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
 test_dap_lldb_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
 test_dap_lldb_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # JVM/Scala path: BSP bootstrap (we_bsp.c) + DAP TCP-client transport against a
 # real scala-cli/Bloop.  SKIPs without scala-cli; slow on a cold coursier cache.
-test_dap_scala_SOURCES = tests/test_dap_scala.c we_places.c we_path.c we_read.c we_seen.c we_bsp.c we_bsp_sync.c we_dap.c we_dap_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c
+test_dap_scala_SOURCES = tests/test_dap_scala.c we_places.c we_path.c we_read.c we_seen.c we_bsp.c we_bsp_sync.c we_dap.c we_dap_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
 test_dap_scala_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
 test_dap_scala_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
@@ -960,38 +978,38 @@ test_dap_scala_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 # program itself); no scala-cli needed.  The close returns at once and the
 # children's owner (we_child.c) ends the launcher on the fd loop, with no
 # exit descriptor, the same on every system.
-test_bsp_close_SOURCES = tests/test_bsp_close.c we_places.c we_path.c we_read.c we_seen.c we_bsp.c we_bsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c
+test_bsp_close_SOURCES = tests/test_bsp_close.c we_places.c we_path.c we_read.c we_seen.c we_bsp.c we_bsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
 test_bsp_close_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
 test_bsp_close_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # LSP engine: drives a real Metals language server on a single Scala file
 # (hover/definition/completion/diagnostics).  SKIPs without metals + scala-cli.
-test_lsp_scala_SOURCES = tests/test_lsp_scala.c we_places.c we_path.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c
+test_lsp_scala_SOURCES = tests/test_lsp_scala.c we_places.c we_path.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
 test_lsp_scala_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
 test_lsp_scala_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # LSP engine, breadth: drives a real clangd on a single C file with the SAME
 # engine (only language id + spawned command differ).  Fast (no JVM/build
 # server).  SKIPs without clangd.
-test_lsp_clangd_SOURCES = tests/test_lsp_clangd.c we_places.c we_path.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c
+test_lsp_clangd_SOURCES = tests/test_lsp_clangd.c we_places.c we_path.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
 test_lsp_clangd_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
 test_lsp_clangd_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # LSP engine, breadth: drives a real Python server (pyright or pylsp) on a single
 # .py file -- whichever is installed -- with the SAME engine.  SKIPs without one.
-test_lsp_python_SOURCES = tests/test_lsp_python.c we_places.c we_path.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c
+test_lsp_python_SOURCES = tests/test_lsp_python.c we_places.c we_path.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
 test_lsp_python_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
 test_lsp_python_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # LSP engine, breadth: drives a real gopls on a single .go file in a tiny module.
 # SKIPs without gopls + go.
-test_lsp_gopls_SOURCES = tests/test_lsp_gopls.c we_places.c we_path.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c
+test_lsp_gopls_SOURCES = tests/test_lsp_gopls.c we_places.c we_path.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
 test_lsp_gopls_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
 test_lsp_gopls_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # LSP engine, breadth: drives a real rust-analyzer on a single .rs file in a tiny
 # crate.  Slowest (indexes std on cold start).  SKIPs without rust-analyzer + cargo.
-test_lsp_rust_SOURCES = tests/test_lsp_rust.c we_places.c we_path.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c
+test_lsp_rust_SOURCES = tests/test_lsp_rust.c we_places.c we_path.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
 test_lsp_rust_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
 test_lsp_rust_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
@@ -1001,7 +1019,7 @@ test_lsp_rust_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 TESTS = tests/check-build-config.sh test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv \
   test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests \
   test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease \
-  test_brkmatch test_shtok test_child test_childsig test_childfds test_childfds_loop test_childsafe test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner test_fileop test_startcmd test_startplan test_path test_path_say test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_nocontext test_rowfind_macsim test_rowfind_reject test_rowfind_illseq test_rowfind_badengine test_rowfind_badengine_copy test_rowfind_boundary test_rowfind_boundary_copy test_rowfind_nolocale test_rowfind_illseq_copy test_listsel test_helpbuf test_number_parse test_errpat test_optval
+  test_brkmatch test_shtok test_child test_childsig test_childfds test_childfds_loop test_childsafe test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner test_fileop test_startcmd test_startplan test_path test_path_say test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_nocontext test_rowfind_macsim test_rowfind_reject test_rowfind_illseq test_rowfind_badengine test_rowfind_badengine_copy test_rowfind_boundary test_rowfind_boundary_copy test_rowfind_nolocale test_rowfind_illseq_copy test_listsel test_helpbuf test_number_parse test_errpat test_optval test_fmt test_numtext
 
 # One owner of input and of waiting: tests/check-one-owner.sh reads the
 # undefined symbols of the editor's own objects (the list below) with $(NM)
@@ -1153,6 +1171,13 @@ TESTS += tests/check-path-buffers.sh test_manpat
 # reason).
 TESTS += tests/check-help-buffers.sh
 
+# One owner of a text built with a format (we_fmt.h): tests/check-fmt-writes.sh
+# fails on sprintf, on a bounded write whose value is used or whose
+# destination is at an offset, on a refusal of a whole text that is not read,
+# and on a second spelling of the cut mark.  The bounded writes still to move
+# are counted per function in tests/fmt-writes.allow, which may only shrink.
+TESTS += tests/check-fmt-writes.sh
+
 # One owner of a number the user or a file gives the editor (we_number.c):
 # tests/check-number-fields.sh fails on a second parser of an option's
 # digits, a write of the five editor numbers outside the owner, a field
@@ -1236,7 +1261,7 @@ TESTS += tests/check-test-paths.sh
 if HAVE_WAYLAND
 check_PROGRAMS += test_wlframe
 TESTS += test_wlframe
-test_wlframe_SOURCES = tests/test_wlframe.c we_wlframe.c we_path.c
+test_wlframe_SOURCES = tests/test_wlframe.c we_wlframe.c we_path.c we_fmt.c
 test_wlframe_CFLAGS = $(TEST_CFLAGS) $(WAYLAND_CFLAGS)
 test_wlframe_LDADD = $(WAYLAND_LIBS)
 endif
@@ -1383,20 +1408,20 @@ AM_TESTS_ENVIRONMENT = NM='$(NM)'; export NM; \
 if WPE_AI
 check_PROGRAMS += $(AI_TESTS)
 TESTS += $(AI_TESTS)
-test_ai_path_SOURCES = tests/test_ai_path.c we_ai_path.c we_read.c we_seen.c we_places.c we_path.c
+test_ai_path_SOURCES = tests/test_ai_path.c we_ai_path.c we_read.c we_seen.c we_places.c we_path.c we_fmt.c
 test_ai_path_CFLAGS = $(TEST_CFLAGS)
-test_ai_scope_SOURCES = tests/test_ai_scope.c we_ai_path.c we_read.c we_seen.c we_places.c we_path.c
+test_ai_scope_SOURCES = tests/test_ai_scope.c we_ai_path.c we_read.c we_seen.c we_places.c we_path.c we_fmt.c
 test_ai_scope_CFLAGS = $(TEST_CFLAGS)
 # A pipe where a cloned folder keeps what the assistant's layer reads (the git
 # config, "commondir", a build server's connection file) does not stop the
 # editor: the reads go through the read owner (we_read.c).
-test_ai_read_waits_SOURCES = tests/test_ai_read_waits.c we_ai_path.c we_places.c we_path.c we_read.c we_seen.c we_bsp.c we_bsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c
+test_ai_read_waits_SOURCES = tests/test_ai_read_waits.c we_ai_path.c we_places.c we_path.c we_read.c we_seen.c we_bsp.c we_bsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
 test_ai_read_waits_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
 test_ai_read_waits_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 # A folder swapped for a link while the scope scan runs is not entered: the
 # linker's --wrap puts a swap around the scan's look at an entry.  Without a
 # linker that has --wrap (Apple's ld) the row is reported as SKIP.
-test_ai_scan_swap_SOURCES = tests/test_ai_scan_swap.c we_ai_path.c we_places.c we_path.c we_read.c we_seen.c
+test_ai_scan_swap_SOURCES = tests/test_ai_scan_swap.c we_ai_path.c we_places.c we_path.c we_read.c we_seen.c we_fmt.c
 test_ai_scan_swap_CFLAGS = $(TEST_CFLAGS)
 if HAVE_LD_WRAP
 test_ai_scan_swap_CFLAGS += -DWPE_TEST_LD_WRAP=1
@@ -1406,14 +1431,14 @@ endif
 # moments against the verdict the judge gives, a renamed file or folder, a bound
 # on either side, a folder nobody may read, and the words of every verdict and
 # note, each on a real folder the test makes.
-test_ai_ckrec_SOURCES = tests/test_ai_ckrec.c tests/testdir.h we_ai_ckrec.c we_read.c we_seen.c we_places.c we_path.c
+test_ai_ckrec_SOURCES = tests/test_ai_ckrec.c tests/testdir.h we_ai_ckrec.c we_read.c we_seen.c we_places.c we_path.c we_fmt.c
 test_ai_ckrec_CFLAGS = $(TEST_CFLAGS)
 # How the assistant's children are held (we_contain.c): the environment each
 # profile gives its child, the PATH and the program resolved in the parent,
 # the limits and the report, and, through the owner of children (we_child.c,
 # with the refusal of an assistant start that names no profile on), what a
 # started child really gets.
-test_ai_contain_SOURCES = tests/test_ai_contain.c we_contain.c we_path.c we_child.c we_fdloop.c
+test_ai_contain_SOURCES = tests/test_ai_contain.c we_contain.c we_path.c we_child.c we_fdloop.c we_fmt.c
 test_ai_contain_CFLAGS = $(TEST_CFLAGS)
 test_ai_contain_LDADD = $(UTIL_LIBS)
 # What a saved conversation may hold (we_ai_session.c): the resume id's shape
@@ -1421,7 +1446,7 @@ test_ai_contain_LDADD = $(UTIL_LIBS)
 test_ai_session_SOURCES = tests/test_ai_session.c we_ai_session.c
 test_ai_session_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
 test_ai_session_LDADD = $(JSONC_LIBS)
-test_ai_http_SOURCES = tests/test_ai_http.c we_ai_http.c we_ai_http_sync.c we_fdloop.c
+test_ai_http_SOURCES = tests/test_ai_http.c we_ai_http.c we_ai_http_sync.c we_fdloop.c we_fmt.c
 test_ai_http_CFLAGS = $(TEST_CFLAGS) $(AITLS_CFLAGS)
 test_ai_http_LDADD = $(AITLS_LIBS)
 test_ai_diff_SOURCES = tests/test_ai_diff.c we_ai_diff.c
@@ -1430,7 +1455,7 @@ test_ai_diff_CFLAGS = $(TEST_CFLAGS)
 # network); run by hand, e.g. ./test_ai_tls_live https://api.github.com /zen
 if WPE_AI_TLS
 check_PROGRAMS += $(AI_TLS_CHECK)
-test_ai_tls_live_SOURCES = tests/test_ai_tls_live.c we_ai_http.c we_ai_http_sync.c we_fdloop.c
+test_ai_tls_live_SOURCES = tests/test_ai_tls_live.c we_ai_http.c we_ai_http_sync.c we_fdloop.c we_fmt.c
 test_ai_tls_live_CFLAGS = $(TEST_CFLAGS) $(AITLS_CFLAGS)
 test_ai_tls_live_LDADD = $(AITLS_LIBS)
 endif
@@ -1541,6 +1566,8 @@ EXTRA_DIST = \
   tests/path-buffers.allow \
   tests/check-help-buffers.sh \
   tests/help-buffers.allow \
+  tests/check-fmt-writes.sh \
+  tests/fmt-writes.allow \
   tests/check-number-fields.sh \
   tests/number-fields.allow \
   tests/test_number_parse.c \
@@ -1550,6 +1577,10 @@ EXTRA_DIST = \
   tests/list-entry.allow \
   tests/test_listsel.c \
   tests/test_helpbuf.c \
+  tests/test_fmt.c \
+  tests/test_fmt_sites.py \
+  tests/test_ai_formatted_requests.py \
+  tests/test_numtext.c \
   tests/test_shtok.c \
   tests/test_brkmatch.c \
   tests/test_errpat.c \

@@ -738,15 +738,13 @@ static void e_message_fit_rows(char **s, int *anz)
  */
 void e_say_read_refused(FENSTER *f, const char *what, const char *path, const WpeReadOutcome *o)
 {
- size_t size = (size_t)wpe_read_say(NULL, 0, what, path, o) + 1;
- char *text = MALLOC(size);
+ char *text = wpe_read_say_dup(what, path, o);
 
  if (!text)
  {
   e_error(e_msg[ERR_LOWMEM], 0, f->fb);
   return;
  }
- (void)wpe_read_say(text, size, what, path, o);
  e_message(0, text, f);
  FREE(text);
 }
@@ -817,7 +815,6 @@ int e_message(int sw, char *str, FENSTER *f)
 #define E_STARTCMD_OWN_NONE     "Your own setting: (none)"
 #define E_STARTCMD_FOLDER_FMT   "Folder: %s"
 #define E_STARTCMD_LONG_FMT     "the command is %lu characters; read it in %s"
-#define E_STARTCMD_CUT_MARK     "..."
 #define E_STARTCMD_BOX_MAX_W    76   /* the widest the box gets            */
 #define E_STARTCMD_MARGIN       3    /* columns from the frame to the text */
 #define E_STARTCMD_INDENT       2    /* the command's own indent           */
@@ -917,14 +914,17 @@ static void e_startcmd_free_rows(char **rows, int n)
 static void e_startcmd_fit(const char *text, int width, char *out, size_t sz,
                            int keep_end)
 {
- int len = (int)strlen(text), mark = (int)strlen(E_STARTCMD_CUT_MARK);
+ int len = (int)strlen(text), mark = (int)strlen(WPE_FMT_CUT_MARK);
+ size_t place = (size_t)width + 1;
 
+ if (place > sz)
+  place = sz;
  if (len <= width || width <= mark)
-  snprintf(out, sz, "%s", text);
+  wpe_fmt_shown(out, sz, "%s", text);
  else if (keep_end)
-  snprintf(out, sz, "%s%s", E_STARTCMD_CUT_MARK, text + len - (width - mark));
+  wpe_fmt_shown_tail(out, place, text);
  else
-  snprintf(out, sz, "%.*s%s", width - mark, text, E_STARTCMD_CUT_MARK);
+  wpe_fmt_shown(out, place, "%s", text);
 }
 
 /**
@@ -1542,6 +1542,8 @@ typedef struct {
  * box had to cut.
  */
 static void e_startplan_line_add(e_startplan_lines *l, int keep_end, const char *fmt, ...)
+  WPE_FMT_PRINTF(3, 4);
+static void e_startplan_line_add(e_startplan_lines *l, int keep_end, const char *fmt, ...)
 {
  char text[E_STARTCMD_LINE_MAX];
  char **grown;
@@ -1551,7 +1553,7 @@ static void e_startplan_line_add(e_startplan_lines *l, int keep_end, const char 
  if (l->n >= E_STARTPLAN_LINES_MAX)
   return;
  va_start(ap, fmt);
- vsnprintf(text, sizeof text, fmt, ap);
+ wpe_fmt_vshown(text, sizeof text, fmt, ap);
  va_end(ap);
  if (!(grown = REALLOC(l->line, (l->n + 1) * sizeof(char *))))
   return;
@@ -1679,6 +1681,41 @@ static void e_startplan_lines_file_text(e_startplan_lines *l, const char *text)
 }
 
 /**
+ * e_startplan_runs_line - The sentence that names one start-up file the tool
+ * runs, how many lines it has, or that it is too long to be read in full.
+ * @l: the lines; @apart: 1 when the debugger starts apart from the folder
+ * (the sentence then says what Run it loads); @s: the file; @n: its lines.
+ */
+static void e_startplan_runs_line(e_startplan_lines *l, int apart,
+                                  const WpeStartPath *s, int n)
+{
+ const char *plural = "s";
+
+ if (n == 1)
+  plural = "";
+ if (s->refused && !s->embedded && apart)
+  e_startplan_line_add(l, E_STARTPLAN_KEEP_START,
+                       E_STARTPLAN_WITH_RUN_REFUSED_FMT, s->path,
+                       wpe_path_refused_reason(s->refused));
+ else if (s->refused && !s->embedded)
+  e_startplan_line_add(l, E_STARTPLAN_KEEP_START,
+                       E_STARTPLAN_RUNS_REFUSED_FMT, s->path,
+                       wpe_path_refused_reason(s->refused));
+ else if (s->too_long && apart)
+  e_startplan_line_add(l, E_STARTPLAN_KEEP_START, E_STARTPLAN_WITH_RUN_LONG_FMT,
+                       s->path, s->length);
+ else if (s->too_long)
+  e_startplan_line_add(l, E_STARTPLAN_KEEP_START, E_STARTPLAN_RUNS_LONG_FMT,
+                       s->path, s->length);
+ else if (apart)
+  e_startplan_line_add(l, E_STARTPLAN_KEEP_START, E_STARTPLAN_WITH_RUN_FMT,
+                       s->path, n, plural);
+ else
+  e_startplan_line_add(l, E_STARTPLAN_KEEP_START, E_STARTPLAN_RUNS_FMT,
+                       s->path, n, plural);
+}
+
+/**
  * e_startplan_lines_runs - Each file the tool runs from the folder at its
  * start (./.pdbrc, ./jdb.ini, ./.gdbinit), with its lines.
  * @l: the lines; @p: the plan.
@@ -1689,31 +1726,14 @@ static void e_startplan_lines_file_text(e_startplan_lines *l, const char *text)
  */
 static void e_startplan_lines_runs(e_startplan_lines *l, const WpeStartPlan *p)
 {
- const char *fmt = E_STARTPLAN_RUNS_FMT, *long_fmt = E_STARTPLAN_RUNS_LONG_FMT;
- const char *refused_fmt = E_STARTPLAN_RUNS_REFUSED_FMT;
- int i, n;
+ int i, apart = wpe_startplan_is_apart(p);
 
- if (wpe_startplan_is_apart(p))
- {
-  fmt = E_STARTPLAN_WITH_RUN_FMT;
-  long_fmt = E_STARTPLAN_WITH_RUN_LONG_FMT;
-  refused_fmt = E_STARTPLAN_WITH_RUN_REFUSED_FMT;
- }
  for (i = 0; i < p->npath; i++)
  {
   const WpeStartPath *s = &p->path[i];
   if (s->role != WPE_PATH_READS)
    continue;
-  n = e_startplan_text_lines(s->content);
-  if (s->refused && !s->embedded)
-   e_startplan_line_add(l, E_STARTPLAN_KEEP_START, refused_fmt, s->path,
-                        wpe_path_refused_reason(s->refused));
-  else if (s->too_long)
-   e_startplan_line_add(l, E_STARTPLAN_KEEP_START, long_fmt, s->path, s->length);
-  else if (n == 1)
-   e_startplan_line_add(l, E_STARTPLAN_KEEP_START, fmt, s->path, n, "");
-  else
-   e_startplan_line_add(l, E_STARTPLAN_KEEP_START, fmt, s->path, n, "s");
+  e_startplan_runs_line(l, apart, s, e_startplan_text_lines(s->content));
   if (s->note)
    e_startplan_line_add(l, E_STARTPLAN_KEEP_START, "  %s", s->note);
   e_startplan_lines_file_text(l, s->content);

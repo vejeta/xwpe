@@ -7,6 +7,7 @@
 #include <ctype.h>
 
 #include "we_dap_proto.h"
+#include "we_fmt.h"
 
 void e_dap_reader_init(e_dap_reader *r)
 {
@@ -163,8 +164,12 @@ char *e_dap_build_request(int seq, const char *command,
 
  body = json_object_to_json_string_ext(msg, JSON_C_TO_STRING_PLAIN);
  blen = strlen(body);
- hlen = (size_t)snprintf(header, sizeof(header),
-                         "Content-Length: %zu\r\n\r\n", blen);
+ if (WPE_FMT_WHOLE(header, "Content-Length: %zu\r\n\r\n", blen) != WPE_FMT_OK)
+ {
+  json_object_put(msg);
+  return NULL;
+ }
+ hlen = strlen(header);
  out = malloc(hlen + blen + 1);
  if (out)
  {

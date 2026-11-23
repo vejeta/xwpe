@@ -112,14 +112,11 @@ COPY|we_ai_ws.c|ws_review_answer|1|text|a fixed text into a 256 byte array
 COPY|we_bindings.c|wpe_binding_key_text|2|checked|each piece is tested against the buffer's size first
 COPY|we_block.c|e_blck_dup|1|checked|a selection of 80 bytes or more is refused above
 COPY|we_block.c|e_find|1|text|the selected text of under 80 bytes into the Find text of 129
-COPY|we_block.c|e_replace_report|3|text|two numbers and a fixed text into 80 bytes
 COPY|we_block.c|e_replace|1|text|the selected text of under 80 bytes into the Find text of 129
 COPY|we_debug.c|e_d_nb_take_cut|1|sized|e_d_nb_take allocates the line with room for the mark
 COPY|we_debug.c|e_d_line_read_nb|1|checked|cut at the caller's size minus one
 COPY|we_debug.c|e_make_watches|1|sized|the destination is allocated at its sources' length just before
 COPY|we_debug.c|e_edit_watches|1|sized|the destination is allocated at its sources' length just before
-COPY|we_debug.c|e_d_watch_put_waiting|1|sized|the destination is allocated at its sources' length just before
-COPY|we_debug.c|e_d_watch_put_value|1|sized|the destination is allocated at its sources' length just before
 COPY|we_debug.c|e_d_reinit_watches|2|sized|the destination is allocated at its sources' length just before
 COPY|we_debug.c|e_d_stack_rows_keep|1|sized|the destination is allocated at its sources' length just before
 COPY|we_debug.c|e_make_stack_join|1|sized|the destination is allocated at its sources' length just before
@@ -129,14 +126,9 @@ COPY|we_debug.c|e_d_brk_gone_add|1|sized|the destination is allocated at its sou
 COPY|we_debug.c|e_d_brk_list_add|1|sized|the destination is allocated at its sources' length just before
 COPY|we_debug.c|e_d_plan_shown|2|sized|the text is allocated at the plan's words' length
 COPY|we_debug.c|e_d_own_tty_name|1|text|a fixed text into the 80 byte terminal name
-COPY|we_debug.c|e_d_fifos_make|1|sized|the destination is allocated at its sources' length just before
 COPY|we_debug.c|e_d_bsp_command_text|1|sized|the destination is allocated at its sources' length just before
-COPY|we_debug.c|e_d_dap_start|1|text|a fixed message with an adapter name into 160 bytes
-COPY|we_debug.c|e_d_dap_watch_put|1|sized|the destination is allocated at its sources' length just before
 COPY|we_debug.c|e_d_start_end|1|checked|cut at the label's size minus one, a label
-COPY|we_debug.c|e_deb_run|10|text|command words into a line buffer sized for them
 COPY|we_e_aus.c|e_schreib_leiste_lines|4|sized|copies back into the field's buffer from a copy of the field's own size plus one, which wpe_field_take filled whole or refused
-COPY|we_edit.c|e_zlsplt|1|text|two numbers into 20 bytes
 COPY|we_edit.c|WpeFilenameToPathFile|3|sized|the destination is allocated at its sources' length just before
 COPY|we_fl_fkt.c|e_new_qual|4|sized|the caller allocates the name, a dot and the ending
 COPY|we_fl_fkt.c|e_bakfilename|2|sized|the destination is allocated at its sources' length just before
@@ -149,29 +141,22 @@ COPY|we_fl_fkt.c|e_mk_info_path|3|sized|the destination is allocated at its sour
 COPY|we_fl_fkt.c|e_read_xwpe_info|1|sized|the destination is allocated at its sources' length just before
 COPY|we_fl_fkt.c|e_help_loc|1|sized|the destination is allocated at its sources' length just before
 COPY|we_fl_fkt.c|e_help_options|1|sized|the destination is allocated at its sources' length just before
-COPY|we_fl_unix.c|WpeCreateFileManager|9|text|fixed words into the Find fields, and the name pattern into a field of its own size
-COPY|we_fl_unix.c|WpeHandleFileManager|10|checked|the Name field's 79 bytes into the Find file path, and a folder copied at its own length
-COPY|we_fl_unix.c|WpeMakeNewDir|2|sized|the destination is allocated at its sources' length just before
+COPY|we_fl_unix.c|WpeCreateFileManager|7|text|fixed words into the Find fields, and the name pattern into a field of its own size
+COPY|we_fl_unix.c|WpeHandleFileManager|8|checked|the Name field's 79 bytes into the Find file path, and a folder copied at its own length
 COPY|we_fl_unix.c|WpeGetCurrentDir|1|sized|the destination is allocated at its sources' length just before
 COPY|we_fl_unix.c|WpeAssemblePath|1|sized|the destination is allocated at its sources' length just before
 COPY|we_fl_unix.c|WpeCreateWorkingDirTree|2|sized|the destination is allocated at its sources' length just before
 COPY|we_fl_unix.c|WpeGraphicalFileList|1|sized|the destination is allocated at its sources' length just before
-COPY|we_fl_unix.c|WpeTreeLabel|1|sized|the destination is allocated at its sources' length just before
-COPY|we_fl_unix.c|WpeSearchFiles|11|sized|the destination is allocated at its sources' length just before
 COPY|we_fl_unix.c|WpeGrepWindow|1|text|the selected text of under 80 bytes into the Find text of 129
 COPY|we_fl_unix.c|e_data_first|1|sized|the destination is allocated at its sources' length just before
-COPY|we_hfkt.c|e_num_kst|1|sized|the destination is allocated at its sources' length just before
-COPY|we_hfkt.c|e_status_paint|3|sized|the destination is allocated at its sources' length just before
 COPY|we_listsel.c|listsel_copy|1|sized|the destination is allocated at its sources' length just before
 COPY|we_main.c|ECNT_Init|3|text|fixed words into the Find fields
-COPY|we_main.c|e_info_search_path|2|sized|the destination is allocated at its sources' length just before
+COPY|we_main.c|e_info_search_path|1|sized|the destination is allocated at its sources' length just before
 COPY|we_main.c|main|1|checked|the option file's name into a copy allocated at its length
-COPY|we_opt.c|e_about_box_draw|1|text|the version string into 60 bytes
 COPY|we_opt.c|e_opt_save|1|sized|the destination is allocated at its sources' length just before
 COPY|we_opt.c|e_save_opt|7|sized|the destination is allocated at its sources' length just before
 COPY|we_opt.c|e_opt_note_ignored_key|2|checked|the length is tested against the array before the copy
 COPY|we_opt.c|e_opt_lines_add_copy|1|sized|the destination is allocated at its sources' length just before
-COPY|we_opt.c|e_add_arguments|1|sized|the destination is allocated at its sources' length just before
 COPY|we_opt.c|e_add_txtstr|1|sized|the destination is allocated at its sources' length just before
 COPY|we_opt.c|e_add_wrstr|1|sized|the destination is allocated at its sources' length just before
 COPY|we_opt.c|e_add_numstr|1|sized|the destination is allocated at its sources' length just before
@@ -182,7 +167,6 @@ COPY|we_opt.c|e_opt_run_text_field|1|checked|the field's text into a copy of the
 COPY|we_opt.c|e_read_help_str|1|sized|the destination is allocated at its sources' length just before
 COPY|we_prog.c|e_p_make_link|1|sized|the destination is allocated at its sources' length just before
 COPY|we_prog.c|e_run_line|5|sized|the destination is allocated at its sources' length just before
-COPY|we_prog.c|e_run_program|1|text|one number into 256 bytes
 COPY|we_prog.c|e_comp_start|1|sized|the destination is allocated at its sources' length just before
 COPY|we_prog.c|e_p_scan_messages|2|sized|the destination is allocated at its sources' length just before
 COPY|we_prog.c|e_p_file_hit|1|sized|the destination is allocated at its sources' length just before
@@ -197,15 +181,13 @@ COPY|we_prog.c|e_install_text|2|sized|the destination is allocated at its source
 COPY|we_prog.c|e_install_run|2|sized|the destination is allocated at its sources' length just before
 COPY|we_prog.c|e_prj_setup|8|sized|the destination is allocated at its sources' length just before
 COPY|we_prog.c|e_prj_finish|1|sized|the destination is allocated at its sources' length just before
-COPY|we_prog.c|e_make_prj_opt_read|3|sized|the destination is allocated at its sources' length just before
+COPY|we_prog.c|e_make_prj_opt_read|2|sized|the destination is allocated at its sources' length just before
 COPY|we_prog.c|e_p_mess_win|2|sized|the destination is allocated at its sources' length just before
 COPY|we_progn.c|e_c_add_df|1|sized|the destination is allocated at its sources' length just before
 COPY|we_progn.c|e_sh_def|1|sized|the destination is allocated at its sources' length just before
 COPY|we_rowfind.c|cache_build|1|checked|the Find text cut at the array's size
-COPY|we_startplan.c|startplan_put|1|sized|the destination is allocated at its sources' length just before
 COPY|WeString.c|WpeStrdup|1|sized|the destination is allocated at its sources' length just before
 COPY|we_term.c|init_key|1|sized|the destination is allocated at its sources' length just before
-COPY|we_term.c|init_spchr|1|sized|the destination is allocated at its sources' length just before
 COPY|we_testdump.c|wpe_test_ctx_enter|1|checked|a window title cut at its array's size, not a path
 COPY|we_unix.c|e_compstr|1|sized|the destination is allocated at its sources' length just before
 COPY|we_unix.c|e_find_files|1|sized|the destination is allocated at its sources' length just before
@@ -223,5 +205,4 @@ COPY|we_errpat.c|take_variable|1|sized|the row's piece into a buffer sized from 
 COPY|we_errpat.c|take_column|2|sized|the row's piece into a buffer sized from the longest row and the pattern
 COPY|we_errpat.c|clear_message|1|sized|the source's name into a buffer sized from the longest row, the pattern and the name
 COPY|we_errpat.c|search_text|2|sized|the destination is allocated at its sources' length just before
-COPY|we_prog.c|e_run_line_words|2|sized|the text is allocated at E_RUN_WORD_REF_ROOM bytes a word just before
 COPY|we_startplan.c|wpe_startplan_folder_chose|2|sized|the destination is grown to the joined length just before

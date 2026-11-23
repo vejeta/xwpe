@@ -435,18 +435,28 @@ int wpe_ai_scope_files(FENSTER *f, int with_project, int with_folder, char ***ou
 /* A prompt block naming the files currently OPEN in the editor, with the one the
    user is focused on marked, so every AI mode is handed the working set directly
    instead of having to discover it (e.g. by inspecting running processes).
-   Writes into buf (empty string when nothing qualifies) and returns it. */
+   Writes into buf (empty string when nothing qualifies) and returns it.
+   A file line that does not fit is left out whole; the block never carries a
+   cut line or a mark into the request. */
+
+/* The room a file line needs before the next window is looked at. */
+#define WS_OPEN_LINE_ROOM 96
+#define WS_OPEN_HEADER \
+ "FILES OPEN IN THE EDITOR (the user's working set right now; prefer these " \
+ "when the request does not name a file):\n"
+#define WS_OPEN_FOCUSED "   <- focused (the file the user is looking at)"
+
 char *wpe_ai_open_windows_block(FENSTER *f, char *buf, size_t n)
 {
  ECNT *cn = f->ed;
  char **seen = NULL;
- size_t len = 0;
+ WpeFmtText t;
  /* When AI is invoked, f is often the AI pane rather than a file window, so mark
     the topmost real file window as focused; when f IS a file window, mark it. */
  int i, nseen = 0, cap = 0, count = 0, f_real = ws_is_real_file_window(f);
 
- buf[0] = '\0';
- for (i = cn->mxedt; i > 0 && len < n - 96; i--) {
+ wpe_fmt_begin_block(&t, buf, n);
+ for (i = cn->mxedt; i > 0 && wpe_fmt_room(&t) >= WS_OPEN_LINE_ROOM; i--) {
   FENSTER *w = cn->f[i];
   char *p;
   int focused;
@@ -456,12 +466,12 @@ char *wpe_ai_open_windows_block(FENSTER *f, char *buf, size_t n)
   if (ws_list_has(seen, nseen, p)) { free(p); continue; }   /* one entry per file */
   ws_list_push(&seen, &nseen, &cap, p);                     /* takes ownership of p */
   if (count == 0)
-   len += (size_t)snprintf(buf + len, n - len,
-     "FILES OPEN IN THE EDITOR (the user's working set right now; prefer these "
-     "when the request does not name a file):\n");
+   (void) wpe_fmt_add_block(&t, "%s", WS_OPEN_HEADER);
   focused = f_real ? (w == f) : (count == 0);
-  len += (size_t)snprintf(buf + len, n - len, "  %s%s\n", p,
-     focused ? "   <- focused (the file the user is looking at)" : "");
+  if (focused)
+   (void) wpe_fmt_add_block(&t, "  %s%s\n", p, WS_OPEN_FOCUSED);
+  else
+   (void) wpe_fmt_add_block(&t, "  %s\n", p);
   count++;
  }
  wpe_ai_free_list(seen, nseen);
@@ -885,25 +895,10 @@ int wpe_ai_shell_quote_whole(char *dst, size_t sz, const char *src)
  return ws_quote_whole(dst, sz, src);
 }
 
-/**
- * ws_format_whole - Build a command only when all of it fits.
- * @dst/@sz: the command; @fmt: its pattern and arguments.
- *
- * A command cut short can still be a valid one that does something else (the
- * tail of "-- 'name' 2>&1" cut to "-- 'name' 2" removes a file called 2), so
- * the caller runs nothing when this fails.
- * Return: 0 when the whole command is in @dst, -1 when it was cut.
- */
-static int ws_format_whole(char *dst, size_t sz, const char *fmt, ...)
-{
- va_list ap;
- int n;
- va_start(ap, fmt);
- n = vsnprintf(dst, sz, fmt, ap);
- va_end(ap);
- if (n < 0 || (size_t)n >= sz) { if (sz) dst[0] = '\0'; return -1; }
- return 0;
-}
+/* A command built here is written with WPE_FMT_WHOLE and run only when all of
+   it fits: a command cut short can still be a valid one that does something
+   else (the tail of "-- 'name' 2>&1" cut to "-- 'name' 2" removes a file
+   called 2), so every caller runs nothing when the write is refused. */
 
 /**
  * ws_rel_stays_inside - Is a workspace-relative path really below the workspace?
@@ -938,10 +933,8 @@ static int ws_rel_stays_inside(const char *rel)
  */
 static int ws_join_workspace(const char *rel, char *out, size_t sz)
 {
- int n;
  if (!ws_rel_stays_inside(rel)) return -1;
- n = snprintf(out, sz, "%s/%s", ck_dir, rel);
- if (n < 0 || (size_t)n >= sz) return -1;
+ if (wpe_fmt_whole(out, sz, "%s/%s", ck_dir, rel) != WPE_FMT_OK) return -1;
  return 0;
 }
 
@@ -1004,7 +997,7 @@ static int ws_run_temp_file(const char *stem, char *file, size_t sz, char *leaf,
  int fd;
 
  if (wpe_own_dir(WPE_OWN_RUN, NULL, WPE_OWN_MAKE, &d, &o) != 0) { errno = o.err ? o.err : EIO; return -1; }
- if (ws_format_whole(name, sizeof name, "%s-XXXXXX", stem) != 0) { errno = ENAMETOOLONG; return -1; }
+ if (WPE_FMT_WHOLE(name, "%s-XXXXXX", stem) != WPE_FMT_OK) { errno = ENAMETOOLONG; return -1; }
  if (wpe_path_join(file, sz, d.path, name) != 0) { errno = ENAMETOOLONG; return -1; }
  fd = mkstemp(file);
  if (fd < 0) return -1;
@@ -1038,8 +1031,8 @@ static int ws_git_list(const char *git_args, char ***l, int *n)
  *l = NULL; *n = 0;
  if (ws_run_temp_file(WS_GIT_LIST_STEM, file, sizeof file, leaf, sizeof leaf) != 0) return -1;
  if (ws_quote_whole(q, sizeof q, ck_dir) != 0 || ws_quote_whole(qf, sizeof qf, file) != 0 ||
-     ws_format_whole(cmd, sizeof cmd, "cd %s && git --literal-pathspecs %s > %s 2>/dev/null",
-                     q, git_args, qf) != 0) {
+     WPE_FMT_WHOLE(cmd, "cd %s && git --literal-pathspecs %s > %s 2>/dev/null",
+                   q, git_args, qf) != WPE_FMT_OK) {
   wpe_write_own_remove(WPE_OWN_RUN, NULL, leaf);
   return -1;
  }
@@ -1069,14 +1062,14 @@ static int ws_git_tracks_workspace(const char *q)
 {
  char cmd[1400], **tracked, *out;
  int ntracked, yes;
- if (ws_format_whole(cmd, sizeof cmd, "cd %s && git rev-parse --is-inside-work-tree 2>/dev/null",
-                     q) != 0) return 0;
+ if (WPE_FMT_WHOLE(cmd, "cd %s && git rev-parse --is-inside-work-tree 2>/dev/null",
+                    q) != WPE_FMT_OK) return 0;
  out = wpe_ai_run_capture_git(cmd);
  yes = out && !strncmp(out, "true", 4);
  free(out);
  if (!yes) return 0;
- if (ws_format_whole(cmd, sizeof cmd, "cd %s && git check-ignore -q . 2>/dev/null && echo ignored",
-                     q) != 0) return 0;
+ if (WPE_FMT_WHOLE(cmd, "cd %s && git check-ignore -q . 2>/dev/null && echo ignored",
+                    q) != WPE_FMT_OK) return 0;
  out = wpe_ai_run_capture_git(cmd);
  yes = !(out && !strncmp(out, "ignored", 7));
  free(out);
@@ -1109,9 +1102,9 @@ static int ws_git_stash_ref(const char *q)
  char cmd[1400], *out;
  int status = 0;
  size_t l;
- if (ws_format_whole(cmd, sizeof cmd,
-                     "cd %s && { git update-index -q --refresh 2>/dev/null; git stash create 2>/dev/null; }",
-                     q) != 0) return -1;
+ if (WPE_FMT_WHOLE(cmd,
+                    "cd %s && { git update-index -q --refresh 2>/dev/null; git stash create 2>/dev/null; }",
+                    q) != WPE_FMT_OK) return -1;
  out = wpe_ai_run_capture_git_status(cmd, &status);
  if (status != 0 || !out) { free(out); return -1; }
  l = strlen(out);
@@ -1267,8 +1260,9 @@ static int ws_take_before_image(FENSTER *f, const char *path, int *told)
   wpe_ckrec_then_asked(ck_rec, path, &ro);
   return WS_IMAGE_UNREADABLE;
  }
- snprintf(dst, sizeof dst, "%d", ck_n);
- if (ws_write_state_bytes(ck_leaf, dst, text, tlen, &wo) == 0) {
+ if (WPE_FMT_WHOLE(dst, "%d", ck_n) != WPE_FMT_OK)
+  errno = ENAMETOOLONG;
+ else if (ws_write_state_bytes(ck_leaf, dst, text, tlen, &wo) == 0) {
   wpe_ckrec_then_image(ck_rec, path, ck_n, &ro.seen);
   ck_n++;
   free(text);
@@ -1716,9 +1710,9 @@ static void ws_collect_git_edits(ws_change **c, int *n, int *cap)
      it, and both the row and the jump it registers then point at a line the
      run never touched. */
   if (ws_quote_whole(qf, sizeof qf, rel) != 0 ||
-      ws_format_whole(cmd, sizeof cmd,
-                      "cd %s && git --literal-pathspecs diff -U0 --relative %s -- %s 2>/dev/null",
-                      q, ck_ref, qf) != 0) {
+      WPE_FMT_WHOLE(cmd,
+                    "cd %s && git --literal-pathspecs diff -U0 --relative %s -- %s 2>/dev/null",
+                    q, ck_ref, qf) != WPE_FMT_OK) {
    ws_row_of_unread_git_edit(c, n, cap, names[i]);
    continue;
   }
@@ -1778,7 +1772,7 @@ static void ws_rows_of_edit(ws_change **c, int *n, int *cap, const char *path,
  for (k = 0; k < ns; k++) {
   if (segs[k].is_change) {
    char text[64];
-   snprintf(text, sizeof text, "[AI] +%d -%d", segs[k].bn, segs[k].an);
+   WPE_FMT_SHOWN(text, "[AI] +%d -%d", segs[k].bn, segs[k].an);
    ws_add_change(c, n, cap, path, newline, text, WPE_CK_STAYED);
    newline += segs[k].bn;
   } else newline += segs[k].an;
@@ -2023,12 +2017,13 @@ static const char *ws_absolute_path(const char *path, char *buf, size_t sz)
 static const char *ws_absolute_unfolded(const char *path, char *buf, size_t sz)
 {
  char cwd[WPE_PATH_RESOLVED_MAX];
- int n;
  if (!path) return NULL;
- if (path[0] == '/') n = snprintf(buf, sz, "%s", path);
- else if (getcwd(cwd, sizeof cwd)) n = snprintf(buf, sz, "%s/%s", cwd, path);
- else return NULL;
- if (n < 0 || (size_t)n >= sz) return NULL;
+ if (path[0] == '/') {
+  if (wpe_fmt_whole(buf, sz, "%s", path) != WPE_FMT_OK) return NULL;
+  return buf;
+ }
+ if (!getcwd(cwd, sizeof cwd)) return NULL;
+ if (wpe_fmt_whole(buf, sz, "%s/%s", cwd, path) != WPE_FMT_OK) return NULL;
  return buf;
 }
 
@@ -2548,7 +2543,9 @@ static int ws_revert_command(char *cmd, size_t sz, const char *rel)
  char q[1100], qf[1300];
  if (ws_quote_whole(q, sizeof q, ck_dir) != 0 || ws_quote_whole(qf, sizeof qf, rel) != 0)
   return -1;
- return ws_format_whole(cmd, sz, "cd %s && rm -f -- %s 2>&1", q, qf);
+ if (wpe_fmt_whole(cmd, sz, "cd %s && rm -f -- %s 2>&1", q, qf) != WPE_FMT_OK)
+  return -1;
+ return 0;
 }
 
 /**
@@ -2576,10 +2573,10 @@ static int ws_git_show(const char *rel, char **buf, size_t *len, char *reason, s
   return -1;
  }
  if (ws_quote_whole(q, sizeof q, ck_dir) != 0 || ws_quote_whole(qf, sizeof qf, file) != 0 ||
-     ws_format_whole(spec, sizeof spec, "%s:./%s", ck_ref, rel) != 0 ||
+     WPE_FMT_WHOLE(spec, "%s:./%s", ck_ref, rel) != WPE_FMT_OK ||
      ws_quote_whole(qs, sizeof qs, spec) != 0 ||
-     ws_format_whole(cmd, sizeof cmd, "cd %s && git --literal-pathspecs show %s 2>&1 >%s",
-                     q, qs, qf) != 0) {
+     WPE_FMT_WHOLE(cmd, "cd %s && git --literal-pathspecs show %s 2>&1 >%s",
+                   q, qs, qf) != WPE_FMT_OK) {
   wpe_write_own_remove(WPE_OWN_RUN, NULL, leaf);
   snprintf(reason, rsz, "%s", WS_NAME_TOO_LONG);
   return -1;
@@ -2633,7 +2630,7 @@ static int ws_real_stays_in_tree(const char *path, const char *real)
  char want[WPE_PATH_RESOLVED_MAX];
  const char *rel = ws_workspace_rel(path);
  if (!rel) return 1;
- if (snprintf(want, sizeof want, "%s%s%s", ck_rdir, strcmp(ck_rdir, "/") ? "/" : "", rel) >= (int)sizeof want)
+ if (WPE_FMT_WHOLE(want, "%s%s%s", ck_rdir, strcmp(ck_rdir, "/") ? "/" : "", rel) != WPE_FMT_OK)
   return 0;
  return strcmp(real, want) == 0;
 }
@@ -2705,10 +2702,10 @@ static int ws_git_entry_is_link(const char *rel)
  char q[1100], spec[1300], qs[2700], cmd[4200], *out;
  int status = 0, yes;
  if (ws_quote_whole(q, sizeof q, ck_dir) != 0 ||
-     ws_format_whole(spec, sizeof spec, "./%s", rel) != 0 ||
+     WPE_FMT_WHOLE(spec, "./%s", rel) != WPE_FMT_OK ||
      ws_quote_whole(qs, sizeof qs, spec) != 0 ||
-     ws_format_whole(cmd, sizeof cmd, "cd %s && git --literal-pathspecs ls-tree %s -- %s 2>/dev/null",
-                     q, ck_ref, qs) != 0) return 0;
+     WPE_FMT_WHOLE(cmd, "cd %s && git --literal-pathspecs ls-tree %s -- %s 2>/dev/null",
+                   q, ck_ref, qs) != WPE_FMT_OK) return 0;
  out = wpe_ai_run_capture_git_status(cmd, &status);
  yes = status == 0 && out && !strncmp(out, "120000", 6);
  free(out);
@@ -2730,8 +2727,8 @@ static int ws_revert_by_checkout(FENSTER *f, const char *path, const char *rel)
  char q[1100], qf[1300], cmd[2800], reason[600], *out;
  int status = 0;
  if (ws_quote_whole(q, sizeof q, ck_dir) != 0 || ws_quote_whole(qf, sizeof qf, rel) != 0 ||
-     ws_format_whole(cmd, sizeof cmd, "cd %s && git --literal-pathspecs checkout %s -- %s 2>&1",
-                     q, ck_ref, qf) != 0)
+     WPE_FMT_WHOLE(cmd, "cd %s && git --literal-pathspecs checkout %s -- %s 2>&1",
+                   q, ck_ref, qf) != WPE_FMT_OK)
   return ws_revert_failed(f, "restore", path, WS_NAME_TOO_LONG);
  out = wpe_ai_run_capture_git_status(cmd, &status);
  if (status != 0) ws_output_reason(out, status, reason, sizeof reason);
@@ -3078,7 +3075,7 @@ static int ws_commit_signs_with_ssh(const char *q)
  char cmd[1200], *out;
  int signs, ssh;
 
- if (ws_format_whole(cmd, sizeof cmd, WS_SIGN_SETTINGS_FMT, q) != 0) return 0;
+ if (WPE_FMT_WHOLE(cmd, WS_SIGN_SETTINGS_FMT, q) != WPE_FMT_OK) return 0;
  out = wpe_ai_run_capture_git(cmd);
  if (!out) return 0;
  signs = strstr(out, WS_SIGN_ON) != NULL;
@@ -3117,9 +3114,9 @@ static int ws_git_on_changeset(FENSTER *f, const char *what, const char *verb,
  char q[1100], ql[1100], cmd[3600], reason[600], *o;
  int status = 0;
  if (ws_quote_whole(q, sizeof q, ck_dir) != 0 || ws_quote_whole(ql, sizeof ql, list) != 0 ||
-     ws_format_whole(cmd, sizeof cmd,
-                     "cd %s && git %s --pathspec-from-file=%s --pathspec-file-nul 2>&1",
-                     q, verb, ql) != 0) {
+     WPE_FMT_WHOLE(cmd,
+                   "cd %s && git %s --pathspec-from-file=%s --pathspec-file-nul 2>&1",
+                   q, verb, ql) != WPE_FMT_OK) {
   ws_say_failed(f, what, "the changeset", WS_NAME_TOO_LONG);
   return -1;
  }
@@ -3245,8 +3242,8 @@ static void ws_show_rows(FENSTER *f, ws_change *c, int n)
  int *lines = malloc((size_t)n * sizeof *lines), nj = 0, i;
  char **texts = malloc((size_t)n * sizeof *texts);
  for (i = 0; i < n; i++) {
-  snprintf(line, sizeof line, "%s:%d: %s",
-           ws_path_under_root(c[i].path, ck_dir), c[i].line, c[i].text);
+  WPE_FMT_SHOWN(line, "%s:%d: %s",
+                ws_path_under_root(c[i].path, ck_dir), c[i].line, c[i].text);
   e_d_p_message(line, f, 0);
   if (wpe_ckrec_kind_is_gone(c[i].kind)) continue;
   files[nj] = c[i].path; lines[nj] = c[i].line; texts[nj] = c[i].text;
@@ -3337,8 +3334,8 @@ static int ws_ask_file_by_file(FENSTER *f, ws_change *c, int n, int unseen)
   }
   /* the question names the file the way its row does, so it fits the
      Messages window at its narrowest and the y/n hint stays visible */
-  snprintf(line, sizeof line, "keep %s ?  y = keep  n = revert",
-           ws_path_under_root(c[i].path, ck_dir));
+  WPE_FMT_SHOWN(line, "keep %s ?  y = keep  n = revert",
+                ws_path_under_root(c[i].path, ck_dir));
   e_d_p_message(line, f, 0);
   for (;;) {
    int kk = ws_review_key(f);

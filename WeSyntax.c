@@ -25,6 +25,7 @@
 #include "WeProg.h"
 #include "WeString.h"
 #include "we_places.h"
+#include "we_fmt.h"
 
 unsigned char *WpeCReservedWord[] = {
  "auto", "break", "case", "char", "const", "continue", "default", "do",
@@ -190,9 +191,6 @@ static void WpeSyntaxAddBuiltinRules(void)
 /** The least of the path that is worth showing when the screen is narrow. */
 #define WPE_SYNTAX_PATH_MIN_SHOWN 8
 
-/** What stands for the front of a path the box has no room for. */
-#define WPE_SYNTAX_ELLIPSIS "..."
-
 /** The file being read: the open file, which of the two it is, and its path. */
 typedef struct
 {
@@ -247,29 +245,6 @@ static int WpeSyntaxReadWord(FILE *syntax_file, char *word, size_t n)
 }
 
 /**
- * WpeSyntaxPathTail - The part of a path a box of @room columns can show.
- * @path: the file's path; @room: the columns left for it.
- *
- * Only for what the user reads: the whole path is kept wherever it is used.
- * A path that does not fit loses its front, the file's own name and folder
- * being what tells which file it is, and never starts in the middle of a
- * UTF-8 character.
- * Return: @path itself when it fits, else the tail to show after "...".
- */
-static const char *WpeSyntaxPathTail(const char *path, int room)
-{
- size_t len = strlen(path);
- const char *tail;
-
- if ((int)len <= room)
-  return path;
- tail = path + len - (room - (int)strlen(WPE_SYNTAX_ELLIPSIS));
- while ((*tail & 0xC0) == 0x80)
-  tail++;
- return tail;
-}
-
-/**
  * WpeSyntaxSayWordTooLong - Tell the user which syntax_def has a word the
  * editor cannot hold.
  * @cn: part of the old code e_error needs; @src: the file being read.
@@ -282,18 +257,17 @@ static void WpeSyntaxSayWordTooLong(ECNT *cn, const WpeSyntaxSource *src)
 {
  char head[WPE_SYNTAX_MSG_SIZE];
  char msg[WPE_SYNTAX_MSG_SIZE];
- const char *shown;
+ char shown[WPE_SYNTAX_MSG_SIZE];
  int room;
 
  snprintf(head, sizeof head, WPE_SYNTAX_WORD_TOO_LONG_FMT, src->which);
  room = MAXSCOL - WPE_SYNTAX_BOX_MARGIN - (int)strlen(head);
  if (room < WPE_SYNTAX_PATH_MIN_SHOWN)
   room = WPE_SYNTAX_PATH_MIN_SHOWN;
- shown = WpeSyntaxPathTail(src->path, room);
- if (shown == src->path)
-  snprintf(msg, sizeof msg, "%s%s", head, shown);
- else
-  snprintf(msg, sizeof msg, "%s%s%s", head, WPE_SYNTAX_ELLIPSIS, shown);
+ /* The path loses its front, never the file's own name, and the cut is
+    marked with "..." where a character starts. */
+ wpe_fmt_shown_tail(shown, (size_t)room + 1, src->path);
+ snprintf(msg, sizeof msg, "%s%s", head, shown);
  e_error(msg, 0, cn->fb);
 }
 

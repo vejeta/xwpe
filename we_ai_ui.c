@@ -707,29 +707,10 @@ static int ai_wrap_cut(const char *p, int width, int *cut)
  return 1;
 }
 
-/* The end of a pane line that was cut to the room its painter allows. */
-#define AI_DISPLAY_CUT_MARK "..."
-
-/**
- * ai_mark_display_cut - End a pane line that snprintf cut with "...".
- * @line: the line as snprintf left it; @cap: its buffer's size;
- * @wanted: what snprintf returned (the length the whole line needed).
- *
- * A task or a question longer than the room its pane line has is shown cut,
- * and the user must see that it was: the mark says the rest exists, and the
- * request itself still carries the whole text.  The cut never splits a
- * UTF-8 character.  A line that fitted is left alone.
- */
-static void ai_mark_display_cut(char *line, size_t cap, int wanted)
-{
- size_t mark = strlen(AI_DISPLAY_CUT_MARK), keep;
- if (wanted < 0 || (size_t)wanted < cap || cap <= mark)
-  return;
- keep = cap - 1 - mark;
- while (keep > 0 && ai_utf8_continues(line[keep]))
-  keep--;
- memcpy(line + keep, AI_DISPLAY_CUT_MARK, mark + 1);
-}
+/* A task or a question longer than the room its pane line has is written with
+   wpe_fmt_shown: the line ends in the owner's "..." where a character ends, so
+   the user sees that it was cut while the request itself still carries the
+   whole text. */
 
 /**
  * ai_pane - Append `line` to the pane as `role`, word-wrapped to the pane's
@@ -3318,15 +3299,32 @@ static void ai_chat_forget_header(void)
  g_ai_hints_shown = 0;
 }
 
-static size_t ai_append_identity(char *sys, size_t cap, size_t len)
+/* The room the prompt must still have for a block to be looked at at all: the
+   identity line, the workspace heading, the first workspace entry, a
+   diagnostics block.  A block that has less is left out whole. */
+#define AI_PROMPT_IDENTITY_ROOM  32
+#define AI_PROMPT_WORKSPACE_HEAD_ROOM 32
+#define AI_PROMPT_WORKSPACE_LINE_ROOM 256
+#define AI_PROMPT_DIAG_ROOM      1800
+#define AI_PROMPT_SELECTION_ROOM 512
+/* The bytes of the prompt kept back after a selection, for what follows it. */
+#define AI_PROMPT_SELECTION_MARGIN 64
+
+/**
+ * ai_append_identity - Tell the model which backend and model it is running as.
+ * @t: the chat's system prompt being built.
+ *
+ * The model can then answer "which model are you" from fact.  A prompt with
+ * no room left leaves the line out whole.
+ */
+static void ai_append_identity(WpeFmtText *t)
 {
  char id[512];
  wpe_ai_trace("chat identity backend=%s model=%s",
               wpe_ai_backend_name(e_ai_backend), e_ai_model ? e_ai_model : "");
- if (len >= cap - 32) return len;
+ if (wpe_fmt_room(t) < AI_PROMPT_IDENTITY_ROOM) return;
  ai_identity_text(id, sizeof id);
- len += (size_t)snprintf(sys + len, cap - len, "%s\n\n", id);
- return len;
+ (void) wpe_fmt_add_block(t, "%s\n\n", id);
 }
 
 /* The project's standing AI instructions.  The prompt carries at most
@@ -3542,12 +3540,8 @@ static void ai_project_memory_announce(FENSTER *f, const struct ai_project_memor
  */
 static char *ai_project_block_alloc(const struct ai_project_memory_info *info, const char *body)
 {
- size_t n = strlen(body) + strlen(info->name) + AI_PROJECT_BLOCK_EXTRA;
- char *out = malloc(n);
- if (!out) return NULL;
- snprintf(out, n, AI_PROJECT_BLOCK_HEAD_FMT, info->name);
- snprintf(out + strlen(out), n - strlen(out), "%s\n\n%s", body, AI_PROJECT_TOOLS_STAND);
- return out;
+ return wpe_fmt_dup(AI_PROJECT_BLOCK_HEAD_FMT "%s\n\n%s", info->name, body,
+                    AI_PROJECT_TOOLS_STAND);
 }
 
 /**
@@ -3584,27 +3578,25 @@ static int ai_chat_wants_project_memory(void)
 
 /**
  * ai_append_project_memory - Add the project instructions to a text prompt.
- * @sys/@cap/@len: prompt buffer being grown; @f: the window the chat pane
- * belongs to, for the once-per-session announcement.  Return: the new length.
+ * @t: the chat's system prompt being built; @f: the window the chat pane
+ * belongs to, for the once-per-session announcement.
  * A no-op when the scope leaves this turn out, when there is no .xwpe-ai.md /
- * AGENTS.md, or when no room is left.
+ * AGENTS.md, or when no room is left: the block goes in whole or not at all,
+ * and the pane announces the file only when it went in.
  */
-static size_t ai_append_project_memory(char *sys, size_t cap, size_t len, FENSTER *f)
+static void ai_append_project_memory(WpeFmtText *t, FENSTER *f)
 {
  char *mem, *block;
  struct ai_project_memory_info info;
- if (!ai_chat_wants_project_memory()) return len;
+ if (!ai_chat_wants_project_memory()) return;
  mem = ai_project_memory(f, &info);
- if (!mem) return len;
+ if (!mem) return;
  block = ai_project_block_alloc(&info, mem);
  free(mem);
- if (!block) return len;
- if (len + strlen(block) + 4 < cap) {
-  len += (size_t)snprintf(sys + len, cap - len, "%s\n\n", block);
+ if (!block) return;
+ if (wpe_fmt_add_block(t, "%s\n\n", block))
   ai_chat_announce_project_memory(f, &info);
- }
  free(block);
- return len;
 }
 
 /**
@@ -3622,17 +3614,15 @@ static size_t ai_project_block_room(void)
 /**
  * ai_append_open_files - Append the editor's open-files block to a system prompt
  * being built, so a text-assembled prompt (chat) carries the working set too.
- * @sys: prompt buffer being grown; @cap: its size; @len: current length.
+ * @t:   the prompt being built.
  * @f:   the window the mode was invoked from (marks the focused file).
- * Return: the new length (unchanged when there is nothing to add or no room).
+ * Nothing is added when there is nothing to add or no room for the whole block.
  */
-static size_t ai_append_open_files(char *sys, size_t cap, size_t len, FENSTER *f)
+static void ai_append_open_files(WpeFmtText *t, FENSTER *f)
 {
  char ow[1400];
- if (!wpe_ai_open_windows_block(f, ow, sizeof ow)[0]) return len;
- if (len >= cap - strlen(ow) - 4) return len;
- len += (size_t)snprintf(sys + len, cap - len, "%s\n", ow);
- return len;
+ if (!wpe_ai_open_windows_block(f, ow, sizeof ow)[0]) return;
+ (void) wpe_fmt_add_block(t, "%s\n", ow);
 }
 
 #ifdef DEBUGGER
@@ -3687,26 +3677,30 @@ static FENSTER *ai_chat_home_window(ECNT *cn)
 
 /**
  * ai_append_selection - Add the marked block of the context window, if any.
- * @sys: the prompt; @cap: its size; @len: bytes written so far.
+ * @t: the prompt being built.
  * @ctx: the file window, or NULL.
  *
  * "What does this do?" about a marked block gets the block spelled out
  * beside the whole file, so the answer is about the lines the user marked.
- * Return: the new length.
+ * A selection longer than the room is sent as far as it fits, cut where a
+ * character ends and with no mark in it: it is the model's text, not a
+ * sentence the user reads.
  */
-static size_t ai_append_selection(char *sys, size_t cap, size_t len, FENSTER *ctx)
+static void ai_append_selection(WpeFmtText *t, FENSTER *ctx)
 {
  int y0, y1;
  char *sel;
- if (!ctx || !ai_block_range(ctx, &y0, &y1)) return len;
+ size_t limit;
+ if (!ctx || !ai_block_range(ctx, &y0, &y1)) return;
  sel = ai_lines_text(ctx, y0, y1);
- if (!sel) return len;
- if (len < cap - 512)
-  len += (size_t)snprintf(sys + len, cap - len,
-                          "\n--- selection (lines %d-%d) ---\n%.*s",
-                          y0 + 1, y1 + 1, (int)(cap - len - 64), sel);
+ if (!sel) return;
+ if (wpe_fmt_room(t) >= AI_PROMPT_SELECTION_ROOM) {
+  /* The bytes the prompt still has, less the margin kept for what follows. */
+  limit = wpe_fmt_room(t) + 1 - AI_PROMPT_SELECTION_MARGIN;
+  if (wpe_fmt_add_block(t, "\n--- selection (lines %d-%d) ---\n", y0 + 1, y1 + 1))
+   wpe_fmt_add_bytes(t, sel, (size_t)wpe_fmt_cut_len(sel, limit));
+ }
  free(sel);
- return len;
 }
 
 /* The chat's tool list, as the model reads it: the workspace tools always,
@@ -3745,18 +3739,17 @@ static size_t ai_append_selection(char *sys, size_t cap, size_t len, FENSTER *ct
 
 /**
  * ai_append_tool_list - Open the system prompt with the tools the chat runs.
- * @sys: the prompt; @cap: its size; @len: bytes written so far.
+ * @t: the prompt being built.
  *
  * The model is offered exactly what the chat will run, so a turn never
- * asks for a web tool the switch would refuse.  Return: the new length.
+ * asks for a web tool the switch would refuse.
  */
-static size_t ai_append_tool_list(char *sys, size_t cap, size_t len)
+static void ai_append_tool_list(WpeFmtText *t)
 {
- len += (size_t)snprintf(sys + len, cap - len, "%s", AI_CHAT_TOOLS_OPEN);
+ (void) wpe_fmt_add_block(t, "%s", AI_CHAT_TOOLS_OPEN);
  if (wpe_ai_web_state() == WPE_AI_WEB_ON)
-  len += (size_t)snprintf(sys + len, cap - len, "%s", AI_CHAT_TOOLS_WEB);
- len += (size_t)snprintf(sys + len, cap - len, "%s", AI_CHAT_TOOLS_CLOSE);
- return len;
+  (void) wpe_fmt_add_block(t, "%s", AI_CHAT_TOOLS_WEB);
+ (void) wpe_fmt_add_block(t, "%s", AI_CHAT_TOOLS_CLOSE);
 }
 
 /**
@@ -3841,40 +3834,72 @@ static void ai_say_file_cut(FENSTER *f, const char *name, int sent, int total)
 
 /**
  * ai_append_current_file - Put the current file into the chat's prompt.
- * @sys: the prompt; @cap: its size; @len: bytes written so far;
+ * @t: the prompt being built;
  * @f: the pane's window; @ctx: the file window; @text: the file's text.
  *
  * A file longer than the room left is cut at a whole line, and the cut is
  * said twice: a mark in the prompt, so the model knows it read only the
  * start, and a pane line "<file>: N of M lines sent", so the user knows why
- * the model does not see the end of the file.
- * Return: the new length.
+ * the model does not see the end of the file.  The mark is the cut the model
+ * is told about, written as a block of its own; the editor's own "..." never
+ * enters the request.
  */
-static size_t ai_append_current_file(char *sys, size_t cap, size_t len,
-                                     FENSTER *f, FENSTER *ctx, const char *text)
+static void ai_append_current_file(WpeFmtText *t, FENSTER *f, FENSTER *ctx, const char *text)
 {
  size_t tl = strlen(text), room, keep;
  int total = ai_file_line_count(ctx), sent;
- if (len + AI_FILE_MIN_ROOM >= cap)
-  return len;
- len += (size_t)snprintf(sys + len, cap - len, "\n--- current file ---\n");
- room = cap - len - AI_FILE_CUT_MARK_ROOM;
+ if (wpe_fmt_room(t) < AI_FILE_MIN_ROOM)
+  return;
+ if (!wpe_fmt_add_block(t, "\n--- current file ---\n"))
+  return;
+ /* The bytes the prompt still has, less the room the cut mark needs. */
+ room = wpe_fmt_room(t) + 1 - AI_FILE_CUT_MARK_ROOM;
  if (tl <= room && ai_text_lines(text, tl) >= total) {
-  memcpy(sys + len, text, tl + 1);
-  return len + tl;
+  wpe_fmt_add_bytes(t, text, tl);
+  return;
  }
  if (tl < room)
   room = tl;
  keep = ai_whole_lines(text, room);
- memcpy(sys + len, text, keep);
- len += keep;
+ wpe_fmt_add_bytes(t, text, keep);
  sent = ai_text_lines(text, keep);
- len += (size_t)snprintf(sys + len, cap - len, AI_FILE_CUT_MARK_FMT, sent, total);
+ (void) wpe_fmt_add_block(t, AI_FILE_CUT_MARK_FMT, sent, total);
  if (ctx->datnam && ctx->datnam[0])
   ai_say_file_cut(f, ctx->datnam, sent, total);
  else
   ai_say_file_cut(f, "current file", sent, total);
- return len;
+}
+
+/**
+ * ai_append_workspace_files - List the workspace's files in the chat's prompt.
+ * @t: the prompt being built; @scope/@nsc: the files, as the scope owner
+ * lists them.
+ *
+ * The model sees which files exist before it asks to read one.  The list
+ * stops when the prompt is nearly full, and a path too long for the room left
+ * is skipped whole, never half a name.
+ */
+static void ai_append_workspace_files(WpeFmtText *t, char **scope, int nsc)
+{
+ int i;
+ if (wpe_fmt_room(t) >= AI_PROMPT_WORKSPACE_HEAD_ROOM)
+  (void) wpe_fmt_add_block(t, "WORKSPACE FILES:\n");
+ for (i = 0; i < nsc && wpe_fmt_room(t) >= AI_PROMPT_WORKSPACE_LINE_ROOM; i++)
+  (void) wpe_fmt_add_block(t, "  %s\n", scope[i]);
+}
+
+/**
+ * ai_append_diagnostics - Put the current file's live diagnostics in the prompt.
+ * @t: the prompt being built.
+ *
+ * "Fix this" works without pasting the errors.  Nothing is added when the
+ * language server reported none or the prompt has no room for the block.
+ */
+static void ai_append_diagnostics(WpeFmtText *t)
+{
+ char diag[1700];
+ if (ai_diag_block(diag, sizeof diag)[0] && wpe_fmt_room(t) >= AI_PROMPT_DIAG_ROOM)
+  (void) wpe_fmt_add_block(t, "%s", diag);
 }
 
 /**
@@ -3892,9 +3917,10 @@ static char *ai_build_system(FENSTER *f, FENSTER *ctx)
  char *ctx_text = ctx ? ai_current_file_text(ctx) : NULL;
  FENSTER *focused = ctx ? ctx : f;
  char **scope;
- int nsc, i;
- size_t cap = AI_CHAT_SYSTEM_BASE + ai_project_block_room(), len = 0;
+ int nsc;
+ size_t cap = AI_CHAT_SYSTEM_BASE + ai_project_block_room();
  char *sys = malloc(cap);
+ WpeFmtText t;
  /* Capability manifest: tell the model what the xwpe AI integration ALREADY
     does, so it neither re-proposes built features as new ideas nor prints code
     for the user to retype -- it should point them to the shortcut that does the
@@ -3918,25 +3944,21 @@ static char *ai_build_system(FENSTER *f, FENSTER *ctx)
    "So when the user asks to CHANGE code, tell them to use Edit (Alt-G e) or the "
    "Agent (Alt-G g) rather than printing code for them to retype.\n\n";
  if (!sys) { free(ctx_text); return NULL; }
- len = ai_append_tool_list(sys, cap, len);
- len += (size_t)snprintf(sys + len, cap - len, "%s", caps_open);
- len += (size_t)snprintf(sys + len, cap - len, "%s", ai_agent_capability_sentence());
- len += (size_t)snprintf(sys + len, cap - len, "%s", caps_rest);
- len = ai_append_project_memory(sys, cap, len, f);
- len = ai_append_identity(sys, cap, len);
- len = ai_append_open_files(sys, cap, len, focused);
+ wpe_fmt_begin_block(&t, sys, cap);
+ ai_append_tool_list(&t);
+ (void) wpe_fmt_add_block(&t, "%s", caps_open);
+ (void) wpe_fmt_add_block(&t, "%s", ai_agent_capability_sentence());
+ (void) wpe_fmt_add_block(&t, "%s", caps_rest);
+ ai_append_project_memory(&t, f);
+ ai_append_identity(&t);
+ ai_append_open_files(&t, focused);
  nsc = wpe_ai_scope_files(f, e_project_is_open(), 1, &scope);
- if (len < cap - 32)
-  len += (size_t)snprintf(sys + len, cap - len, "WORKSPACE FILES:\n");
- for (i = 0; i < nsc && len < cap - 256; i++)
-  len += (size_t)snprintf(sys + len, cap - len, "  %s\n", scope[i]);
+ ai_append_workspace_files(&t, scope, nsc);
  wpe_ai_free_list(scope, nsc);
- { char diag[1700];
-   if (ai_diag_block(diag, sizeof diag)[0] && len < cap - 1800)
-    len += (size_t)snprintf(sys + len, cap - len, "%s", diag); }
- len = ai_append_selection(sys, cap, len, ctx);
+ ai_append_diagnostics(&t);
+ ai_append_selection(&t, ctx);
  if (ctx_text)
-  ai_append_current_file(sys, cap, len, f, ctx, ctx_text);
+  ai_append_current_file(&t, f, ctx, ctx_text);
  free(ctx_text);
  return sys;
 }
@@ -10976,7 +10998,7 @@ void wpe_ai_test_swap_at(const char *step)
  const char *to = getenv(AI_TEST_SWAP_TO_ENV);
  char aside[WPE_PATH_RESOLVED_MAX];
  if (!hook || !strstr(hook, step) || !dir || !to) return;
- if (snprintf(aside, sizeof aside, "%s%s", dir, AI_TEST_SWAP_ASIDE) >= (int)sizeof aside) return;
+ if (WPE_FMT_WHOLE(aside, "%s%s", dir, AI_TEST_SWAP_ASIDE) != WPE_FMT_OK) return;
  if (rename(dir, aside) != 0) return;
  if (symlink(to, dir) != 0) rename(aside, dir);
 }
@@ -14147,12 +14169,10 @@ static int ai_agent_ready(FENSTER *f, ai_launch_fn resume, const char *goal)
 static void ai_agent_announce_task(FENSTER *f, const char *goal)
 {
  char st[AI_HEADER_MAX], line[AI_AGENT_TASK_LINE_MAX];
- int wanted;
  ai_contain_notice_once(f);       /* before the header: the header, the task and what follows stay together */
  ai_header_text_shown(st, sizeof st);
  ai_pane(f, st, AI_ROLE_MACHINERY, 0);
- wanted = snprintf(line, sizeof line, "[agent] task: %s", goal);
- ai_mark_display_cut(line, sizeof line, wanted);
+ (void) WPE_FMT_SHOWN(line, "[agent] task: %s", goal);
  ai_pane(f, line, AI_ROLE_MACHINERY, 1);
  wpe_ai_trace("agent task=%s", goal);
  wpe_ai_trace("agent policy=%s", wpe_ai_policy_name(e_ai_policy));
@@ -14388,17 +14408,14 @@ static void ai_launch_fix_build(FENSTER *f, const char *goal);
  */
 static int ai_fix_build_goal(char *extra, size_t sz, const char *cmd)
 {
- int n = snprintf(extra, sz,
+ if (wpe_fmt_whole(extra, sz,
    "You are fixing a failing build. The build command is:\n  %s\n"
    "First run it with `TOOL run_command %s`. If it succeeds (no errors), reply "
    "DONE. Otherwise read the compiler errors, edit the source files to fix the "
    "root cause (not by silencing warnings), then run the build command again. "
    "Repeat until the build succeeds, then reply DONE with a short summary of "
-   "what you changed.", cmd, cmd);
- if (n < 0 || (size_t)n >= sz) {
-  extra[0] = '\0';
+   "what you changed.", cmd, cmd) != WPE_FMT_OK)
   return -1;
- }
  return 0;
 }
 
@@ -14654,17 +14671,6 @@ static int ai_plan_count_change(FENSTER *f, const ai_proposal *p, int *plus, int
 }
 
 /**
- * ai_row_append - Add a piece of text to a box row, within the row's size.
- * @row: the row so far; @sz: its size; @text: what to add.
- */
-static void ai_row_append(char *row, size_t sz, const char *text)
-{
- size_t used = strlen(row);
- if (used >= sz) return;
- snprintf(row + used, sz - used, "%s", text);
-}
-
-/**
  * ai_plan_row - One line of the approval box for a proposal.
  * @f: the window the plan was asked from; @p: the proposal;
  * @row: receives the text; @sz: its size; @attr: receives the row's colour.
@@ -14681,19 +14687,21 @@ static void ai_row_append(char *row, size_t sz, const char *text)
 static void ai_plan_row(FENSTER *f, const ai_proposal *p, char *row, size_t sz, int *attr)
 {
  int plus, minus, exists, where, marked;
- char counts[64], clause[AI_LANDING_CLAUSE_MAX];
+ char clause[AI_LANDING_CLAUSE_MAX];
+ WpeFmtText t;
  exists = ai_plan_count_change(f, p, &plus, &minus);
  where = wpe_ai_scope_judge(f, p->path, WPE_SCOPE_WRITE, NULL, 0);
  marked = (where == WPE_SCOPE_OUTSIDE || where == WPE_SCOPE_PROTECTED);
  ai_landing_clause(f, p->path, clause, sizeof clause);
- snprintf(counts, sizeof counts, "  (+%d -%d)", plus, minus);
- if (marked) snprintf(row, sz, "%s %s", AI_PLAN_OUTSIDE_MARK, p->path);
- else snprintf(row, sz, "  %s", p->path);
- ai_row_append(row, sz, counts);
- if (!exists) ai_row_append(row, sz, "  [new file]");
- if (where == WPE_SCOPE_OUTSIDE) ai_row_append(row, sz, "  " AI_PLAN_OUTSIDE_WORD);
- if (where == WPE_SCOPE_PROTECTED) ai_row_append(row, sz, "  " AI_PROTECTED_WORD);
- if (marked) ai_row_append(row, sz, clause);
+ /* The row is a sentence the user reads: one that does not fit ends in "...". */
+ wpe_fmt_begin_shown(&t, row, sz);
+ if (marked) wpe_fmt_add(&t, "%s %s", AI_PLAN_OUTSIDE_MARK, p->path);
+ else wpe_fmt_add(&t, "  %s", p->path);
+ wpe_fmt_add(&t, "  (+%d -%d)", plus, minus);
+ if (!exists) wpe_fmt_add(&t, "  [new file]");
+ if (where == WPE_SCOPE_OUTSIDE) wpe_fmt_add(&t, "  " AI_PLAN_OUTSIDE_WORD);
+ if (where == WPE_SCOPE_PROTECTED) wpe_fmt_add(&t, "  " AI_PROTECTED_WORD);
+ if (marked) wpe_fmt_add(&t, "%s", clause);
  if (marked) *attr = f->fb->db.fb;       /* the deletion colour: look twice   */
  else *attr = f->fb->dy.fb;             /* green: a proposed change          */
 }
@@ -14936,10 +14944,10 @@ static void ai_plan_say_not_opened(FENSTER *f, const char *path, int err)
  char line[AI_PLAN_SKIP_LINE_MAX];
 
  if (err != 0)
-  snprintf(line, sizeof line, AI_MULTIFILE_PREFIX " could not open %s: %s",
-           path, wpe_path_refused_reason(err));
+  WPE_FMT_SHOWN(line, AI_MULTIFILE_PREFIX " could not open %s: %s",
+                path, wpe_path_refused_reason(err));
  else
-  snprintf(line, sizeof line, AI_MULTIFILE_PREFIX " could not open %s", path);
+  WPE_FMT_SHOWN(line, AI_MULTIFILE_PREFIX " could not open %s", path);
  ai_pane(f, line, AI_ROLE_ERROR, 0);
 }
 
@@ -15013,6 +15021,36 @@ static void ai_plan_finish(ai_async_op *op)
 }
 
 /**
+ * ai_plan_request_text - The user turn of a multi-file run: the task, the
+ * workspace's files and the file the user is in.
+ * @f: the window the run was asked from; @task: what the user wants changed;
+ * @pd: the run's data, which holds the workspace's file list.
+ * Return: the malloc'd text (the caller frees it), NULL out of memory.
+ *
+ * The model is handed everything the run needs in one turn.  The text is as
+ * long as it is: a long task never crowds out the file list or the current
+ * file, and nothing in it is cut or marked.
+ */
+static char *ai_plan_request_text(FENSTER *f, const char *task, const ai_plan_data *pd)
+{
+ WpeFmtText t;
+ char *cur, *full;
+ int i;
+ wpe_fmt_begin_heap(&t);
+ wpe_fmt_add(&t, "TASK: %s\n\nWORKSPACE FILES:\n", task);
+ for (i = 0; i < pd->nsc; i++)
+  wpe_fmt_add(&t, "  %s\n", pd->scope[i]);
+ cur = ai_current_file_text(f);
+ if (cur) {
+  full = e_mkfilename(f->dirct, f->datnam);
+  wpe_fmt_add(&t, "\nCURRENT FILE (%s):\n%s", full ? full : "", cur);
+  free(full);
+  free(cur);
+ }
+ return wpe_fmt_end_heap(&t, NULL);
+}
+
+/**
  * ai_plan_launch - Start a multi-file study-and-propose run on `task`.
  * @f: the window it was asked from; @task: what the user wants changed.
  *
@@ -15025,7 +15063,7 @@ static void ai_plan_launch(FENSTER *f, const char *task)
  ECNT *cn = f->ed;
  ai_async_op *op;
  ai_plan_data *pd;
- int save_id = -1, wi, i, wanted;
+ int save_id = -1, wi;
  const char *sys =
    "You are a coding agent working on a multi-file workspace inside the xwpe "
    "editor. First STUDY: reply with EXACTLY ONE read-only action per turn as a "
@@ -15045,9 +15083,8 @@ static void ai_plan_launch(FENSTER *f, const char *task)
  pd = calloc(1, sizeof *pd);
  if (!pd) return;
  pd->nsc = wpe_ai_scope_files(f, e_project_is_open(), 1, &pd->scope);
- wanted = snprintf(line, sizeof line, AI_MULTIFILE_PREFIX " task: %s  (scope: %d files)",
-                   task, pd->nsc);
- ai_mark_display_cut(line, sizeof line, wanted);
+ (void) WPE_FMT_SHOWN(line, AI_MULTIFILE_PREFIX " task: %s  (scope: %d files)",
+                      task, pd->nsc);
  ai_pane(f, line, AI_ROLE_MACHINERY, 1);
  wpe_ai_trace("plan task=%s scope=%d", task, pd->nsc);
 
@@ -15066,23 +15103,8 @@ static void ai_plan_launch(FENSTER *f, const char *task)
  ai_ml_add_open_files(&op->ml, f);
  ai_ml_add_project_memory(&op->ml, f);
  {
-  size_t cap = 4096, len = 0;
-  char *u = malloc(cap), *cur;
+  char *u = ai_plan_request_text(f, task, pd);
   if (u) {
-   len += (size_t)snprintf(u, cap, "TASK: %s\n\nWORKSPACE FILES:\n", task);
-   for (i = 0; i < pd->nsc; i++) {
-    size_t need = len + strlen(pd->scope[i]) + 4;
-    if (need > cap) { while (need > cap) cap *= 2; u = realloc(u, cap); }
-    len += (size_t)snprintf(u + len, cap - len, "  %s\n", pd->scope[i]);
-   }
-   cur = ai_current_file_text(f);
-   if (cur) {
-    char *full = e_mkfilename(f->dirct, f->datnam);
-    size_t need = len + strlen(cur) + strlen(full ? full : "") + 64;
-    if (need > cap) { while (need > cap) cap *= 2; u = realloc(u, cap); }
-    len += (size_t)snprintf(u + len, cap - len, "\nCURRENT FILE (%s):\n%s", full ? full : "", cur);
-    free(full); free(cur);
-   }
    ai_ml_add(&op->ml, "user", u);
    free(u);
   }
@@ -15428,14 +15450,12 @@ enum host_scope_answer {
  */
 static const char *ai_host_scope_path(const char *name, const char *path, char *buf, size_t sz)
 {
- int n;
  if (!path || !path[0]) {
   if (strcmp(name, HOST_TOOL_GREP) && strcmp(name, HOST_TOOL_GLOB)) return NULL;
   path = AI_TOOL_LIST_DIR_DEFAULT;
  }
  if (path[0] == '/' || !g_host_root) return path;
- n = snprintf(buf, sz, "%s/%s", g_host_root, path);
- if (n < 0 || (size_t)n >= sz) return NULL;
+ if (wpe_fmt_whole(buf, sz, "%s/%s", g_host_root, path) != WPE_FMT_OK) return NULL;
  return buf;
 }
 
@@ -15772,8 +15792,7 @@ void wpe_ai_host_interrupt(void)
 static void host_echo_task(FENSTER *f, const char *task)
 {
  char l[HOST_ECHO_LINE_MAX];
- int wanted = snprintf(l, sizeof l, "[agent] you: %s", task);
- ai_mark_display_cut(l, sizeof l, wanted);
+ (void) WPE_FMT_SHOWN(l, "[agent] you: %s", task);
  ai_pane(f, l, AI_ROLE_USER, 0);
 }
 

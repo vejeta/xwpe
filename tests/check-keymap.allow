@@ -298,7 +298,7 @@ we_menue.c:WpeHandleSubmenu_run:WPE_ESC 9 menu navigation
 we_menue.c:WpeHandleSubmenu_run:WPE_RESIZE 1 menu navigation
 
 # ---- the AI pane's own keys and the assistant's messages -------------------
-we_ai.c:ai_unreachable_hint:* 1 AI pane text keys
+we_ai.c:wpe_ai_web_fetch_cancel:* 1 AI pane text keys
 we_ai_http.c:ai_http_seterr:* 1 AI pane text keys
 we_ai_ui.c:ai_agent_report_undo_hint:* 1 AI pane text keys
 we_ai_ui.c:ai_append_selection:* 2 AI pane text keys

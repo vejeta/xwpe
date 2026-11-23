@@ -21,6 +21,7 @@
 #include <unistd.h>
 
 #include "we_ai_path.h"
+#include "we_fmt.h"
 #include "we_places.h"
 #include "we_read.h"
 
@@ -68,10 +69,11 @@ static void path_pop(char *out)
 /* Put "<dir>/<name>" in @dst; -1 when it does not fit. */
 static int path_join(char *dst, size_t sz, const char *dir, const char *name)
 {
- int n;
- if (!strcmp(dir, "/")) n = snprintf(dst, sz, "/%s", name);
- else n = snprintf(dst, sz, "%s/%s", dir, name);
- if (n < 0 || (size_t)n >= sz) return -1;
+ if (!strcmp(dir, "/")) {
+  if (wpe_fmt_whole(dst, sz, "/%s", name) != WPE_FMT_OK) return -1;
+  return 0;
+ }
+ if (wpe_fmt_whole(dst, sz, "%s/%s", dir, name) != WPE_FMT_OK) return -1;
  return 0;
 }
 
@@ -92,15 +94,13 @@ static int path_follow_link(wpe_path_walk *w, const char *link)
 {
  char target[WPE_PATH_RESOLVED_MAX], joined[WPE_PATH_RESOLVED_MAX];
  ssize_t n;
- int len;
  if (++w->hops > WPE_PATH_MAX_HOPS) return -1;
  n = readlink(link, target, sizeof target - 1);
  if (n <= 0) return -1;
  target[n] = '\0';
  if (target[0] == '/') { w->out[0] = '/'; w->out[1] = '\0'; }
- len = snprintf(joined, sizeof joined, "%s/%s", target, w->rest + w->pos);
- if (len < 0 || (size_t)len >= sizeof joined) return -1;
- memcpy(w->rest, joined, (size_t)len + 1);
+ if (WPE_FMT_WHOLE(joined, "%s/%s", target, w->rest + w->pos) != WPE_FMT_OK) return -1;
+ memcpy(w->rest, joined, strlen(joined) + 1);
  w->pos = 0;
  return 0;
 }
@@ -643,15 +643,14 @@ int wpe_path_lands_outside(const char *root, const char *path, char *real, size_
  */
 static int path_make_absolute(const char *path, char *abs, size_t sz)
 {
- int n;
+ char cwd[WPE_PATH_RESOLVED_MAX];
  if (!path || !path[0]) { errno = ENOENT; return -1; }
- if (path[0] == '/') n = snprintf(abs, sz, "%s", path);
- else {
-  char cwd[WPE_PATH_RESOLVED_MAX];
-  if (!getcwd(cwd, sizeof cwd)) return -1;
-  n = snprintf(abs, sz, "%s/%s", cwd, path);
+ if (path[0] == '/') {
+  if (wpe_fmt_whole(abs, sz, "%s", path) != WPE_FMT_OK) { errno = ENAMETOOLONG; return -1; }
+  return 0;
  }
- if (n < 0 || (size_t)n >= sz) { errno = ENAMETOOLONG; return -1; }
+ if (!getcwd(cwd, sizeof cwd)) return -1;
+ if (wpe_fmt_whole(abs, sz, "%s/%s", cwd, path) != WPE_FMT_OK) { errno = ENAMETOOLONG; return -1; }
  return 0;
 }
 
@@ -812,6 +811,27 @@ char *wpe_path_read_inside(const char *root, const char *name, size_t maxlen,
 }
 
 /**
+ * path_folder_part - The folder part of an absolute path, whole.
+ * @dir/@n: receives the bytes of @abs before @slash (the root when @slash is
+ * its first byte); @abs: the path; @slash: its last '/'.
+ *
+ * An exact slice of a path that is already held, not a sentence: the byte
+ * count is kept as it is and a folder that does not fit is refused.
+ * Return: 0, or -1 when it does not fit.
+ */
+static int path_folder_part(char *dir, size_t n, const char *abs, const char *slash)
+{
+ WpeFmtText t;
+ wpe_fmt_begin_whole(&t, dir, n);
+ if (slash == abs)
+  wpe_fmt_add(&t, "/");
+ else
+  wpe_fmt_add_bytes(&t, abs, (size_t)(slash - abs));
+ if (wpe_fmt_end(&t, NULL) != WPE_FMT_OK) return -1;
+ return 0;
+}
+
+/**
  * wpe_path_look_name - Look at the reviewed NAME itself, never through a link at its end.
  * @path: the file, as the review names it (absolute or relative to the working
  * directory); @real/@sz: receives the resolved folder and the name; @x: receives
@@ -829,18 +849,15 @@ int wpe_path_look_name(const char *path, char *real, size_t sz, WpeWriteExpect *
 {
  char abs[WPE_PATH_RESOLVED_MAX], dir[WPE_PATH_RESOLVED_MAX], rdir[WPE_PATH_RESOLVED_MAX];
  const char *slash, *leaf;
- int n;
  memset(x, 0, sizeof *x);
  if (sz) real[0] = '\0';
  if (path_make_absolute(path, abs, sizeof abs) != 0) return -1;
  slash = strrchr(abs, '/');
  leaf = slash + 1;
  if (!*leaf || !strcmp(leaf, ".") || !strcmp(leaf, "..")) { errno = EINVAL; return -1; }
- n = slash == abs ? snprintf(dir, sizeof dir, "/") : snprintf(dir, sizeof dir, "%.*s", (int)(slash - abs), abs);
- if (n < 0 || (size_t)n >= sizeof dir) { errno = ENAMETOOLONG; return -1; }
+ if (path_folder_part(dir, sizeof dir, abs, slash) != 0) { errno = ENAMETOOLONG; return -1; }
  if (wpe_path_resolve(dir, rdir, sizeof rdir) != WPE_PATH_RESOLVED) { errno = ELOOP; return -1; }
- n = snprintf(real, sz, "%s%s%s", rdir, strcmp(rdir, "/") ? "/" : "", leaf);
- if (n < 0 || (size_t)n >= sz) { errno = ENAMETOOLONG; real[0] = '\0'; return -1; }
+ if (wpe_fmt_whole(real, sz, "%s%s%s", rdir, strcmp(rdir, "/") ? "/" : "", leaf) != WPE_FMT_OK) { errno = ENAMETOOLONG; return -1; }
  return path_look_leaf(real, x);
 }
 
@@ -898,7 +915,7 @@ static void path_scan_dir(wpe_path_scan *sc, const char *dir, int depth)
   if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, "..")) continue;
   if (sc->visited >= WPE_SCAN_ENTRY_MAX) { sc->truncated = 1; break; }
   sc->visited++;
-  if (snprintf(path, sizeof path, "%s/%s", dir, de->d_name) >= (int)sizeof path) continue;
+  if (WPE_FMT_WHOLE(path, "%s/%s", dir, de->d_name) != WPE_FMT_OK) continue;
   kind = wpe_read_entry_kind(d, de->d_name);
   if (kind != 0) path_scan_entry(sc, path, kind, depth);
  }

@@ -1785,12 +1785,13 @@ static int e_d_output_only_on_user_screen(void)
  */
 static void e_d_exit_line_add_hint(char *msg, size_t n)
 {
+ WpeFmtText t;
  size_t len = strlen(msg);
 
+ wpe_fmt_resume_shown(&t, msg, n);
  if (len > 0 && msg[len - 1] != '.')
-  snprintf(msg + len, n - len, ".");
- len = strlen(msg);
- snprintf(msg + len, n - len, "%s", E_D_EXIT_OUTPUT_HINT);
+  wpe_fmt_add(&t, ".");
+ wpe_fmt_add(&t, "%s", E_D_EXIT_OUTPUT_HINT);
 }
 
 /**
@@ -3375,6 +3376,7 @@ void e_d_pty_close(void)
 
 /* Entry 0 (ERR_CTRLCPRESS) is no longer shown: Ctrl-C now ends a wait for
    the debugger as Esc does.  It stays so the numbers of the others hold. */
+
 char *e_d_msg[] = {  "Ctrl C pressed\nQuit Debugger ?",
 			"Quit Debugger ?",
 			"End of Debugging",
@@ -4759,11 +4761,13 @@ static int e_d_watches_wait(void)
  */
 static void e_d_watch_put_waiting(BUFFER *b, int l)
 {
- char *line = WpeMalloc(strlen(e_d_swtchs[l]) + sizeof(E_D_WATCH_LATER) + 2);
+ char *line = wpe_fmt_dup("%s:%s", e_d_swtchs[l], E_D_WATCH_LATER);
 
- sprintf(line, "%s:%s", e_d_swtchs[l], E_D_WATCH_LATER);
- e_d_watch_put_line(b, l, line);
- WpeFree(line);
+ if (line)
+ {
+  e_d_watch_put_line(b, l, line);
+  WpeFree(line);
+ }
  e_d_watches_shown_waiting = 1;
  e_ds_set_watch(&e_d_session, l, e_d_swtchs[l]);
 }
@@ -4786,10 +4790,12 @@ static void e_d_watch_put_value(BUFFER *b, int l, const char *answer)
  char *line;
 
  e_ds_watch_value(e_deb_type, answer, &text);
- line = WpeMalloc(strlen(e_d_swtchs[l]) + strlen(text) + 4);
- sprintf(line, "%s: %s", e_d_swtchs[l], text);
- e_d_watch_put_line(b, l, line);
- WpeFree(line);
+ line = wpe_fmt_dup("%s: %s", e_d_swtchs[l], text);
+ if (line)
+ {
+  e_d_watch_put_line(b, l, line);
+  WpeFree(line);
+ }
  e_ds_answer_borrow(&a, answer, 0);
  e_ds_set_watch(&e_d_session, l, e_d_swtchs[l]);
  e_ds_take_watch_answer(&e_d_session, e_deb_type, l, &a);
@@ -8185,8 +8191,9 @@ static int e_d_fifos_make(void)
  {
   if (npipe[i])
    FREE(npipe[i]);
-  npipe[i] = MALLOC(strlen(e_tmp_dir) + 16);
-  sprintf(npipe[i], "%s/we_pipe%d", e_tmp_dir, i);
+  npipe[i] = wpe_fmt_dup("%s/we_pipe%d", e_tmp_dir, i);
+  if (!npipe[i])
+   return(-1);
   remove(npipe[i]);
  }
  for (i = 0; i < E_D_FIFO_N; i++)
@@ -9094,12 +9101,8 @@ static int e_d_compile_paths(FENSTER *f)
  */
 static int e_d_compile_script(FENSTER *f, const char *cc, const char *flags)
 {
- int n = snprintf(e_d_compile.cmd, sizeof e_d_compile.cmd,
-                  E_D_COMPILE_SCRIPT_FMT, cc, flags);
-
- if (n < 0 || (size_t)n >= sizeof e_d_compile.cmd)
+ if (WPE_FMT_WHOLE(e_d_compile.cmd, E_D_COMPILE_SCRIPT_FMT, cc, flags) != WPE_FMT_OK)
  {
-  e_d_compile.cmd[0] = '\0';
   e_d_compile_too_long(f, E_D_COMPILE_COMMAND_WHAT);
   return(-1);
  }
@@ -10378,7 +10381,7 @@ static int e_d_dap_start(FENSTER *f)
  if (e_test_command(adapter[0]))
  {
   char m[160];
-  sprintf(m, "Debug adapter '%s' not in PATH.", adapter[0]);
+  WPE_FMT_SHOWN(m, "Debug adapter '%s' not in PATH.", adapter[0]);
   e_error(m, 0, f->fb);
   return(-1);
  }
@@ -10915,9 +10918,9 @@ static void e_d_dap_watch_put(BUFFER *b, int l, const char *val)
 
  if (!val)
   val = E_D_DAP_NO_VALUE;
- line = WpeMalloc(strlen(e_d_swtchs[l]) + strlen(E_D_DAP_WATCH_SEP) +
-                  strlen(val) + 1);
- sprintf(line, "%s" E_D_DAP_WATCH_SEP "%s", e_d_swtchs[l], val);
+ line = wpe_fmt_dup("%s" E_D_DAP_WATCH_SEP "%s", e_d_swtchs[l], val);
+ if (!line)
+  return;
  e_d_watch_put_line(b, l, line);
  WpeFree(line);
 }
@@ -13337,17 +13340,24 @@ static void e_d_jdb_class_file(const char *cls, char *out, size_t n)
  * e_d_jdb_package_file - The source path of a class below its source root:
  * com.x.P -> com/x/P.java.
  * @cls: the class with its package; @out, @n: receives the path.
+ *
+ * A path that does not fit is not made at all, so no file with another
+ * name is looked for.
+ * Return: WPE_FMT_OK, or a refusal with @out "".
  */
-static void e_d_jdb_package_file(const char *cls, char *out, size_t n)
+static WPE_FMT_MUST_READ int e_d_jdb_package_file(const char *cls, char *out, size_t n)
 {
- size_t i, len;
+ WpeFmtText t;
+ size_t i;
 
- snprintf(out, n, "%s", cls);
+ if (wpe_fmt_whole(out, n, "%s", cls) != WPE_FMT_OK)
+  return(WPE_FMT_NO_ROOM);
  for (i = 0; out[i]; i++)
   if (out[i] == '.')
    out[i] = DIRC;
- len = strlen(out);
- snprintf(out + len, n - len, "%s", E_D_JDB_SOURCE_EXT);
+ wpe_fmt_resume_whole(&t, out, n);
+ wpe_fmt_add(&t, "%s", E_D_JDB_SOURCE_EXT);
+ return(wpe_fmt_end(&t, NULL));
 }
 
 /**
@@ -13396,6 +13406,7 @@ static int e_d_jdb_try_source(const char *dir, const char *rel,
 static int e_d_jdb_find_source(ECNT *cn, const char *cls, char *out, size_t n)
 {
  char name[E_D_STOP_PATH_MAX], rel[E_D_STOP_PATH_MAX], dir[E_D_STOP_PATH_MAX];
+ int packaged;
 
  /* A Java class name never holds these; a stop line that does is not
     turned into a path outside the source roots. */
@@ -13404,11 +13415,11 @@ static int e_d_jdb_find_source(ECNT *cn, const char *cls, char *out, size_t n)
  e_d_jdb_class_file(cls, name, sizeof name);
  if (e_d_window_path_of(cn, name, out, n))
   return(1);
- e_d_jdb_package_file(cls, rel, sizeof rel);
+ packaged = (e_d_jdb_package_file(cls, rel, sizeof rel) == WPE_FMT_OK);
  e_d_jdb_session_dir(cn, dir, sizeof dir);
- if (dir[0] && e_d_jdb_try_source(dir, rel, out, n))
+ if (packaged && dir[0] && e_d_jdb_try_source(dir, rel, out, n))
   return(1);
- if (e_d_jdb_try_source("", rel, out, n))
+ if (packaged && e_d_jdb_try_source("", rel, out, n))
   return(1);
  if (dir[0] && e_d_jdb_try_source(dir, name, out, n))
   return(1);
@@ -13452,8 +13463,9 @@ static int e_d_said_once(char kind, const char *key)
    return(1);
  if (e_d_nsaid_once >= E_D_SAID_ONCE_MAX)
   return(1);
- e_d_said_once_kind[e_d_nsaid_once] = kind;
- snprintf(e_d_said_once_key[e_d_nsaid_once++], E_D_STOP_PATH_MAX, "%s", key);
+ if (WPE_FMT_WHOLE(e_d_said_once_key[e_d_nsaid_once], "%s", key) != WPE_FMT_OK)
+  return(1);
+ e_d_said_once_kind[e_d_nsaid_once++] = kind;
  return(0);
 }
 
@@ -13787,6 +13799,75 @@ static int e_d_run_arguments(FENSTER *f, const char **args)
  return(0);
 }
 
+/* What the status row says when the program's Arguments do not fit the
+   command that runs it: the run does not start, nothing is sent. */
+#define E_D_RUN_TOO_LONG_LINE "Run not started: the Arguments are too long"
+
+/**
+ * e_d_run_command - Write the command that starts the program, or lets it
+ * go on, in the words of the debugger in use.
+ * @out, @n: the command's storage; @args: the program's Arguments or NULL;
+ * @continues: set to 1 when the command continues a program that already
+ * runs (the first run is 0).
+ *
+ * The program's Arguments are part of the command.  When they do not fit it
+ * nothing is written, so the debugger is never given a command without its
+ * line end or its redirect, and the caller says so on the status row.
+ * Return: WPE_FMT_OK, or a refusal with @out "".
+ */
+static WPE_FMT_MUST_READ int e_d_run_command(char *out, size_t n, const char *args, int *continues)
+{
+ *continues = 0;
+ if (e_deb_type == DEB_DBX && e_d_swtch >= 3)
+ {
+  *continues = 1;
+  return(wpe_fmt_whole(out, n, "cont\n"));
+ }
+ if (e_deb_type == DEB_DBX && args)
+  return(wpe_fmt_whole(out, n, "run %s > %s\n", args, e_d_tty));
+ if (e_deb_type == DEB_DBX)
+  return(wpe_fmt_whole(out, n, "run > %s\n", e_d_tty));
+ if (e_d_swtch >= 3)
+ {
+  *continues = 1;
+  if (e_deb_type == DEB_JDB)
+   return(wpe_fmt_whole(out, n, "%s", e_d_jdb_continue_command()));
+  if (e_deb_type == DEB_A68G)
+   return(wpe_fmt_whole(out, n, "continue\n"));
+  return(wpe_fmt_whole(out, n, "c\n"));
+ }
+ /* jdb: the VM the editor started is already connected and held at its
+    start; "cont" lets it run.  No arguments reach the program. */
+ if (e_deb_type == DEB_JDB)
+  return(wpe_fmt_whole(out, n, "cont\n"));
+ /* pdb: the program is already loaded and paused at line 1; "continue"
+    runs it to the first breakpoint. */
+ if (e_deb_type == DEB_PDB)
+ {
+  *continues = 1;
+  return(wpe_fmt_whole(out, n, "c\n"));
+ }
+ /* a68g --monitor auto-breaks at line 1; "continue" runs to the first user
+    breakpoint (or to the program's end). */
+ if (e_deb_type == DEB_A68G)
+ {
+  *continues = 1;
+  return(wpe_fmt_whole(out, n, "continue\n"));
+ }
+ /* With a pty gdb is not given the redirect: gdb's "set inferior-tty" does
+    not deliver the output to the master when gdb talks over pipes, so
+    without a pty the output is redirected to the terminal by name. */
+ if (e_d_pty_master >= 0 && e_deb_type == DEB_GDB)
+ {
+  if (args)
+   return(wpe_fmt_whole(out, n, "r %s\n", args));
+  return(wpe_fmt_whole(out, n, "r\n"));
+ }
+ if (args)
+  return(wpe_fmt_whole(out, n, "r %s > %s\n", args, e_d_tty));
+ return(wpe_fmt_whole(out, n, "r > %s\n", e_d_tty));
+}
+
 int e_deb_run(FENSTER *f)
 {
  ECNT *cn = f->ed;
@@ -13836,81 +13917,19 @@ int e_deb_run(FENSTER *f)
    return(e_d_error(eing));
   }
  }
+ if (e_d_run_command(eing, sizeof eing, args, &prsw) != WPE_FMT_OK)
+ {
+  /* The command is built before anything is set up, so a refusal leaves
+     the session as it was. */
+  e_status_say_until_key(cn->f[cn->mxedt], E_D_RUN_TOO_LONG_LINE);
+  return(0);
+ }
  /* a68g auto-breaks at line 1, so it never needs a temporary breakpoint at
     main; calling e_mk_brk_main for it would allocate a phantom breakpoint slot
     and corrupt e_d_nbrpts across restarts (it has no a68g command branch). */
  if (e_d_swtch < 3 && e_d_nbrpts <= 0 && e_deb_type != DEB_A68G)
  {
   if ((main_brk = e_mk_brk_main(f, 0)) < -1) return(main_brk);
- }
- if (e_deb_type == DEB_DBX)
- {
-  if (e_d_swtch < 3)
-  {
-   if (args)
-    snprintf(eing, sizeof eing, "run %s > %s\n", args, e_d_tty);
-   else
-    sprintf(eing, "run > %s\n", e_d_tty);
-  }
-  else
-  {
-   strcpy(eing, "cont\n");
-   prsw = 1;
-  }
- }
- else
- {
-  if (e_d_swtch < 3)
-  {
-   /* When pty is active, redirect stdout to the pty slave path.
-      gdb's "set inferior-tty" doesn't deliver output to the master
-      when gdb itself communicates via pipes, so we use explicit
-      shell-style redirect instead. */
-   if (e_deb_type == DEB_JDB)
-   {
-    /* jdb: the VM the editor started is already connected and held at
-       its start; "cont" lets it run.  No arguments reach the program. */
-    strcpy(eing, "cont\n");
-   }
-   else if (e_deb_type == DEB_PDB)
-   {
-    /* pdb: program already loaded and paused at line 1.
-       "continue" runs to first breakpoint. */
-    strcpy(eing, "c\n");
-    prsw = 1;  /* treat as continue, not first run */
-   }
-   else if (e_deb_type == DEB_A68G)
-   {
-    /* a68g --monitor auto-breaks at line 1; "continue" runs to the
-       first user breakpoint (or to program end). */
-    strcpy(eing, "continue\n");
-    prsw = 1;  /* treat as continue, not first run */
-   }
-   else if (e_d_pty_master >= 0 && e_deb_type == DEB_GDB)
-   {
-    if (args)
-     snprintf(eing, sizeof eing, "r %s\n", args);
-    else
-     strcpy(eing, "r\n");
-   }
-   else
-   {
-    if (args)
-     snprintf(eing, sizeof eing, "r %s > %s\n", args, e_d_tty);
-    else
-     sprintf(eing, "r > %s\n", e_d_tty);
-   }
-  }
-  else
-  {
-   if (e_deb_type == DEB_JDB)
-    strcpy(eing, e_d_jdb_continue_command());
-   else if (e_deb_type == DEB_A68G)
-    strcpy(eing, "continue\n");
-   else
-    strcpy(eing, "c\n");
-   prsw = 1;
-  }
  }
  f = cn->f[cn->mxedt];
  e_d_nstack = 0;
@@ -18151,7 +18170,7 @@ static int e_d_show_source(char *file, int line, FENSTER *f, int asked)
       and continue, skipping all libc frames. */
    if (e_deb_type == DEB_GDB)
     return(e_d_ga_leave_unknown_source(cn));
-   snprintf(str, sizeof(str), e_d_msg[ERR_CANTFILE], file);
+   WPE_FMT_SHOWN(str, e_d_msg[ERR_CANTFILE], file);
    return(e_error(str, 0, f->fb));
   }
   if (e_edit_outcome(cn, file, &open_err))
@@ -28501,6 +28520,9 @@ static int             g_diag_npending = 0;
 static e_lsp_diag_mark g_hl_active[LSP_MAX_DIAG];
 static int             g_hl_nactive = 0;
 
+/* The most bytes of one diagnostic's message the assistant's request carries. */
+#define E_LSP_DIAG_PROMPT_MSG 140
+
 /* e_lsp_diag_snapshot - the current file's live diagnostics as plain text, so
    the AI assistant can put the same errors/warnings the user sees (the red
    squiggles) into its prompt and "fix this" works without pasting them.  Writes
@@ -28508,13 +28530,17 @@ static int             g_hl_nactive = 0;
 int e_lsp_diag_snapshot(char *out, size_t sz)
 {
  int i, n = 0;
- size_t len = 0;
+ WpeFmtText t;
  if (!out || sz == 0) return 0;
- out[0] = '\0';
- for (i = 0; i < g_diag_nactive && len + 96 < sz; i++) {
+ /* A request: a diagnostic that does not fit is left out whole, never cut
+    and never marked. */
+ wpe_fmt_begin_block(&t, out, sz);
+ for (i = 0; i < g_diag_nactive; i++) {
   const char *sev = g_diag_active[i].sev == 1 ? "error" : "warning";
-  len += (size_t)snprintf(out + len, sz - len, "  line %d (%s): %.140s\n",
-                          g_diag_active[i].line + 1, sev, g_diag_active[i].msg);
+  const char *msg = g_diag_active[i].msg;
+  if (!wpe_fmt_add_block(&t, "  line %d (%s): %.*s\n", g_diag_active[i].line + 1, sev,
+                         wpe_fmt_cut_len(msg, E_LSP_DIAG_PROMPT_MSG), msg))
+   break;
   n++;
  }
  return n;
@@ -32212,10 +32238,24 @@ static const char *const e_lsp_hier_none[2][2] = {
  { "No callers found.",    "No outgoing calls found." },
  { "No supertypes found.", "No subtypes found." }
 };
-static const char *const e_lsp_hier_head[2][2] = {
- { "%d caller(s):",    "%d outgoing call(s):" },
- { "%d supertype(s):", "%d subtype(s):" }
-};
+
+/**
+ * e_lsp_hier_head_text - The heading of a hierarchy list: how many were
+ * found, in the words of the list's kind.
+ * @out, @n: the heading; @types: 1 for supertypes and subtypes, 0 for
+ * callers and callees; @dir: 1 for callees and subtypes; @count: how many.
+ */
+static void e_lsp_hier_head_text(char *out, size_t n, int types, int dir, int count)
+{
+ if (types && dir)
+  wpe_fmt_shown(out, n, "%d subtype(s):", count);
+ else if (types)
+  wpe_fmt_shown(out, n, "%d supertype(s):", count);
+ else if (dir)
+  wpe_fmt_shown(out, n, "%d outgoing call(s):", count);
+ else
+  wpe_fmt_shown(out, n, "%d caller(s):", count);
+}
 
 /**
  * e_lsp_hierarchy_show - The callers, callees, supertypes or subtypes
@@ -32234,7 +32274,7 @@ static void e_lsp_hierarchy_show(FENSTER *f, const e_lsp_ask_t *a)
   e_error((char *)e_lsp_hier_none[types][dir], 0, f->fb);
   return;
  }
- snprintf(line, sizeof(line), e_lsp_hier_head[types][dir], a->n);
+ e_lsp_hier_head_text(line, sizeof line, types, dir, a->n);
  e_d_p_message(line, f, 1);
  for (i = 0; i < a->n; i++)
  {

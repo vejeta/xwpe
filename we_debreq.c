@@ -17,6 +17,7 @@
 #include <stdio.h>
 
 #include "we_debreq.h"
+#include "we_fmt.h"
 
 #define GROW_MIN        256       /* first size of a text buffer */
 #define ERRORS_READ_MAX 4096      /* error-stream bytes taken per ask */
@@ -26,7 +27,6 @@
 #define CANCEL_FMT      E_D_REQ_CANCEL_FMT
 #define TIMEOUT_FMT     E_D_REQ_TIMEOUT_FMT
 #define DEFAULT_NAME    "debugger"
-#define ELLIPSIS        "..."
 #define NO_PROMPT       ""
 #define UTF8_CONT_MASK  0xC0      /* the top bits of a UTF-8 continuation byte */
 #define UTF8_CONT_BITS  0x80
@@ -1166,7 +1166,7 @@ typedef struct
 #define CHAIN_RUNNING  1
 #define CHAIN_ENDED    2
 #define WHERE_SHOWN    128                /* bytes of a file name a sentence shows */
-#define CMD_TEXT_MAX   (E_D_REQ_CMD_SHOWN + sizeof ELLIPSIS + WHERE_SHOWN + 16)
+#define CMD_TEXT_MAX   (E_D_REQ_CMD_SHOWN + sizeof WPE_FMT_CUT_MARK + WHERE_SHOWN + 16)
 
 static int chain_step_is_end(const E_D_STEP *s)
 {
@@ -1174,23 +1174,6 @@ static int chain_step_is_end(const E_D_STEP *s)
 }
 
 /* ---- how a step ended, and the words that say it ---- */
-
-/**
- * cmd_cut_shown - The longest start of @cmd a sentence shows, ending where a
- * character does, so a name written in UTF-8 is never cut in the middle.
- * Return: the bytes to show.
- */
-static size_t cmd_cut_shown(const char *cmd)
-{
-	size_t n = strlen(cmd);
-
-	if (n <= E_D_REQ_CMD_SHOWN)
-		return n;
-	n = E_D_REQ_CMD_SHOWN;
-	while (n > 0 && ((unsigned char)cmd[n] & UTF8_CONT_MASK) == UTF8_CONT_BITS)
-		n--;
-	return n;
-}
 
 /**
  * cmd_text - How a sentence names a command: in quotes, cut to its first
@@ -1201,14 +1184,17 @@ static size_t cmd_cut_shown(const char *cmd)
 static void cmd_text(const E_D_STEP_END *end, char *out, size_t n)
 {
 	const char *cmd = end->cmd ? end->cmd : "";
-	size_t shown = cmd_cut_shown(cmd);
-	const char *more = cmd[shown] ? ELLIPSIS : "";
+	/* The start of the command up to E_D_REQ_CMD_SHOWN bytes, ending where
+	   a character does, so a name written in UTF-8 is never cut in the
+	   middle. */
+	int shown = wpe_fmt_cut_len(cmd, E_D_REQ_CMD_SHOWN);
+	const char *more = cmd[shown] ? WPE_FMT_CUT_MARK : "";
 
 	if (end->where && end->where[0])
-		snprintf(out, n, "`%.*s%s` (%.*s)", (int)shown, cmd, more,
-		         WHERE_SHOWN, end->where);
+		wpe_fmt_shown(out, n, "`%.*s%s` (%.*s)", shown, cmd, more,
+		              WHERE_SHOWN, end->where);
 	else
-		snprintf(out, n, "`%.*s%s`", (int)shown, cmd, more);
+		wpe_fmt_shown(out, n, "`%.*s%s`", shown, cmd, more);
 }
 
 /**
@@ -1261,13 +1247,13 @@ void e_d_req_set_reason(E_D_STEP_END *end, const char *words)
 		memcpy(end->reason, words, len + 1);
 		return;
 	}
-	keep = room - (sizeof ELLIPSIS - 1);
+	keep = room - (sizeof WPE_FMT_CUT_MARK - 1);
 	head = utf8_back_to_start(words, keep / 2);
 	tail = len - (keep - keep / 2);
 	while (tail < len && ((unsigned char)words[tail] & UTF8_CONT_MASK) == UTF8_CONT_BITS)
 		tail++;
 	snprintf(end->reason, sizeof end->reason, "%.*s%s%s", (int)head, words,
-	         ELLIPSIS, words + tail);
+	         WPE_FMT_CUT_MARK, words + tail);
 }
 
 void e_d_req_end_words(E_D_STEP_END *end, const char *name)
