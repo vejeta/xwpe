@@ -15,6 +15,7 @@ import os
 
 import pytest
 
+from mode_premise import folder_mode_is_obeyed
 from test_ai_read_scope import Tree, SECRET, _agent_run, _ai_build
 from test_ai_changeset import _auto_run, _revert_all, _trace_text, WRITE_REPLY
 from wpe_driver import pane_text_with_history
@@ -167,6 +168,7 @@ def test_a_folder_the_walk_could_not_read_keeps_its_files_on_revert(tmp_path):
     there, the folder had no permissions at the checkpoint and a command of the
     run gave them back.  Nobody saw its files at the checkpoint, so the revert
     leaves them, and the pane names the folder."""
+    folder_mode_is_obeyed(str(tmp_path), 0)
     sub = tmp_path / "sub"
     sub.mkdir()
     (sub / "inner.txt").write_text("USER FILE\n")

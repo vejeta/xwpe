@@ -1513,6 +1513,45 @@ static void test_a_saved_setgid_file_keeps_its_bit(void)
  chk_int("nothing to say when the bit was kept", (long)strlen(say), 0);
 }
 
+/* A window the editor writes itself (the assistant's composer, its pane, a
+   report) has no file behind it: its title is a label.  A Save and the
+   emergency or autosave copy write nothing, a file of the same name keeps its
+   text, and the sentence points to Save As, which writes under the name the
+   user types and gives the window that file. */
+static void test_a_window_with_no_file_is_never_written_under_its_title(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f;
+ char buf[256], p[512], say[WPE_WRITE_SENTENCE_MAX];
+
+ make_dir();
+ put_file("title.txt", "the user's own text\n", 0644);
+ f = make_window();
+ set_rows("typed in the window\n");
+ wpe_write_window_set_not_a_file(f);
+ chk_int("a Save is refused", save_window(f, "title.txt", &o), -1);
+ chk_int("declined, not failed", o.status, WPE_WRITE_DECLINED);
+ chk_int("and says the window has no file", o.not_a_file, 1);
+ wpe_write_sentence(say, sizeof say, &o, WPE_WRITE_THEN_KEPT);
+ chk_has("the sentence says so", say, "This window is not a file.");
+ chk_has("and points to Save As", say, "Use Save As");
+ chk_has("the user's file keeps its text", get_file("title.txt", buf, sizeof buf),
+         "the user's own text\n");
+ path_of(p, sizeof p, "title.txt.bak");
+ chk_int("no backup was made", access(p, F_OK), -1);
+ path_of(p, sizeof p, "title.txt.ESV");
+ chk_int("the emergency copy is refused", wpe_write_copy(f, p, &o), -1);
+ chk_int("and writes nothing", access(p, F_OK), -1);
+ chk_int("Save As writes under the typed name",
+         save_window_as(f, dir, "kept.txt", dir, "title.txt"), WPE_WRITE_WRITTEN);
+ chk_has("the text is there", get_file("kept.txt", buf, sizeof buf), "typed in the window\n");
+ chk_has("the title's file is still the user's", get_file("title.txt", buf, sizeof buf),
+         "the user's own text\n");
+ set_rows("more\n");
+ chk_int("then the window is that file's: a Save writes it", save_window(f, "kept.txt", &o), 0);
+ chk_has("the new text is there", get_file("kept.txt", buf, sizeof buf), "more\n");
+}
+
 /* A system that refuses or drops the bit: the text is saved, and the status
    row names the bit and why. */
 static void test_a_save_names_the_bit_the_system_refuses(void)
@@ -6478,6 +6517,7 @@ int main(void)
  test_a_restore_that_cannot_put_the_bits_back_names_them();
  test_the_bits_go_back_only_after_the_bytes_are_on_disk();
  test_the_sync_owner_syncs_once_and_only_when_owed();
+ test_a_window_with_no_file_is_never_written_under_its_title();
  test_a_saved_setgid_file_keeps_its_bit();
  test_a_save_names_the_bit_the_system_refuses();
  test_a_save_whose_modes_are_all_refused_is_still_written();

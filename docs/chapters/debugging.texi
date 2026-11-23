@@ -547,6 +547,17 @@ gdb is not reading its input (3 bytes waiting): Debug > Quit ends it
 @noindent
 and Debug > Quit ends the session as at any other moment.
 
+@cindex source file closed to reading
+@cindex debugger, source the system refuses
+Whichever debugger you use, a source file that exists but that the system
+will not let the editor read is not opened as an empty window.  When the
+program stops in it, the status row says @samp{Cannot open source
+@var{path}: Permission denied} the first time and stays quiet about that
+file for the rest of the session; the stop, the Stack and the Watches are
+shown as usual and no box waits while the program runs.  A source you pick
+yourself (a frame in the Stack window, a symbol or a reference) gets a box
+each time you ask.
+
 @section How a session ends
 
 @cindex debugger, end of session
@@ -793,7 +804,11 @@ interfaces, pdb and jdb) shows the file under @samp{Runs at start:}.  A line wid
 than the box is wrapped, never cut.  A file the box cannot show whole
 (over 16 kB, or holding a NUL byte, past which the box would show
 nothing while the debugger reads on) is shown in part and not offered
-to run.  The same file in your home folder is yours and is not asked
+to run.  A file the system will not let the editor read is not offered
+either: its line says the system's reason in parentheses, such as
+@samp{(Permission denied)}, and the same holds for a script a program
+carries inside itself that names a file closed to reading
+(@samp{(not found)} when the file is not there).  The same file in your home folder is yours and is not asked
 about, nor is the folder's file when the folder is your home folder.
 
 @cindex gdb, started apart from the folder

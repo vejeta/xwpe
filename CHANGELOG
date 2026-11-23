@@ -38,6 +38,26 @@ Bugs fixed in 1.6.x:
   PgUp, PgDn and the arrows scroll the pane while the review waits for its key,
   so the sentence can be read before you answer.  New files after the run are
   found even in a workspace that already held the bound.
+* A file or folder the system will not let you read now says so, with its
+  name and the system's reason, instead of a guess or nothing.  Opening a
+  file closed to reading (or open to writing only) used to show an empty
+  window under its name, and a Save then destroyed the file; now a box says
+  "Cannot open file /home/you/locked.c: Permission denied." (the full path
+  from the File Manager, the name as typed from the command line) and no
+  window opens.  A name under a file or a loop of links says "Not a
+  directory" or "Too many levels of symbolic links".  The assistant's
+  composer and pane have no file behind them: F2 says "This window is not a
+  file.  Use Save As to keep its text." instead of writing the text under the
+  window's title (which replaced a file of that name), and neither the quit
+  question nor the emergency copy touch them.  Block > Read, Attributes,
+  Remove and ChDir say the same in place of "Can't access file or
+  directory" and "Can't open directory", and Show Definition says the
+  project file cannot be opened instead of "not found!".  The debugger
+  names a source it cannot read on the status row once for each file (a
+  box when you pick the frame yourself), and its start plan shows
+  "(Permission denied)" for a start-up file or script it could not read
+  and does not offer to run it.  A file that does not exist still opens as
+  a new file.
 * The editor no longer waits, fills the memory or reads your keys when a name
   it reads is not a regular file.  An xwperc in the folder you started in that
   is a link to /dev/zero or a pipe, a project file that is a pipe, and a

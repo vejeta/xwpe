@@ -42,7 +42,7 @@ WeSyntax.c|r22a:WpeSyntaxOpenSystem|1|P3a|the installed syntax_def
 WeXterm.c|r22e:WpeXDefaults|1|P3a|XrmGetFileDatabase of ~/.Xdefaults
 
 # the load of a pipe (P3b) and Find in files (P3c)
-we_edit.c|r22a:e_edit|1|P3b|File > Open and the command line
+we_edit.c|r22a:e_edit_open|1|P3b|File > Open and the command line
 we_fl_unix.c|r22a:WpeGrepFile|1|P3c|every entry of a folder
 
 # not a name a user, a folder, a model or a server chose

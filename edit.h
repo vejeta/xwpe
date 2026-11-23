@@ -341,6 +341,9 @@ typedef struct FNST {
  WpeWindowCopies copies; /* the .ASV this window wrote and the .ESV it was recovered
                             from, this session: the only copies its close removes;
                             forgotten after each allocation */
+ int no_file;            /* a window the editor writes itself, with no file behind
+                            it: set through wpe_write_window_set_not_a_file,
+                            cleared after each allocation */
  int *c_sw;
  struct wpeSyntaxRule *c_st;
  struct CNT *ed;  /* parent control structure ??? */
@@ -563,6 +566,8 @@ void e_find_resume_check(BUFFER *b);
 
 /*   we_edit.c   */
 int e_edit(ECNT *cn, char *filename);
+int e_edit_outcome(ECNT *cn, char *filename, int *err);
+int e_edit_view(ECNT *cn, char *name);
 int e_eingabe(ECNT *e);
 void e_paint_desk_ready(void);
 void e_layout_desk_ready(void);
@@ -1265,6 +1270,7 @@ int e_d_step_next(FENSTER *f, int sw);
 int e_make_line_num(char *str, char *file);
 int e_make_line_num2(char *str, char *file);
 int e_d_goto_break(char *file, int line, FENSTER *f);
+int e_d_goto_source(char *file, int line, FENSTER *f);
 int e_d_is_watch(int c, FENSTER *f);
 int e_d_session_runs(void);
 int e_d_brk_drawn_hollow(const char *file, int line);

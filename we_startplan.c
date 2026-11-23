@@ -2206,7 +2206,9 @@ int wpe_startplan_input(WpeStartPlan *p, const char *text, int from, const char 
  * wpe_startplan_reads_too_long - Does the plan run a start-up file the box
  * cannot show whole?
  * @p: the plan.
- * Return: 1 when one is too long (or not a plain file): Run it is not offered.
+ * Return: 1 when one is too long (or not a plain file), or the system would
+ * not let the editor read it: Run it is not offered, since a file nobody saw
+ * is never run.
  */
 int wpe_startplan_reads_too_long(const WpeStartPlan *p)
 {
@@ -2215,7 +2217,7 @@ int wpe_startplan_reads_too_long(const WpeStartPlan *p)
  if (p && p->load_refused)
   return 1;
  for (i = 0; p && i < p->npath; i++)
-  if (p->path[i].role == WPE_PATH_READS && p->path[i].too_long)
+  if (p->path[i].role == WPE_PATH_READS && (p->path[i].too_long || p->path[i].refused))
    return 1;
  return 0;
 }
@@ -2372,6 +2374,10 @@ static int startplan_read_whole(const char *content, ssize_t got, off_t size)
  * offer to run it.  The box shows text up to its first NUL, while the tool
  * reads every line after it: a folder could hide its real commands behind
  * one harmless line.
+ *
+ * A file the system will not let the editor open (closed to reading) is not
+ * "too long": its errno is kept in @s->refused, so the box says the system's
+ * reason and Run it is still withheld.
  */
 static void startplan_read_startup(WpeStartPath *s, const char *full)
 {
@@ -2379,11 +2385,17 @@ static void startplan_read_startup(WpeStartPath *s, const char *full)
  ssize_t got;
  int fd;
 
- s->too_long = 1;
  if (!(s->content = calloc(1, WPE_STARTPLAN_READS_MAX + 1)))
+ {
+  s->too_long = 1;
   return;
+ }
  if ((fd = open(full, O_RDONLY | O_NONBLOCK)) < 0)
+ {
+  s->refused = errno;
   return;
+ }
+ s->too_long = 1;                /* until judged a whole plain file */
  if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode))
  {
   s->length = (long)st.st_size;
@@ -2865,6 +2877,25 @@ static void startplan_embedded_put(WpeStartPath *s, const char *text, size_t n)
 }
 
 /**
+ * startplan_embedded_put_reason - Add the system's reason a script file could
+ * not be read to what the box shows, in parentheses on a line of its own.
+ * @s: the path; @err: the errno of the refusal.
+ *
+ * A script that is not there says "(not found)" and costs nothing; any other
+ * refusal (a script closed to reading) says its reason and keeps Run it
+ * withheld, since a script nobody could read is never run unseen.
+ */
+static void startplan_embedded_put_reason(WpeStartPath *s, int err)
+{
+ char note[WPE_PATH_MSG_MAX];
+
+ snprintf(note, sizeof note, "(%s)", wpe_path_refused_reason(err));
+ startplan_embedded_put(s, note, strlen(note));
+ if (err != ENOENT)
+  s->refused = err;
+}
+
+/**
  * startplan_admit_add - Note a path gdb will check against its safe-path for
  * the scripts a program carries.
  * @s: the path; @what: the path to admit.
@@ -2912,7 +2943,7 @@ static void startplan_embedded_file(WpeStartPath *s, const char *cwd, const char
  memset(&file, 0, sizeof file);
  if (access(full, F_OK) != 0)
  {
-  startplan_embedded_put(s, "(not found)", strlen("(not found)"));
+  startplan_embedded_put_reason(s, errno);
   return;
  }
  if (realpath(full, real))
@@ -2920,7 +2951,9 @@ static void startplan_embedded_file(WpeStartPath *s, const char *cwd, const char
  startplan_read_startup(&file, full);
  if (file.too_long)
   s->too_long = 1;
- if (file.content)
+ if (file.refused)
+  startplan_embedded_put_reason(s, file.refused);
+ if (file.content && !file.refused)
   startplan_embedded_put(s, file.content, strlen(file.content));
  free(file.content);
 }

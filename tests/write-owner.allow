@@ -199,9 +199,7 @@ we_prog.c|r25a:e_wrt_prj_fl|1|keep|the open project's file; NOFOLLOW when a star
 # r25i: getenv("HOME") and getpwuid( outside we_places.c.  The home of a place
 # the editor keeps its own files in is asked of wpe_user_home; these are not
 # such places.
-we_fl_unix.c|r25i:WpeFileManagerReturnHome|1|keep|a chdir to the home folder when the working folder cannot be read; nothing is written there
-we_fl_unix.c|r25i:WpeGetCurrentDir|1|keep|a chdir to the home folder when the working folder cannot be read; nothing is written there
-we_fl_unix.c|r25i:WpeHandleFileManager|7|keep|a chdir to the home folder when the working folder cannot be read; nothing is written there
+we_fl_unix.c|r25i:fm_stand_at_home|1|keep|a chdir to the home folder when the working folder or the folder asked for cannot be entered; nothing is written there
 we_write.c|r25i:write_user_words|1|keep|getpwuid of the owner's uid, for the name in a sentence; not a home
 
 # kept

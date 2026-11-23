@@ -7462,7 +7462,7 @@ int e_d_p_named(char *winname, char *str, FENSTER *f, int sw)
   ;
  if (i == 0)
  {
-  if (e_edit(cn, winname))
+  if (e_edit_view(cn, winname))
    return(-1);
   i = cn->mxedt;
   e_buffer_mark_view(cn->f[i]->b);

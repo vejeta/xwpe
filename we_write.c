@@ -2889,6 +2889,13 @@ int wpe_write_copy(FENSTER *f, const char *path, WpeWriteOutcome *o)
  WriteSource s;
  WriteAim aim;
 
+ if (!wpe_write_window_is_a_file(f))
+ {
+  memset(o, 0, sizeof *o);
+  o->status = WPE_WRITE_DECLINED;
+  o->not_a_file = 1;
+  return(-1);
+ }
  write_source_window(&s, f, 0, 0, E_BUFFER_ROW_END(f->b), f->b->mxlines - 1);
  write_aim_make(&aim, WRITE_AIM_COPY, NULL, &write_replaced_as_copy, WRITE_OPEN_NEW);
  write_run(&s, path, 0, &aim, o);
@@ -3388,6 +3395,12 @@ static int write_window_file(FENSTER *f, int plain_save, WpeWriteOutcome *o)
  o->status = WPE_WRITE_WRITTEN;           /* nothing to write is written */
  if (!write_window_listed(f))
   return(0);
+ if (plain_save && !wpe_write_window_is_a_file(f))
+ {
+  o->status = WPE_WRITE_DECLINED;
+  o->not_a_file = 1;
+  return(-1);
+ }
  if (!write_nul_confirmed(f, f->b))
  {
   o->status = WPE_WRITE_DECLINED;
@@ -3408,6 +3421,7 @@ static int write_window_file(FENSTER *f, int plain_save, WpeWriteOutcome *o)
  if (o->status == WPE_WRITE_WRITTEN)
  {
   f->file_id = o->written;
+  f->no_file = 0;                        /* a Save As gave the window a file */
   f->save = 0;
   write_final_break_after(f, f->b);
   f->b->nul_dropped = 0;                 /* the user knew, and the file is written */
@@ -4389,6 +4403,34 @@ int wpe_write_written_clause(char *out, size_t n, const WpeWriteOutcome *o)
  return((int)strlen(out));
 }
 
+/* What a Save of a window with no file behind it says. */
+#define WPE_WRITE_NOT_A_FILE_SENTENCE \
+ "This window is not a file.  Use Save As to keep its text."
+
+/**
+ * wpe_write_window_set_not_a_file - Mark a window the editor writes itself as
+ * having no file behind it.
+ * @f: the window, just opened.
+ *
+ * What the user gets: the assistant's composer and pane never write their
+ * text under their title, so a file the user has of that name is never
+ * replaced, and no emergency or autosave copy is left beside it.
+ */
+void wpe_write_window_set_not_a_file(FENSTER *f)
+{
+ f->no_file = 1;
+}
+
+/**
+ * wpe_write_window_is_a_file - Does this window have a file behind it?
+ * @f: the window.
+ * Return: 0 for a window the editor writes itself, else 1.
+ */
+int wpe_write_window_is_a_file(const FENSTER *f)
+{
+ return(!f->no_file);
+}
+
 /**
  * wpe_write_sentence - The one sentence that tells the user how a write ended.
  * @out, @n: the room; @o: the outcome; @then: what the caller keeps.
@@ -4406,6 +4448,11 @@ int wpe_write_sentence(char *out, size_t n, const WpeWriteOutcome *o, WpeWriteTh
  if (n == 0)
   return(0);
  out[0] = '\0';
+ if (o->not_a_file)
+ {
+  snprintf(out, n, "%s", WPE_WRITE_NOT_A_FILE_SENTENCE);
+  return((int)strlen(out));
+ }
  if (o->status == WPE_WRITE_DECLINED)
   return(0);
  if (o->status == WPE_WRITE_WRITTEN)

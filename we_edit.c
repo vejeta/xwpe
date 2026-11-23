@@ -14,6 +14,7 @@
 #include "we_testdump.h"
 #include "we_ai.h"       /* the assistant's key hooks (guarded by WPE_AI) */
 
+#include <errno.h>
 #include<sys/types.h> /*  included for digital station  */
 #include<sys/stat.h>
 #include<stdarg.h>
@@ -510,8 +511,58 @@ static void e_edit_drop_fresh_line(FENSTER *f)
  f->save = 0;
 }
 
-/* open edit window */
-int e_edit(ECNT *cn, char *filename)
+/**
+ * e_edit_open_refused_by_system - Did the system refuse the file of a window
+ * being opened, so that the window must not open?
+ * @ftype: E_EDIT_A_FILE, or the view (Help, Messages, Watches, Stack) it is;
+ * @view: a window the editor writes itself, which reads no file;
+ * @err: the errno of the open, 0 when it succeeded or was not tried.
+ * Return: 1 for a file the user edits that the system will not let us read.
+ *
+ * A missing file is not a refusal: the window opens empty and the first Save
+ * creates the file.  Any other errno (a file closed to reading, a name under
+ * a file, a loop of links) means the window would show none of the file's
+ * text, and a Save over it would destroy the file, so nothing opens.
+ */
+static int e_edit_open_refused_by_system(int ftype, int view, int err)
+{
+ if (view || ftype != E_EDIT_A_FILE)
+  return(0);
+ return(err != 0 && err != ENOENT);
+}
+
+/**
+ * e_edit_stop_before_window - A window cannot be opened on this name: give
+ * back the names taken for it, and say why in @err when the system did.
+ * @path, @file: the name split in its folder and its file, freed here;
+ * @err: where the errno goes, or NULL; @why: the errno, 0 when the editor's
+ * own message was already said or nothing is to be said.
+ * Return: -1, what e_edit returns for a window that did not open.
+ */
+static int e_edit_stop_before_window(char *path, char *file, int *err, int why)
+{
+ WpeFree(path);
+ WpeFree(file);
+ if (err != NULL)
+  *err = why;
+ return(-1);
+}
+
+/**
+ * e_edit_open - The one body of opening an edit window.
+ * @cn: the editor; @filename: the window's name or file;
+ * @view: 1 for a window the editor writes itself (the assistant's pane, a
+ * composer, a named report): named like a file, never read from the disk;
+ * @err: gets the errno when the system refused the file, 0 when the editor
+ * refused for its own reason and already said it (too many windows, no
+ * memory), or when the window opened.
+ * Return: 0 when the window opened or was already open, -1 when it did not.
+ *
+ * Nothing is said here for a refusal of the system: the entries below decide
+ * who speaks, so a caller with a loop of its own (the debugger's stops, the
+ * assistant's list of files) is not stopped by a box for each file.
+ */
+static int e_edit_open(ECNT *cn, char *filename, int view, int *err)
 {
  extern char *e_hlp_str[];
  extern WOPT *eblst, *hblst, *mblst, *dblst;
@@ -526,8 +577,11 @@ int e_edit(ECNT *cn, char *filename)
  FENSTER *f, *fo;
  char *complete_fname, *path, *file;
  int ftype = 0, i, j, st = 0;
+ int open_err = 0;
  struct stat buf[1];
 
+ if (err != NULL)
+  *err = 0;
  /* Check to see if the file is already opened BD */
  WpeFilenameToPathFile(filename, &path, &file);
  /* Should check for error here */
@@ -546,14 +600,16 @@ int e_edit(ECNT *cn, char *filename)
  if (cn->mxedt >= MAXEDT)
  {
   e_error(e_msg[ERR_MAXWINS], 0, cn->fb);
-  return(-1);
+  return(e_edit_stop_before_window(path, file, err, 0));
  }
- if (stat(filename, buf) == 0)
+ if (!view && stat(filename, buf) == 0)
  {
+  if (S_ISDIR(buf->st_mode))
+   return(e_edit_stop_before_window(path, file, err, EISDIR));
   if (!S_ISREG(buf->st_mode))
   {
    /* error message should go here */
-   return(-1);
+   return(e_edit_stop_before_window(path, file, err, 0));
   }
  }
  for (j = 1; j <= MAXEDT; j++)
@@ -569,6 +625,9 @@ int e_edit(ECNT *cn, char *filename)
   e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
  wpe_write_identity_forget(&f->file_id);
  wpe_write_copies_forget(&f->copies);
+ f->no_file = 0;
+ if (view)
+  wpe_write_window_set_not_a_file(f);    /* its title is a label: no file behind it */
 
  f->fb = cn->fb;
  cn->f[cn->mxedt] = f;
@@ -778,16 +837,21 @@ int e_edit(ECNT *cn, char *filename)
   e_use_editor_bar(f, f->blst);
  if (ftype != 0)
   e_buffer_mark_view(f->b);       /* Help, Messages, Watches and Stack */
- if (e_edit_reads_file(ftype))
+ if (!view && e_edit_reads_file(ftype))
+ {
   fp = fopen(complete_fname, "rb");
+  if (fp == NULL)
+   open_err = errno;
+ }
+ if (e_edit_open_refused_by_system(ftype, view, open_err))
+ {
+  FREE(complete_fname);
+  e_edit_drop_window(cn, f);
+  if (err != NULL)
+   *err = open_err;
+  return(-1);
+ }
  if (fp != NULL && access(complete_fname, 2) != 0)
-  f->ins = WPE_INS_READONLY;
- /* A file we could not even OPEN for reading but which EXISTS and is not
-    writable (mode 000) is still a locked file -- mark it read-only so the title
-    shows the lock, instead of a silently-empty editable buffer that would fail
-    to save.  access(,2) is W_OK; access(,0) is F_OK (exists). */
- else if (fp == NULL && e_edit_reads_file(ftype) &&
-          access(complete_fname, 0) == 0 && access(complete_fname, 2) != 0)
   f->ins = WPE_INS_READONLY;
 #ifdef UNIX
  if (fp != NULL && fstat(fileno(fp), buf) == 0)
@@ -892,6 +956,57 @@ int e_edit(ECNT *cn, char *filename)
  }
 #endif
  return(0);
+}
+
+/**
+ * e_edit - Open an edit window on a file, the way File > Open does.
+ * @cn: the editor; @filename: the file, or one of the views Help, Messages,
+ * Watches, Stack.
+ * Return: 0 when the window opened or was already open, -1 when it did not.
+ *
+ * What the user gets: a file the system will not let the editor read (closed
+ * to reading, under a file, a loop of links, a folder) opens no window and a
+ * box names the file and the system's reason, so no empty window invites a
+ * Save over the real file.  A file that does not exist opens as a new file.
+ */
+int e_edit(ECNT *cn, char *filename)
+{
+ int err = 0;
+ int ret = e_edit_open(cn, filename, 0, &err);
+
+ if (ret != 0 && err != 0)
+  e_say_path_refused(cn->f[cn->mxedt], "file", filename, err);
+ return(ret);
+}
+
+/**
+ * e_edit_outcome - Open an edit window like e_edit, and leave the words about
+ * a refusal of the system to the caller.
+ * @cn: the editor; @filename: the file; @err: gets the errno of the
+ * refusal, 0 when the window opened or the editor already said why.
+ * Return: 0 or -1, as e_edit.
+ *
+ * For a caller that has a report of its own and a loop that a box would
+ * stop: the debugger on every stop in a file, the assistant applying a list
+ * of files.
+ */
+int e_edit_outcome(ECNT *cn, char *filename, int *err)
+{
+ return(e_edit_open(cn, filename, 0, err));
+}
+
+/**
+ * e_edit_view - Open a window the editor writes itself, named like a file.
+ * @cn: the editor; @name: the window's name (the assistant's pane, a
+ * composer, a named report).
+ * Return: 0 when the window opened or was already open, -1 when it did not.
+ *
+ * What the user gets: a file or a folder of the same name in the current
+ * folder is never read into the window nor refuses it.
+ */
+int e_edit_view(ECNT *cn, char *name)
+{
+ return(e_edit_open(cn, name, 1, NULL));
 }
 
 /* The line that names a paint the screen's owner could not keep. */
@@ -4395,6 +4510,8 @@ int e_autosave(FENSTER *f)
 {
  f->save = 1;
  if (!(f->ed->autosv & 2)) return(0);
+ if (!wpe_write_window_is_a_file(f))
+  return(0);                   /* no file behind it: no copy beside one */
  e_autosave_copy(f);
  f->save = 1;
  return(0);

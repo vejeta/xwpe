@@ -176,6 +176,9 @@ typedef struct {
                                 WPE_STARTPLAN_READS_MAX bytes), shown and remembered  */
  long length;                /* WPE_PATH_READS: the file's whole size in bytes        */
  int too_long;               /* WPE_PATH_READS: not shown whole, so not run unseen   */
+ int refused;                /* WPE_PATH_READS: the errno of an open the system
+                                refused, else 0; the file was not shown, so not
+                                run unseen                                           */
  const char *note;           /* WPE_PATH_READS: when the tool runs it, for the box    */
  int embedded;               /* WPE_PATH_READS: not a file of its own: the scripts the
                                 program carries inside itself (gdb's

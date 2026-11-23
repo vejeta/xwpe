@@ -151,6 +151,7 @@ int WpeCreateFileManager(int sw, ECNT *cn, char *dirct)
     e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
   wpe_write_identity_forget(&f->file_id);
   wpe_write_copies_forget(&f->copies);
+  f->no_file = 0;
 
   /* allocate buffer related to the window (NOT proper type, later casted) */
   if((b = (FLBFFR *) MALLOC(sizeof(FLBFFR))) == NULL)
@@ -604,6 +605,53 @@ static int WpeSaveAsIsTranscript(FLBFFR *b, FENSTER *fe)
 }
 
 /**
+ * fm_stand_at_home - Put the editor in the home folder, the last place left
+ * to stand when the folder it was in or asked for cannot be entered.
+ * @cn: the desktop.
+ *
+ * Relative names then still mean something.  When even the home folder is
+ * closed there is nowhere left to stand, no reason can be said, and the
+ * editor ends with its message, as it always did.
+ */
+static void fm_stand_at_home(ECNT *cn)
+{
+  const char *home;
+
+  if((home = getenv("HOME")) == NULL)
+    e_error(e_msg[ERR_HOMEDIRACCESS], 1, cn->fb);
+  if(chdir(home))
+    e_error(e_msg[ERR_HOMEDIRACCESS], 1, cn->fb);
+}
+
+/**
+ * fm_change_folder - Move the editor into a folder, or say why it cannot.
+ * @cn: the desktop; @f: the window the box opens over, or NULL for the one
+ * on top; @dir: the folder.
+ *
+ * The one place the file manager changes folder.  When the system refuses
+ * (a folder closed to the user, a name that is a file, a link loop), the
+ * user reads the folder and the system's reason in a box, and the editor
+ * goes to the home folder so that its relative names still mean something.
+ * When even the home folder is closed there is nowhere left to stand and the
+ * editor ends with its message, as it always did.
+ */
+static void fm_change_folder(ECNT *cn, FENSTER *f, const char *dir)
+{
+  FENSTER *over = f;
+  int err;
+
+  if(chdir(dir) == 0)
+    return;
+  err = errno;
+  if(over == NULL)
+    over = cn->f[cn->mxedt];
+  e_say_path_refused(over, "folder", dir, err);
+
+  /* we cannot determine where we are, try the home */
+  fm_stand_at_home(cn);
+}
+
+/**
  * WpeFileManagerReturnHome - Put the editor back in the directory it was in.
  * @cn: the desktop; @svmode: the file-list options to restore, or -1;
  * @svdir: the saved directory (freed and cleared), or NULL.
@@ -619,15 +667,7 @@ static void WpeFileManagerReturnHome(ECNT *cn, int svmode, char **svdir)
     cn->flopt = svmode;
   if(*svdir == NULL)
     return;
-  if(chdir(*svdir))
-  {
-    e_error(e_msg[ERR_WORKDIRACCESS], 0, cn->fb);
-    /* we cannot determine where we are, try the home */
-    if((dirtmp = getenv("HOME")) == NULL)
-      e_error(e_msg[ERR_HOMEDIRACCESS], 1, cn->fb);
-    if(chdir(dirtmp))
-      e_error(e_msg[ERR_HOMEDIRACCESS], 1, cn->fb);
-  }
+  fm_change_folder(cn, NULL, *svdir);
   dirtmp = WpeGetCurrentDir(cn);
   FREE(cn->dirct);
   cn->dirct = dirtmp;
@@ -1278,7 +1318,7 @@ int WpeHandleFileManager(ECNT * cn)
         {
           if(lstat(f->dirct, &buf))
           {
-            e_error(e_msg[ERR_ACCFILE], 0, f->ed->fb);
+            e_say_path_refused(f, "folder", f->dirct, errno);
             break;
           }
           if(S_ISLNK(buf.st_mode))
@@ -1293,16 +1333,7 @@ int WpeHandleFileManager(ECNT * cn)
         }
 
         /* change to the desired dir with system error checking */
-        if(chdir(f->dirct))
-        {
-          e_error(e_msg[ERR_WORKDIRACCESS], 0, f->fb);
-
-          /* we cannot determine where we are, try the home */
-          if((dirtmp = getenv("HOME")) == NULL)
-            e_error(e_msg[ERR_HOMEDIRACCESS], 1, cn->fb);
-          if(chdir(dirtmp))
-            e_error(e_msg[ERR_HOMEDIRACCESS], 1, cn->fb);
-        }
+        fm_change_folder(cn, f, f->dirct);
 
         /* get current directory */
         dirtmp = WpeGetCurrentDir(f->ed);
@@ -1591,7 +1622,7 @@ int WpeHandleFileManager(ECNT * cn)
             /* try to open the file, no success return */
             if((fp = fopen(filen, "rb")) == NULL)
             {
-              e_error(e_msg[ERR_ACCFILE], 0, f->fb);
+              e_say_path_refused(f, "file", filen, errno);
               c = cold;
               break;
             }
@@ -1633,16 +1664,7 @@ int WpeHandleFileManager(ECNT * cn)
           if (svdir != NULL)
           {
             /* go back to the saved directory */
-            if (chdir(svdir))
-            {
-              e_error(e_msg[ERR_WORKDIRACCESS], 0, cn->fb);
-
-              /* we cannot determine where we are, try the home */
-              if((dirtmp = getenv("HOME")) == NULL)
-                e_error(e_msg[ERR_HOMEDIRACCESS], 1, cn->fb);
-              if(chdir(dirtmp))
-                e_error(e_msg[ERR_HOMEDIRACCESS], 1, cn->fb);
-            }
+            fm_change_folder(cn, NULL, svdir);
 
             /* determine current dir */
             dirtmp = WpeGetCurrentDir(cn);
@@ -1721,16 +1743,7 @@ int WpeHandleFileManager(ECNT * cn)
         if(svdir != NULL)
         {
           /* go back to the saved directory */
-          if(chdir(svdir))
-          {
-            e_error(e_msg[ERR_WORKDIRACCESS], 0, cn->fb);
-
-            /* we cannot determine where we are, try the home */
-            if((dirtmp = getenv("HOME")) == NULL)
-              e_error(e_msg[ERR_HOMEDIRACCESS], 1, cn->fb);
-            if(chdir(dirtmp))
-              e_error(e_msg[ERR_HOMEDIRACCESS], 1, cn->fb);
-          }
+          fm_change_folder(cn, NULL, svdir);
 
           /* determine current dir */
           dirtmp = WpeGetCurrentDir(cn);
@@ -1867,16 +1880,7 @@ int WpeHandleFileManager(ECNT * cn)
           if(svdir != NULL)
           {
             /* go back to the saved directory */
-            if(chdir(svdir))
-            {
-              e_error(e_msg[ERR_WORKDIRACCESS], 0, cn->fb);
-
-              /* we cannot determine where we are, try the home */
-              if((dirtmp = getenv("HOME")) == NULL)
-                e_error(e_msg[ERR_HOMEDIRACCESS], 1, cn->fb);
-              if(chdir(dirtmp))
-                e_error(e_msg[ERR_HOMEDIRACCESS], 1, cn->fb);
-            }
+            fm_change_folder(cn, NULL, svdir);
 
             /* determine current dir */
             dirtmp = WpeGetCurrentDir(f->ed);
@@ -1911,16 +1915,7 @@ int WpeHandleFileManager(ECNT * cn)
           if(svdir != NULL)
           {
             /* go back to the saved directory */
-            if(chdir(svdir))
-            {
-              e_error(e_msg[ERR_WORKDIRACCESS], 0, cn->fb);
-
-              /* we cannot determine where we are, try the home */
-              if((dirtmp = getenv("HOME")) == NULL)
-                e_error(e_msg[ERR_HOMEDIRACCESS], 1, cn->fb);
-              if(chdir(dirtmp))
-                e_error(e_msg[ERR_HOMEDIRACCESS], 1, cn->fb);
-            }
+            fm_change_folder(cn, NULL, svdir);
 
             /* determine current dir */
             dirtmp = WpeGetCurrentDir(cn);
@@ -1949,8 +1944,7 @@ int WpeHandleFileManager(ECNT * cn)
         {
           if(svdir != NULL)
           {
-            if(chdir(svdir) && (dirtmp = getenv("HOME")) != NULL)
-              if(chdir(dirtmp)) ;
+            fm_change_folder(cn, NULL, svdir);
             dirtmp = WpeGetCurrentDir(cn);
             FREE(cn->dirct);
             cn->dirct = dirtmp;
@@ -1971,16 +1965,7 @@ int WpeHandleFileManager(ECNT * cn)
   if(svdir != NULL)
   {
     /* go back to the saved directory */
-    if(chdir(svdir))
-    {
-      e_error(e_msg[ERR_WORKDIRACCESS], 0, cn->fb);
-
-      /* we cannot determine where we are, try the home */
-      if((dirtmp = getenv("HOME")) == NULL)
-        e_error(e_msg[ERR_HOMEDIRACCESS], 1, cn->fb);
-      if(chdir(dirtmp))
-        e_error(e_msg[ERR_HOMEDIRACCESS], 1, cn->fb);
-    }
+    fm_change_folder(cn, NULL, svdir);
 
     /* determine current dir */
     dirtmp = WpeGetCurrentDir(cn);
@@ -2170,7 +2155,7 @@ int WpeFileDirAttributes(char *filen, FENSTER * f)
   /* if cannot access or error */
   if(stat(filen, buf))
   {
-    e_error(e_msg[ERR_ACCFILE], 0, f->ed->fb);
+    e_say_path_refused(f, "file", filen, errno);
     return 1;
   }
   mode = buf->st_mode;
@@ -2254,10 +2239,7 @@ char *WpeGetCurrentDir(ECNT *cn)
             e_error(e_msg[ERR_WORKDIRACCESS], 0, cn->fb);
 
             /* we cannot determine where we are, try the home */
-            if ((dirtmp = getenv("HOME")) == NULL)
-              e_error(e_msg[ERR_HOMEDIRACCESS], 1, cn->fb);
-            if (chdir(dirtmp))
-              e_error(e_msg[ERR_HOMEDIRACCESS], 1, cn->fb);
+            fm_stand_at_home(cn);
 
             home = 1;
           }
@@ -2804,7 +2786,7 @@ int WpeRemove(char *file, FENSTER * f)
 
   if(lstat(file, &lbuf))
   {
-    e_error(e_msg[ERR_ACCFILE], 0, f->ed->fb);
+    e_say_path_refused(f, "file", file, errno);
     return 1;
   }
 
@@ -4176,6 +4158,7 @@ int e_data_first(int sw, ECNT *cn, char *nstr)
     e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
   wpe_write_identity_forget(&f->file_id);
   wpe_write_copies_forget(&f->copies);
+  f->no_file = 0;
   if((fw = (FLWND *) MALLOC(sizeof(FLWND))) == NULL)
     e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
   f->fb = cn->fb;

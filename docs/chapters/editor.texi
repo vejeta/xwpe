@@ -440,6 +440,11 @@ The Name field accepts three kinds of input:
 An existing file name: pressing @key{Return} opens it for editing.
 @item
 A non-existing file name: pressing @key{Return} creates a new file.
+A name the system refuses for another reason (a file closed to reading,
+a name under a file, a loop of links) opens no window: a box names the
+file and the system's reason, such as @samp{Cannot open file
+/home/you/locked.c: Permission denied}.  The box names the path the File
+Manager built; only a name given on the command line is shown as typed.
 @item
 A file mask (e.g.@: @code{*.c}, @code{[a-z]*}): pressing @key{Return}
 filters the file list.

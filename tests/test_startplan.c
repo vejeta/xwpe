@@ -29,6 +29,7 @@
 #include "../we_startcmd.h"
 #include "../we_path.h"
 #include "test_watchdog.h"
+#include "testdir.h"
 
 #define MAIN_GUARD_S      120   /* the whole test, with the short commands it runs */
 #define PATH_ROOM         4096
@@ -155,7 +156,7 @@ static void expect_has(const char *name, const char *text, const char *part)
 
 static void under_base(char *dst, size_t sz, const char *rel)
 {
- snprintf(dst, sz, "%s/%s", base, rel);
+ (void)test_path_join(dst, sz, base, rel);   /* a name that does not fit is a counted FAIL */
 }
 
 static void make_dir(const char *path)
@@ -663,7 +664,7 @@ static WpeStartPlan *debugger_plan(const char *dir, const char *tool)
 /* The path of @name in @dir. */
 static void file_in(char *out, size_t sz, const char *dir, const char *name)
 {
- snprintf(out, sz, "%s/%s", dir, name);
+ (void)test_path_join(out, sz, dir, name);   /* a name that does not fit is a counted FAIL */
 }
 
 static void case_startup_listed(void)
@@ -1237,6 +1238,42 @@ static void case_embedded_absent(void)
  expect_int("and a plan of the user's own words runs", wpe_startplan_judge(p), WPE_PLAN_CLEAN);
  wpe_startplan_free(p);
  unlink(exe);
+}
+
+/* A start-up file or a script the system will not let the editor read is
+   neither "too long" nor "not found": the plan keeps the system's reason,
+   and Run it is still withheld because nobody saw the file. */
+static void case_startup_refused(void)
+{
+ char rc[PATH_ROOM], py[PATH_ROOM];
+ WpeStartPlan *p;
+
+ if (!test_premise(test_premise_file_0200_is_unreadable(proj),
+                   "a start-up file closed to reading", "this user reads a 0200 file"))
+  return;
+ file_in(rc, sizeof rc, proj, ".pdbrc");
+ write_file(rc, "!open('ran','w').close()\n");
+ chmod(rc, 0000);
+ p = debugger_plan(proj, "pdb");
+ expect_int("a .pdbrc closed to reading is listed", p->npath, 1);
+ expect_int("with the system's reason", p->npath ? p->path[0].refused : 0, EACCES);
+ expect_int("it is not called too long", p->npath ? p->path[0].too_long : -1, 0);
+ expect_int("and Run it is withheld", wpe_startplan_reads_too_long(p), 1);
+ wpe_startplan_free(p);
+ chmod(rc, 0600);
+ unlink(rc);
+
+ file_in(py, sizeof py, proj, "emb.py");
+ write_file(py, "open('ran','w').close()\n");
+ chmod(py, 0000);
+ p = embedded_plan(ELF_PAYLOAD, ELF_PAYLOAD_LEN);
+ expect_str("a script closed to reading says why, not 'not found'",
+            p->npath ? p->path[0].content : "", "emb.py\n(Permission denied)\n");
+ expect_int("with its reason kept", p->npath ? p->path[0].refused : 0, EACCES);
+ expect_int("and Run it is withheld", wpe_startplan_reads_too_long(p), 1);
+ wpe_startplan_free(p);
+ chmod(py, 0600);
+ unlink(py);
 }
 
 static void case_operand_in(void)
@@ -3113,6 +3150,7 @@ int main(void)
  case_elf_bad_sections();
  case_embedded_listed();
  case_embedded_absent();
+ case_startup_refused();
  case_operand_in();
  case_input();
  case_carrier();
@@ -3145,6 +3183,7 @@ int main(void)
  case_jdb_lldb_deep_startup();
  case_contain_pdb_jdb_asks_again();
  teardown();
+ failures += test_dir_failures;
  if (failures) { printf("%d failure(s)\n", failures); return 1; }
  printf("test_startplan: all cases passed\n");
  return 0;

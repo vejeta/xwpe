@@ -833,6 +833,30 @@ held whole is left out of the checkpoint and named.  The reason: a name
 that a repository or a source file chose must never make the editor wait or
 take your keys.
 
+@item A file or folder the system will not let you read
+@cindex file closed to reading
+@cindex folder closed to reading
+@cindex refused path, reason
+The original opened a file it could not read as an empty window with no
+word (1.5.30a locked the window only when the file could be opened),
+said @samp{Can't access file or directory} or @samp{Can't open directory}
+with no reason in the file manager, and said @samp{not found!} when Show
+Definition could not read the project file.  xwpe says the path and the
+system's reason and opens nothing: @samp{Cannot open file
+/home/you/locked.c: Permission denied.} (the file manager gives the full
+path; only a name typed on the command line is shown as typed),
+@samp{Cannot open folder @dots{}: Not a directory.}, @samp{Cannot open
+project file @dots{}: Permission denied.}.  A file that
+does not exist is still a new file.  The debugger names a source it
+cannot read on the status row, once for each file, or in a box when you
+picked the source yourself, and its start plan shows the reason in
+parentheses for a start-up file or script that is closed to reading, which
+it does not run.  A window the editor writes itself (the assistant's
+composer and pane) has no file behind it: F2 says so and points to Save As,
+and nothing is written under its title.  The reason: a window with none of
+the file's text invites a Save over it, which destroys the file, and a
+guessed cause sends you looking for a typo that is not there.
+
 @item A long link in a help page or an Info file
 @cindex help link, long
 @cindex Info node name, long

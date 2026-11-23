@@ -1181,42 +1181,61 @@ static void e_say_file_path_too_long(FENSTER *f)
  e_error(msg, 0, f->fb);
 }
 
+/**
+ * e_show_nm_project_unread - Show Definition could not read the project file.
+ * @f: the window the box is shown over; @code: what e_read_var returned;
+ * @why: the refusal e_read_var filled.
+ * Return: -1, the answer of a definition that was not shown.
+ *
+ * What the user gets: a project closed to reading says so ("Cannot open
+ * project file ...: Permission denied.") instead of "<symbol> not found!",
+ * which sent them looking for a typo.  A read that ran out of memory has
+ * already said so.
+ */
+static int e_show_nm_project_unread(FENSTER *f, int code, const WpeReadOutcome *why)
+{
+ if (code == E_PRJ_READ_NOT_OPENED)
+  e_prj_say_not_opened(f, e_prog.project, why);
+ WpeMouseRestoreShape();
+ return(-1);
+}
+
 int e_show_nm_f(char *name, FENSTER *f, int oldn, char **oldname)
 {
  int i, j, len, ret, num, x, first = oldn < 0 ? 1 : 0, skipped = 0;
  char str[WPE_PATH_SIZE], file[WPE_PATH_SIZE], *filename;
  struct dirfile *df, *fdf = NULL;
+ WpeReadOutcome why;
 
  e_aopen_said_too_long = 0;      /* one search, one word about a long include folder */
 #ifndef TESTSDEF
  if (!access(e_prog.project, 0))
  {
   WpeMouseChangeShape(WpeWorkingShape);
-  if (e_read_var(f, NULL)) ret = -1;
-  else
+  ret = e_read_var(f, &why);
+  if (ret != 0)
+   return(e_show_nm_project_unread(f, ret, &why));
+  df = e_p_get_var("FILES");
+  if (!df)
   {
-   df = e_p_get_var("FILES");
-   if (!df)
-   {
-    e_error(e_p_msg[ERR_NOTHING], 0, f->fb);
-    WpeMouseRestoreShape();
-    return(-1);
-   }
-   for (i = 0, ret = 1; i < df->anz && ret; i++)
-   {
-    /* A FILES entry the system could not open is skipped, and said once. */
-    if (wpe_path_copy(str, sizeof str, df->name[i]) != 0)
-    {
-     skipped = 1;
-     continue;
-    }
-    ret = e_find_def(name, str, 7, file, &num, &x, oldn,
-      *oldname, &fdf, &first);
-   }
-   freedf(df);
-   if (skipped && ret)
-    e_say_file_path_too_long(f);
+   e_error(e_p_msg[ERR_NOTHING], 0, f->fb);
+   WpeMouseRestoreShape();
+   return(-1);
   }
+  for (i = 0, ret = 1; i < df->anz && ret; i++)
+  {
+   /* A FILES entry the system could not open is skipped, and said once. */
+   if (wpe_path_copy(str, sizeof str, df->name[i]) != 0)
+   {
+    skipped = 1;
+    continue;
+   }
+   ret = e_find_def(name, str, 7, file, &num, &x, oldn,
+     *oldname, &fdf, &first);
+  }
+  freedf(df);
+  if (skipped && ret)
+   e_say_file_path_too_long(f);
  }
  else
 #endif

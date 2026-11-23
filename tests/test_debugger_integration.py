@@ -27,6 +27,7 @@ import deep_folder
 import gui_owner
 import procinfo
 from host_tools import require, require_absent
+from mode_premise import file_mode_is_obeyed
 from wpe_driver import (WpeSession, ALT, WAIT_SCALE, server_program,
                         CURRENT_LINE_BG, BREAKPOINT_BG,
                         UNCONFIRMED_BREAKPOINT_FG, incoherence,
@@ -3537,6 +3538,112 @@ def test_go_to_cursor_in_another_source_file_stops_there(tmp_path):
             "Go to cursor should stop on line %d of b.c (mark on %r):\n%s" \
             % (TWO_FILE_TARGET_LINE, _marked_text(w), _screen(w))
         assert _children(w, "gdb"), "gdb should still run the session"
+
+
+REFUSED_SOURCE_COLS = 200   # wide: the sentence names the whole path of b.c
+GDBINIT_BASENAMES = "set filename-display basename\n"
+REFUSED_SOURCE_SAID = "Cannot open source"
+REFUSED_SOURCE_WHY = "Permission denied"
+
+
+SENTENCE_ROOM = 60          # "Cannot open source " and ": Permission denied." around the path
+
+
+def _refused_source_cols(tmp_path):
+    """Columns wide enough for the status row to hold the sentence whole."""
+    return max(REFUSED_SOURCE_COLS, len(str(tmp_path)) + SENTENCE_ROOM)
+
+
+def _refused_source_said(w):
+    screen = _screen(w)
+    return REFUSED_SOURCE_SAID in screen and REFUSED_SOURCE_WHY in screen
+
+
+def _window_titled(w, name):
+    """True when a window titled @name is drawn: its name sits between the
+    frame's line characters."""
+    return re.search(r"q %s q" % re.escape(name), _screen(w)) is not None
+
+
+def _stop_in_a_source_the_system_refuses(tmp_path, w):
+    """Stopped in main (p.c), b.c made unreadable, then F8 and F7 into bb:
+    the stop is in the file the editor may not read."""
+    file_mode_is_obeyed(str(tmp_path), 0o000, os.O_RDONLY)
+    _stop_on(w, TWO_FILE_BREAK_LINE)
+    os.chmod(str(tmp_path / "b.c"), 0o000)
+    w.key(F8, delay=1.0)
+    w.key(F7, delay=1.0)
+
+
+# @scenario SC-debug-05
+def test_a_stop_in_a_source_the_system_refuses_is_said_once_on_the_status_row(tmp_path):
+    """Stopped in p.c, b.c becomes 0000 and F7 steps into bb: the status row
+    says "Cannot open source <path>: Permission denied." and no window opens
+    for b.c.  Two more stops in b.c say nothing new and leave no box waiting:
+    Ctrl-G Q then ends gdb at once (a pending box would have taken the key).
+    On the unfixed tree a padlocked empty b.c window opened and nothing was
+    said."""
+    _need("gcc", "gdb")
+    file_mode_is_obeyed(str(tmp_path), 0o000, os.O_RDONLY)
+    (tmp_path / "b.c").write_text(TWO_FILE_SECOND_C)
+    with WpeSession(str(tmp_path), TWO_FILE_MAIN_C, filename="p.c",
+                    wait=1.5, cols=_refused_source_cols(tmp_path)) as w:
+        try:
+            _stop_in_a_source_the_system_refuses(tmp_path, w)
+            assert _wait_for(w, lambda: _refused_source_said(w), STEP_TIMEOUT_S), \
+                "the stop in b.c should say why it is not shown:\n%s" % _screen(w)
+            assert not _window_titled(w, "b.c"), \
+                "no window should open for b.c:\n%s" % _screen(w)
+            w.key(F8, delay=1.0)
+            w._drain(RUNNING_SETTLE_S)          # the stop has been shown by now
+            assert not _refused_source_said(w), \
+                "a second stop in the same file said it again:\n%s" % _screen(w)
+            w.key(F8, delay=1.0)
+            w._drain(RUNNING_SETTLE_S)
+            assert not _refused_source_said(w), \
+                "a third stop in the same file said it again:\n%s" % _screen(w)
+            assert not _window_titled(w, "b.c"), \
+                "still no window for b.c:\n%s" % _screen(w)
+            w.key(CTRL_G, "q", delay=0.8)
+            assert _wait_for(w, lambda: not _children(w, "gdb"), STEP_TIMEOUT_S), \
+                "Ctrl-G Q should end gdb, so no box was waiting:\n%s" % _screen(w)
+        finally:
+            os.chmod(str(tmp_path / "b.c"), 0o600)
+
+
+# @scenario SC-debug-05
+def test_a_frame_picked_in_the_stack_window_in_a_refused_source_gets_a_box(tmp_path):
+    """Stopped in bb of b.c (0000), Ctrl-G K, Enter on the top frame: the user
+    asked for that source, so a box says "Cannot open source" and the reason,
+    though the stop already said it on the status row; no window opens for
+    b.c.  (The Alt-Q D twin needs a language server that indexed a header
+    that is then made unreadable: a manual line until such a row exists.)
+
+    gdb shows the file names of its frames by their base name here (the
+    test HOME is the work folder): a long path that wraps over several rows
+    of the Stack window is a different matter, not what this row is about,
+    so the row holds for any length of the folder's path."""
+    _need("gcc", "gdb")
+    file_mode_is_obeyed(str(tmp_path), 0o000, os.O_RDONLY)
+    (tmp_path / "b.c").write_text(TWO_FILE_SECOND_C)
+    (tmp_path / ".gdbinit").write_text(GDBINIT_BASENAMES)
+    with WpeSession(str(tmp_path), TWO_FILE_MAIN_C, filename="p.c",
+                    wait=1.5, cols=_refused_source_cols(tmp_path)) as w:
+        try:
+            _stop_in_a_source_the_system_refuses(tmp_path, w)
+            assert _wait_for(w, lambda: _refused_source_said(w), STEP_TIMEOUT_S), \
+                "the stop in b.c should say why it is not shown:\n%s" % _screen(w)
+            w.key(CTRL_G, "k", delay=0.8)
+            assert _wait_for(w, lambda: "#0  " in _screen(w), STEP_TIMEOUT_S), \
+                "Ctrl-G K should list the frames:\n%s" % _screen(w)
+            w.key("\r", delay=1.5)
+            assert _wait_for(w, lambda: _refused_source_said(w), STEP_TIMEOUT_S), \
+                "Enter on the frame should raise a box naming the source:\n%s" % _screen(w)
+            w.key("\r", delay=0.8)
+            assert not _window_titled(w, "b.c"), \
+                "still no window for b.c:\n%s" % _screen(w)
+        finally:
+            os.chmod(str(tmp_path / "b.c"), 0o600)
 
 
 # A function that sleeps for ten minutes before it returns, so Finish and

@@ -181,6 +181,9 @@ typedef struct {
                                     is not back: the restore's errno, or ENOENT when
                                     no .bak was made (bak_path is then "") */
  int read_only;                  /* the window is read-only: nothing was tried */
+ int not_a_file;                 /* the window has no file behind it (the assistant's
+                                    composer, its pane, a report): nothing was tried,
+                                    the sentence points to Save As */
  int kept;                       /* a copy went elsewhere: kept_path */
  char kept_path[WPE_PATH_SIZE];
  char bak_path[WPE_PATH_SIZE];   /* the .bak made in this call, else "" */
@@ -260,6 +263,14 @@ WPE_WRITE_RESULT int wpe_write_range(struct FNST *f, const char *path,
    NULL for a plain Save.  A plain Save writes into the file the window read
    (f->file_id); when the name now leads to another file it asks or refuses. */
 int wpe_write_save(struct FNST *f, WpeWriteThen then, const char *keep_name);
+/* A window the editor writes itself (the assistant's composer and pane, a
+   named report) has no file behind it: its title is a label, never a name.
+   The owner refuses to write it under that title (a Save, a copy for the
+   emergency or autosave), and the quit and close prompts do not ask about
+   it.  A Save As to a name the user types writes there and makes the window
+   that file's.  wpe_write_window_is_a_file says whether a window has a file. */
+void wpe_write_window_set_not_a_file(struct FNST *f);
+int  wpe_write_window_is_a_file(const struct FNST *f);
 /* The special bits of the existing file @path, split by what a write onto it
    would do: @drops, the ones the copy will not keep, and @stays, the ones it
    cannot take off because the user does not own the file.  Both 0 when it is

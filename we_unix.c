@@ -1036,6 +1036,8 @@ static int e_err_save_wanted(FENSTER *f)
 
  if (!DTMD_ISTEXT(f->dtmd) || !f->save)
   return(0);
+ if (!wpe_write_window_is_a_file(f))
+  return(0);                    /* no file behind it: nothing to keep beside one */
  return(b->mxlines > 1 || b->bf[0].len > 0);
 }
 

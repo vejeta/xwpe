@@ -21,6 +21,7 @@ import pyte
 import pytest
 
 import gui_owner
+from mode_premise import file_mode_is_obeyed, folder_mode_is_obeyed
 from test_utf8_border import SafeScreen
 from wpe_driver import WpeSession
 
@@ -226,23 +227,6 @@ def _screen_text(w):
     return _flat('\n'.join(r.rstrip() for r in w.display() if r.strip()))
 
 
-def _mode_is_obeyed(tmp_path, mode, flags):
-    """Does the system refuse a file of @mode opened with @flags?  Root, or a
-    user whose file modes are overridden, opens it anyway and the rows below
-    would fail for a reason that has nothing to do with the editor."""
-    probe = tmp_path / 'probe_mode'
-    probe.write_text('x\n')
-    os.chmod(str(probe), mode)
-    try:
-        os.close(os.open(str(probe), flags))
-        obeyed = False
-    except OSError:
-        obeyed = True
-    os.chmod(str(probe), 0o600)
-    probe.unlink()
-    return obeyed
-
-
 def _open_d_prj(w):
     w.key(KEY_ALT_P, delay=1.0)
     w.key('p', delay=1.5)
@@ -263,9 +247,7 @@ def test_project_save_onto_a_read_only_prj_says_why(tmp_path):
     system's reason and says the list is still in its window.  The old box
     was "Can't open File <path>" with no reason.  (Add goes through the same
     writer; it says nothing more than this box.)"""
-    if not _mode_is_obeyed(tmp_path, 0o400, os.O_WRONLY):
-        pytest.skip('this user can write a 0400 file (root, or a capability '
-                    'that overrides file modes)')
+    file_mode_is_obeyed(str(tmp_path), 0o400, os.O_WRONLY)
     prj = tmp_path / 'd.prj'
     with _session(tmp_path) as w:
         _open_d_prj(w)
@@ -294,9 +276,7 @@ def test_closing_a_project_the_file_refuses_keeps_it_open_and_says_why_once(tmp_
     """Delete a member, the .prj goes read-only, Close: one box, and the
     project window is still there with its list.  With the file writable
     again Close writes the list once and the window closes."""
-    if not _mode_is_obeyed(tmp_path, 0o400, os.O_WRONLY):
-        pytest.skip('this user can write a 0400 file (root, or a capability '
-                    'that overrides file modes)')
+    file_mode_is_obeyed(str(tmp_path), 0o400, os.O_WRONLY)
     prj = tmp_path / 'd.prj'
     with _session(tmp_path) as w:
         _open_d_prj(w)
@@ -325,9 +305,7 @@ def test_open_project_in_a_folder_closed_to_reading_says_why(tmp_path):
     """Open Project on a .prj the user cannot read: the box says the system's
     reason, not "Project file not found" (the file is there) and not a silent
     empty project."""
-    if not _mode_is_obeyed(tmp_path, 0o000, os.O_RDONLY):
-        pytest.skip('this user can read a 0000 file (root, or a capability '
-                    'that overrides file modes)')
+    file_mode_is_obeyed(str(tmp_path), 0o000, os.O_RDONLY)
     locked = tmp_path / 'locked.prj'
     locked.write_text(PRJ_TEXT)
     os.chmod(str(locked), 0o000)
@@ -353,9 +331,7 @@ KEY_F9 = '\033[20~'
 
 
 def _need_unwritable_prj(tmp_path):
-    if not _mode_is_obeyed(tmp_path, 0o400, os.O_WRONLY):
-        pytest.skip('this user can write a 0400 file (root, or a capability '
-                    'that overrides file modes)')
+    file_mode_is_obeyed(str(tmp_path), 0o400, os.O_WRONLY)
 
 
 def _open_b_while_d_refuses(tmp_path):
@@ -489,24 +465,6 @@ KEY_ALT_X = '\033x'
 KEY_ESC = '\x1b'
 KEY_ALT_SYSTEM = '\033#'
 SEED_TEXT = 'int main(void){return 0;}\n'
-
-
-def _folder_refuses_new_files(folder):
-    """Does the system keep a new file out of @folder when it is 0500?  Root,
-    or a user whose file modes are overridden, makes the file anyway."""
-    probe = os.path.join(str(folder), 'probe_new')
-    os.chmod(str(folder), 0o500)
-    try:
-        with open(probe, 'x'):
-            pass
-        made = True
-    except OSError:
-        made = False
-    finally:
-        os.chmod(str(folder), 0o700)
-    if made:
-        os.remove(probe)
-    return not made
 
 
 def _refuse_d_list(w, prj):
@@ -734,9 +692,7 @@ def test_new_project_that_cannot_be_written_leaves_the_open_project(tmp_path):
     (tmp_path / 'extra.c').write_text('int x;\n')
     with _session(tmp_path) as w:
         _open_d_prj(w)
-        if not _folder_refuses_new_files(tmp_path):
-            pytest.skip('this user can create files in a 0500 folder '
-                        '(root, or a capability that overrides file modes)')
+        folder_mode_is_obeyed(str(tmp_path), 0o500, create=True)
         os.chmod(str(tmp_path), 0o500)
         try:
             w.key(KEY_ALT_1, delay=1.0)

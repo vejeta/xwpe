@@ -287,7 +287,9 @@ def test_system_info_is_centred_after_a_resize(xwpe):
 
 
 ANY_PLACED_RE = re.compile(r"layout placed (.+?) at (\d+),(\d+) (\d+)x(\d+)")
-ERROR_TEXT_W = 20                 # "Can't open directory": the box's least text width
+ERROR_TEXT_W = 38                 # 'File already exist with "new.dir" name': the box's text width
+MESSAGE_TEXT_W = 36               # the Message box of a refused folder, as wrapped
+MESSAGE_BOX_NAME = "a dialog"    # what the layout owner calls it in the trace
 AI_ENV = {"XWPE_UI_TRACE": TRACE_NAME, "XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock"}
 MOVE_LEFT_BY = 4
 
@@ -316,13 +318,15 @@ def test_the_error_box_keeps_its_corner_and_follows_a_resize(xwpe):
     owner places it again at the corner it has had since 1.5.30a, a box of
     the text's width centred as one column and one row smaller, for the
     new grid, and Return still closes it."""
+    # A regular file called new.dir: MakeDir (Alt-K in the File Manager)
+    # cannot use the name and says so in an error box, for every user.
+    with open(os.path.join(os.path.dirname(xwpe.srcfile), "new.dir"), "w") as fh:
+        fh.write("a file, so MakeDir cannot use the name\n")
     _let_the_window_be_sized(xwpe)
     try:
         _size(xwpe, FULL_W, FULL_H)
-        xwpe.key("alt+f", "a", delay=0.8)
-        xwpe.key("ctrl+u", delay=0.3)
-        xwpe.type("/proc/nope/x.c")
-        xwpe.key("Return", delay=1.0)
+        xwpe.key("F3", delay=0.8)
+        xwpe.key("alt+k", delay=1.0)
         _sleep(SETTLE_S)
         _size(xwpe, SMALL_W, SMALL_H)
         assert xwpe.proc.poll() is None, "xwpe died on the resize under the error box"
@@ -336,6 +340,33 @@ def test_the_error_box_keeps_its_corner_and_follows_a_resize(xwpe):
     assert left == (cols - ERROR_TEXT_W) // 2 - 2, \
         "the error box starts at column %d of %d" % (left, cols)
     assert top == (rows - 6) // 2, "the error box starts at row %d of %d" % (top, rows)
+
+
+# @scenario SC-box-04
+@pytest.mark.parametrize("xwpe", [TRACED], indirect=True)
+def test_the_message_box_of_a_refused_folder_keeps_its_corner_and_follows_a_resize(xwpe):
+    """The Message box that says why a folder was refused ("Folder not found:
+    /proc/nope.") is placed again, centred as a box one column and one row
+    smaller, when the window is resized under it."""
+    _let_the_window_be_sized(xwpe)
+    try:
+        _size(xwpe, FULL_W, FULL_H)
+        xwpe.key("alt+f", "a", delay=0.8)
+        xwpe.key("ctrl+u", delay=0.3)
+        xwpe.type("/proc/nope/x.c")
+        xwpe.key("Return", delay=1.0)
+        _sleep(SETTLE_S)
+        _size(xwpe, SMALL_W, SMALL_H)
+        assert xwpe.proc.poll() is None, "xwpe died on the resize under the message box"
+        xwpe.key("Return", delay=0.8)
+    finally:
+        _size(xwpe, START_W, START_H)
+    placed = _placements(xwpe, MESSAGE_BOX_NAME)
+    assert len(placed) >= 2, "the owner did not place the message box again: %r" % placed
+    cols, rows, left, top, w, h = placed[-1]
+    assert left == (cols - MESSAGE_TEXT_W) // 2 - 2, \
+        "the message box starts at column %d of %d" % (left, cols)
+    assert top == (rows - h) // 2, "the message box starts at row %d of %d, %d tall" % (top, rows, h)
 
 
 # @scenario SC-box-07

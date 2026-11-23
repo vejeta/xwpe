@@ -49,7 +49,7 @@ we_block.c:e_replace_each:* 2 dialog field editing
 we_buffer.c:e_buffer_pos_set_col:* 1 dialog field editing
 we_debug.c:e_d_add_watch:* 2 dialog field editing
 we_debug.c:e_deb_options:* 19 dialog field editing
-we_debug.c:e_d_goto_break:* 1 dialog field editing
+we_debug.c:e_d_show_source:* 1 dialog field editing
 we_debug.c:e_d_pty_type:* 1 dialog field editing
 we_debug.c:e_lsp_after_bulk_edit:* 1 dialog field editing
 we_debug.c:e_lsp_on_edit:* 1 dialog field editing

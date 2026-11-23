@@ -67,7 +67,10 @@ SENTENCE|we_startplan.h|the start plan's reason for refusing a folder or program
 #     reason.  A line that matches no such function is stale.
 PROJECTWORDS|we_prog.c|e_prj_say_not_opened|the reporter: ENOENT says not found, every other errno says the system's reason
 GUESS|we_progn.c|e_show_nm_f|keep|the word is about the symbol searched; the access only chooses the project's files over the window's
-GUESS|we_startplan.c|startplan_embedded_file|read-refused|"(not found)" stands for any failed access of the script file; the read side's owner takes it over
+GUESS|we_debug.c|e_d_show_source|keep|the debugger names the source it was told, not one the user typed: "Can't find file" for a source that is not there; a refusal of the system goes through e_edit_outcome and e_d_say_source_refused; moves when a debugger row steps into a source in a closed folder
+GUESS|we_debug.c|e_d_script_connect|keep|the debugger's own pipes to its helper script, a path the editor made and not one the user named
+GUESS|we_fl_unix.c|WpeGetCurrentDir|keep|the current folder, which the user did not name: getcwd fails and the function switches on errno
+GUESS|we_fl_unix.c|fm_stand_at_home|keep|the fatal pair when the home folder itself cannot be entered: there is nowhere left to stand, so no reason is said and the editor ends
 
 # --- PATHFN and ARRAY: a buffer that holds a path is the owner's size ---
 # PATHFN|file|function|argument|reason

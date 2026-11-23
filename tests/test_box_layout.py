@@ -48,7 +48,9 @@ CORNER_TL, CORNER_TR, CORNER_BL = "l", "k", "m"
 ABOUT_W, ABOUT_H = 55, 18
 ABOUT_TEXT = "Created by Fred Kruse"
 ABOUT_TEXT_ROW, ABOUT_TEXT_COL = 5, 2     # where the line sits from the frame's corner
-ERROR_TEXT = "Can't open directory"
+ERROR_TEXT = 'File already exist with "new.dir" name'
+MESSAGE_TEXT = "Folder not found:"          # the Message box of a refused folder
+MESSAGE_TEXT_W = 36                         # its text width, as wrapped
 ERROR_MIN_TEXT = 20
 OUTSIDE = "layout frame outside the path"
 FIRST_ROW = 1                              # under the menu bar
@@ -227,8 +229,20 @@ def test_system_info_on_a_screen_too_small_is_cut_at_the_top_left(tmp_path):
 
 # ---- the error box --------------------------------------------------------
 
+NEW_DIR_NAME = "new.dir"
+ALT_K = "\033k"
+
+
 def _open_the_error_box(w):
-    """File > Save As to a folder that does not exist: "Can't open directory"."""
+    """F3, then Alt-K (MakeDir) with a regular file called new.dir in the
+    folder: the e_error box says the name is taken.  Needs no mode, so it runs
+    for every user."""
+    w.key("\033[13~", delay=0.8)
+    w.key(ALT_K, delay=1.0)
+
+
+def _open_the_message_box(w):
+    """File > Save As to a folder that does not exist: the Message box."""
     w.key(ALT.FILE, delay=0.5)
     w.key("a", delay=0.8)
     w.key("\x15", delay=0.2)
@@ -236,13 +250,18 @@ def _open_the_error_box(w):
     w.key(ENTER, delay=1.0)
 
 
-def _error_corner(rows):
-    """(top, left) of the error box, from its text: two rows down, two in."""
+def _box_corner(rows, text):
+    """(top, left) of the box that holds `text`: two rows down, two in."""
     for i, row in enumerate(rows):
-        col = row.find(ERROR_TEXT)
+        col = row.find(text)
         if col >= 0:
             return i - 2, col - 2
-    raise AssertionError("no error box on the screen:\n" + _screen(rows))
+    raise AssertionError("no box with %r on the screen:\n%s" % (text, _screen(rows)))
+
+
+def _error_corner(rows):
+    """(top, left) of the error box, from its text."""
+    return _box_corner(rows, ERROR_TEXT)
 
 
 # @scenario SC-box-04
@@ -252,6 +271,7 @@ def test_the_error_box_keeps_its_corner_and_follows_a_resize(tmp_path, size):
     wide box centred as a box one column and one row smaller, and a resize
     centres it again at the same corner."""
     cols, rows = size
+    (tmp_path / NEW_DIR_NAME).write_text("a file, so MakeDir cannot use the name\n")
     with WpeSession(str(tmp_path), SEED, filename="t.c", cols=80, rows=30) as w:
         _open_the_error_box(w)
         if size != (80, 30):
@@ -262,10 +282,30 @@ def test_the_error_box_keeps_its_corner_and_follows_a_resize(tmp_path, size):
     top, left = _error_corner(shown)
     assert top == (rows - 6) // 2, \
         "the error box starts at row %d on %d rows:\n%s" % (top, rows, _screen(shown))
-    assert left == (cols - ERROR_MIN_TEXT) // 2 - 2, \
+    assert left == (cols - max(len(ERROR_TEXT), ERROR_MIN_TEXT)) // 2 - 2, \
         "the error box starts at column %d on %d columns:\n%s" % (left, cols, _screen(shown))
     assert not any(ERROR_TEXT in r for r in closed), \
         "Return should close the error box:\n" + _screen(closed)
+
+
+# @scenario SC-box-04
+@pytest.mark.parametrize("size", [(80, 30), (100, 40), (60, 20), (80, 25)])
+def test_the_message_box_of_a_refused_folder_keeps_its_corner_on_a_resize(tmp_path, size):
+    """The Message box that says why a folder was refused ("Folder not found:
+    /proc/nope.") is centred like the error box: two rows down from its top
+    edge, a text wide box one column and one row smaller, and a resize
+    centres it again at the same corner."""
+    cols, rows = size
+    with WpeSession(str(tmp_path), SEED, filename="t.c", cols=80, rows=30) as w:
+        _open_the_message_box(w)
+        if size != (80, 30):
+            w.resize(cols, rows, delay=1.0)
+        shown = w.display()
+    top, left = _box_corner(shown, MESSAGE_TEXT)
+    assert top == (rows - 6) // 2, \
+        "the message box starts at row %d on %d rows:\n%s" % (top, rows, _screen(shown))
+    assert left == (cols - MESSAGE_TEXT_W) // 2, \
+        "the message box starts at column %d on %d columns:\n%s" % (left, cols, _screen(shown))
 
 
 # ---- a long file operation ------------------------------------------------

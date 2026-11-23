@@ -1148,7 +1148,7 @@ static FENSTER *ai_pane_win(FENSTER *f)
  for (i = cn->mxedt; i > 0 && strcmp(cn->f[i]->datnam, AI_PANE_NAME); i--)
   ;
  if (i == 0) {
-  if (e_edit(cn, AI_PANE_NAME))
+  if (e_edit_view(cn, AI_PANE_NAME))
    return NULL;
   i = cn->mxedt;
   /* The pane is a view the assistant writes, like Messages: its rows carry no
@@ -4501,6 +4501,39 @@ static int ai_compose_over_limit(FENSTER *w, long bytes)
 }
 
 /**
+ * ai_compose_dialog_on_top - Did a menu command put a box with a loop of its
+ * own (the File Manager of Save As, a dialog) above the composer?
+ * @cn: the desktop.
+ * Return: 1 when the window on top is such a box, else 0.
+ */
+static int ai_compose_dialog_on_top(ECNT *cn)
+{
+ FENSTER *top = cn->f[cn->mxedt];
+
+ return cn->mxedt > 0 && (top->dtmd == DTMD_FILEMANAGER || top->dtmd == DTMD_DATA);
+}
+
+/**
+ * ai_compose_run_dialog - Answer the box a menu command opened over the
+ * composer, then give the composer back.
+ * @cn: the desktop.
+ *
+ * What the user gets: File > Save As in the composer asks for a name and
+ * writes the text there, and the composer is still open afterwards with its
+ * text; Esc and the question after it work as before.  The editor's main
+ * loop runs such a box; the composer has its own loop, so it runs it here.
+ */
+static void ai_compose_run_dialog(ECNT *cn)
+{
+ while (ai_compose_dialog_on_top(cn)) {
+  if (cn->f[cn->mxedt]->dtmd == DTMD_FILEMANAGER)
+   (void)WpeHandleFileManager(cn);
+  else
+   (void)e_data_eingabe(cn);
+ }
+}
+
+/**
  * ai_compose_run - Let the user write in the composer until Esc.
  * @cn: the desktop; @w: the composer window.
  *
@@ -4515,6 +4548,10 @@ static char *ai_compose_run(ECNT *cn, FENSTER *w)
  g_ai_compose_win = w;
  while (editing) {
   e_eingabe(cn);                             /* the real editor, until Esc     */
+  if (ai_compose_dialog_on_top(cn)) {        /* File > Save As opened its box  */
+   ai_compose_run_dialog(cn);                /* answer it, then edit again     */
+   continue;
+  }
   if (ai_compose_bytes(w) <= AI_PROMPT_MAX) {
    text = ai_compose_text(w);
    editing = 0;
@@ -4541,7 +4578,7 @@ static int e_ai_compose(char *out, size_t outsz, const char *title,
  FENSTER *w;
  char *text;
 
- if (e_edit(cn, (char *)title)) return 0;    /* scratch window, empty buffer   */
+ if (e_edit_view(cn, (char *)title)) return 0; /* scratch window, empty buffer   */
  w = cn->f[cn->mxedt];
  if (seed && *seed)                          /* carry over what was already typed */
   ai_compose_show_seed(w, seed);
@@ -14879,6 +14916,33 @@ static void ai_plan_register_rows(FENSTER *f, ai_plan_rows *rows)
  wpe_ai_trace("plan rows n=%d", rows->n);
 }
 
+/* Room for one line the plan writes in the pane: a file's path and the
+   system's reason; a longer line is cut at the pane, never run past. */
+#define AI_PLAN_SKIP_LINE_MAX 1400
+
+/**
+ * ai_plan_say_not_opened - Say in the pane that a file of the plan could not
+ * be opened, and why.
+ * @f: the window the pane belongs to; @path: the file; @err: the errno of the
+ * system's refusal, or 0 when the editor already said why in its own box.
+ *
+ * While a plan is applied the editor opens each file in turn.  A refused
+ * file does not stop the others and does not raise a box for each: the pane
+ * line names the file and the system's own words ("Permission denied", "Is a
+ * directory"), so the user can see which files were skipped and fix them.
+ */
+static void ai_plan_say_not_opened(FENSTER *f, const char *path, int err)
+{
+ char line[AI_PLAN_SKIP_LINE_MAX];
+
+ if (err != 0)
+  snprintf(line, sizeof line, AI_MULTIFILE_PREFIX " could not open %s: %s",
+           path, wpe_path_refused_reason(err));
+ else
+  snprintf(line, sizeof line, AI_MULTIFILE_PREFIX " could not open %s", path);
+ ai_pane(f, line, AI_ROLE_ERROR, 0);
+}
+
 /* Plan wrap-up: persist, then the permission moment -- list the proposed files
  * with +/- counts and apply-all / file-by-file / cancel. */
 static void ai_plan_finish(ai_async_op *op)
@@ -14915,10 +14979,9 @@ static void ai_plan_finish(ai_async_op *op)
   FENSTER *w;
   const char *path = pd->props[i].path;
   char *before, *after;
-  int done;
-  if (e_edit(cn, pd->props[i].path) != 0) {
-   snprintf(line, sizeof line, AI_MULTIFILE_PREFIX " could not open %s", path);
-   ai_pane(f, line, AI_ROLE_ERROR, 0);
+  int done, open_err = 0;
+  if (e_edit_outcome(cn, pd->props[i].path, &open_err) != 0) {
+   ai_plan_say_not_opened(f, path, open_err);
    continue;
   }
   w = cn->f[cn->mxedt];

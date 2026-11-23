@@ -42,6 +42,17 @@
 #     and belongs to test_observation(, which is a SKIP by name whatever the
 #     run says of its privileges.  The first argument is read from the line
 #     of the call; the identifier is judged by the file, not the function.
+#  6. Each row (a top level def or class) of a tests/*.py (and tests/x11,
+#     tests/wayland) that gives a file or a folder a mode that keeps the user
+#     out of it calls file_mode_is_obeyed( or folder_mode_is_obeyed( of
+#     tests/mode_premise.py itself: the pytest twin of rule 4, which skips the
+#     row by name for a user the modes do not bind (root, a capability) and
+#     fails it in an unprivileged run.  Such a mode is an octal literal of
+#     zero or 0200 (0o000, 0O000, 0o0000, 0o200), a chmod, fchmod, lchmod or
+#     mkdir with mode 0, S_IWUSR or S_IWRITE alone, or a mode name taken from
+#     a module that is not the standard library or the harness (the value
+#     cannot be read here).  The modes 0o400, 0o444 and 0o500 are not covered
+#     yet.
 #
 # What the scan cannot see, and so does not judge: a mode that reaches a call
 # through a variable or a macro (mode_t m = 02755; chmod(p, m)), a mode
@@ -184,6 +195,50 @@ function note_premises(line,   t, off, a) {
   }
 }
 function say(msg, ln) { print file ":" ln ": " msg; bad++ }
+# Rule 6, the end of a row: a deny mode with no premise of its own.
+function flush_row() {
+  if (has_deny_py && !has_obey)
+    say("rule 6: sets a mode that keeps the user out and the row never calls file_mode_is_obeyed( or folder_mode_is_obeyed(", first_deny_py)
+  has_deny_py = 0; has_obey = 0; first_deny_py = 0
+  for (nm in deny_names) delete deny_names[nm]
+}
+# The names a file takes from a module that is not the standard library: a
+# mode constant that comes from there (the modules of the harness included)
+# cannot be read here, so a chmod that uses one is judged as a deny mode.
+function note_imports(line,   rest, names, n, i, nm) {
+  if (line ~ /^import[ \t]+[A-Za-z_]/ && line !~ /^import[ \t]+(os|stat|sys|re|time|pytest|typing|pathlib|shutil|subprocess|mode_premise)([ \t,]|$)/) {
+    rest = line; sub(/^import[ \t]+/, "", rest); sub(/[ \t]+as[ \t]+.*/, "", rest); sub(/[ \t,].*/, "", rest)
+    if (rest != "") imported_mod[rest] = 1
+    return
+  }
+  if (line !~ /^from[ \t]+[A-Za-z_][A-Za-z0-9_.]*[ \t]+import[ \t]/) return
+  if (line ~ /^from[ \t]+(os|stat|sys|re|time|pytest|typing|pathlib|shutil|subprocess|mode_premise)([ \t.]|$)/) return
+  rest = line; sub(/^from[ \t]+[A-Za-z_][A-Za-z0-9_.]*[ \t]+import[ \t]+/, "", rest)
+  gsub(/[()]/, "", rest)
+  n = split(rest, names, /[ \t]*,[ \t]*/)
+  for (i = 1; i <= n; i++) { nm = names[i]; sub(/[ \t].*/, "", nm); if (nm != "") imported[nm] = 1 }
+}
+# Does this line give a file or folder a mode that keeps the user out?
+function is_deny_mode(line, raw,   nm, v) {
+  # a local given such a mode (mode = 0, mode = 0o000) and used in a chmod below
+  if (line ~ /^[ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*=[ \t]*(0|0[oO]0*(0|200))[ \t]*$/) {
+    v = line; sub(/^[ \t]*/, "", v); sub(/[ \t]*=.*/, "", v); deny_names[v] = 1
+  }
+  if (unmasked(line, deny_py_re)) return 1
+  if (calls(line, zero_re)) return 1
+  # int("0", 8) and int("200", 8): the string is blanked in line, read raw
+  if (calls(line, chmod_re) && raw ~ /int[ \t]*[(][ \t]*["\047](0+|0*200)["\047][ \t]*,[ \t]*8[ \t]*[)]/) return 1
+  if (calls(line, chmod_re)) {
+    for (nm in deny_names)
+      if (line ~ ("(^|[^A-Za-z0-9_.])" nm "([^A-Za-z0-9_]|$)")) return 1
+    if (line ~ write_only_re && line !~ /[|]/) return 1
+    for (nm in imported)
+      if (line ~ ("(^|[^A-Za-z0-9_.])" nm "([^A-Za-z0-9_]|$)")) return 1
+    for (nm in imported_mod)
+      if (line ~ ("(^|[^A-Za-z0-9_.])" nm "[.][A-Za-z_]")) return 1
+  }
+  return 0
+}
 BEGIN {
   if (kind == "c") {
     spec_re = "(^|[^A-Za-z0-9_])(0[1-7][0-7][0-7][0-7]|S_ISUID|S_ISGID|S_ISVTX)([^A-Za-z0-9_]|$)"
@@ -195,6 +250,12 @@ BEGIN {
     spec_re = "(^|[^A-Za-z0-9_])(0o[1-7][0-7][0-7][0-7]|S_ISUID|S_ISGID|S_ISVTX)([^A-Za-z0-9_]|$)"
     grp_re = "(^|[^A-Za-z0-9_])workdir_in_my_group[ \t]*[(]"
     bit_re = "(^|[^A-Za-z0-9_])special_bits_settable[ \t]*[(]"
+    # 0o000, 0O000, 0o0000, 0o200, 0o0200 (an octal literal, not a longer one)
+    deny_py_re = "(^|[^A-Za-z0-9_])0[oO]0*(0|200)([^0-7A-Za-z0-9_]|$)"
+    obey_re = "(^|[^A-Za-z0-9_])(file|folder)_mode_is_obeyed[ \t]*[(]"
+    chmod_re = "(^|[^A-Za-z0-9_])(chmod|fchmod|lchmod|mkdir|makedirs)[ \t]*[(]"
+    zero_re = "(chmod|fchmod|lchmod|mkdir|makedirs)[ \t]*[(]([^,]*,)*[ \t]*0[ \t]*[,)]"
+    write_only_re = "(^|[^A-Za-z0-9_])S_IW(USR|RITE)([^A-Za-z0-9_]|$)"
   }
 }
 {
@@ -226,6 +287,15 @@ BEGIN {
     if (unmasked(line, spec_re)) { if (!has_special) first_special = FNR; has_special = 1 }
     if (calls(line, grp_re)) has_grp = 1
     if (calls(line, bit_re)) has_bit = 1
+    # Rule 6 is judged per row: a top level def (or class) holds its own
+    # deny mode and its own premise.  What is before the first def is a row too.
+    # A method of a class is a row of its own, not a part of the class.
+    if (line ~ /^(def|async[ \t]+def)[ \t]/) { in_class = 0; flush_row() }
+    else if (line ~ /^class[ \t]/) { in_class = 1; flush_row() }
+    else if (in_class && line ~ /^[ \t]+(async[ \t]+)?def[ \t]/) flush_row()
+    note_imports(line)
+    if (is_deny_mode(line, $0)) { if (!has_deny_py) first_deny_py = FNR; has_deny_py = 1 }
+    if (calls(line, obey_re)) has_obey = 1
   }
 }
 END {
@@ -243,6 +313,7 @@ END {
   } else {
     if (has_special && !has_grp) say("rule 3: sets a special-bit mode and never calls workdir_in_my_group(", first_special)
     if (has_special && !has_bit) say("rule 3: sets a special-bit mode and never calls special_bits_settable(", first_special)
+    flush_row()
   }
   exit bad ? 1 : 0
 }
@@ -313,7 +384,41 @@ selftest() {
     'if (!test_premise(test_premise_folder_refuses_new_files(d), "r", "m")) return; test_observation(seen, "r", "m"); }' > "$fx/good_premise_forms.c"
   printf '%s\n' '#include "testdir.h"' \
     'static void row(int seen) { test_premise(seen, "r", "m"); }' > "$fx/bad_identifier.c"
+  printf '%s\n' 'import os' 'def test_a(tmp_path):' '    os.chmod(str(tmp_path), 0o000)' > "$fx/bad_py_deny.py"
+  printf '%s\n' 'import os' 'def test_a(tmp_path):' '    p = str(tmp_path / "x")' '    open(p, "w").close()' '    os.chmod(p, 0o200)' > "$fx/bad_py_deny_200.py"
+  printf '%s\n' 'import os' 'from mode_premise import file_mode_is_obeyed' \
+    'def test_a(tmp_path):' '    file_mode_is_obeyed(str(tmp_path), 0o000, os.O_RDONLY)' '    os.chmod(str(tmp_path), 0o000)' > "$fx/good_py_deny.py"
+  printf '%s\n' 'import os' 'from mode_premise import folder_mode_is_obeyed' \
+    'def test_a(tmp_path):' '    folder_mode_is_obeyed(str(tmp_path), 0o000)' '    os.chmod(str(tmp_path), 0o000)' > "$fx/good_py_folder.py"
+  printf '%s\n' '"""A 0o000 file, said in words."""' 'import os' 'def test_a(p):' '    return os.stat(p).st_mode & 0o000' > "$fx/good_py_deny_mask.py"
+  printf '%s\n' 'import os' 'def test_a(tmp_path):' '    os.chmod(str(tmp_path), 0)' > "$fx/bad_py_zero.py"
+  printf '%s\n' 'import os, stat' 'def test_a(tmp_path):' '    os.chmod(str(tmp_path), stat.S_IWUSR)' > "$fx/bad_py_wuser.py"
+  printf '%s\n' 'import os' 'def test_a(tmp_path):' '    os.chmod(str(tmp_path), 0o0000)' > "$fx/bad_py_zeros.py"
+  printf '%s\n' 'import os' 'def test_a(tmp_path):' '    os.chmod(str(tmp_path), 0O000)' > "$fx/bad_py_capital_o.py"
+  printf '%s\n' 'import os' 'from consts import LOCKED' 'def test_a(tmp_path):' '    os.chmod(str(tmp_path), LOCKED)' > "$fx/bad_py_imported.py"
+  printf '%s\n' 'import os' 'import consts' 'def test_a(tmp_path):' '    os.chmod(str(tmp_path), consts.LOCKED)' > "$fx/bad_py_imported_mod.py"
+  printf '%s\n' 'import os' 'from mode_premise import file_mode_is_obeyed' \
+    'def test_a(tmp_path):' '    file_mode_is_obeyed(str(tmp_path), 0o000, os.O_RDONLY)' '    os.chmod(str(tmp_path), 0o000)' \
+    'def test_b(tmp_path):' '    os.chmod(str(tmp_path), 0o000)' > "$fx/bad_py_second_row.py"
+  printf '%s\n' 'import os, stat' 'def test_a(tmp_path):' '    os.chmod(str(tmp_path), stat.S_IWUSR | stat.S_IRUSR)' '    os.chmod(str(tmp_path), 0o640)' > "$fx/good_py_modes.py"
+  printf '%s\n' 'import os' 'def test_a(tmp_path):' '    mode = 0' '    os.chmod(str(tmp_path), mode)' > "$fx/bad_py_local.py"
+  printf '%s\n' 'import os' 'from wpe_driver import LOCKED' 'def test_a(tmp_path):' '    os.chmod(str(tmp_path), LOCKED)' > "$fx/bad_py_harness.py"
+  printf '%s\n' 'import os' 'def test_a(tmp_path):' '    os.chmod(str(tmp_path), int("0", 8))' > "$fx/bad_py_int8.py"
+  printf '%s\n' 'import os' 'from mode_premise import file_mode_is_obeyed' 'class TestRows:' \
+    '    def test_a(self, tmp_path):' '        file_mode_is_obeyed(str(tmp_path), 0o000, os.O_RDONLY)' '        os.chmod(str(tmp_path), 0o000)' \
+    '    def test_b(self, tmp_path):' '        os.chmod(str(tmp_path), 0o000)' > "$fx/bad_py_method.py"
+  printf '%s\n' 'import os' 'from mode_premise import file_mode_is_obeyed' 'class TestRows:' \
+    '    def test_a(self, tmp_path):' '        file_mode_is_obeyed(str(tmp_path), 0o000, os.O_RDONLY)' '        os.chmod(str(tmp_path), 0o000)' \
+    '    def test_b(self, tmp_path):' '        file_mode_is_obeyed(str(tmp_path), 0o000, os.O_RDONLY)' '        os.chmod(str(tmp_path), 0o000)' > "$fx/good_py_methods.py"
   out=$(scan_dir "$fx")
+  selftest_expect "a local mode of 0, a harness constant, int(\"0\", 8), a class judged per method" "$out" \
+    "bad_py_local.py:4: rule 6" "bad_py_harness.py:4: rule 6" "bad_py_int8.py:3: rule 6" "bad_py_method.py:8: rule 6"
+  selftest_expect "chmod to 0, S_IWUSR alone, 0o0000, 0O000, an imported mode, per row" "$out" \
+    "bad_py_zero.py:3: rule 6" "bad_py_wuser.py:3: rule 6" "bad_py_zeros.py:3: rule 6" \
+    "bad_py_capital_o.py:3: rule 6" "bad_py_imported.py:4: rule 6" "bad_py_imported_mod.py:4: rule 6" \
+    "bad_py_second_row.py:7: rule 6"
+  selftest_expect "a pytest row with a 0o000 and no premise" "$out" \
+    "bad_py_deny.py:3: rule 6" "bad_py_deny_200.py:5: rule 6"
   selftest_expect "a premise that watches the system" "$out" "bad_observation.c:2: rule 5"
   selftest_expect "a premise given an identifier no probe assigned" "$out" "bad_identifier.c:2: rule 5"
   selftest_expect "a special-bit chmod with no helper" "$out" \
@@ -330,7 +435,7 @@ selftest() {
   selftest_expect "a pytest row with no helper" "$out" \
     "bad_py.py:3: rule 3: sets a special-bit mode and never calls workdir_in_my_group(" \
     "bad_py.py:3: rule 3: sets a special-bit mode and never calls special_bits_settable("
-  for good in good_helper.c good_bits_premise.c good_mask.c good_deny.c good_py.py good_py_mask.py good_premise_forms.c; do
+  for good in good_helper.c good_bits_premise.c good_mask.c good_deny.c good_py.py good_py_mask.py good_premise_forms.c good_py_deny.py good_py_folder.py good_py_deny_mask.py good_py_modes.py good_py_methods.py; do
     if printf '%s\n' "$out" | grep -q "^$good:"; then
       echo "FAIL: $good must pass, and the scan named it:"
       printf '%s\n' "$out" | grep "^$good:" | sed 's/^/    | /'

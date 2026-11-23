@@ -61,6 +61,10 @@ static void refused_sentences(void)
 	chk_eq("not a folder in the path", b, "Cannot open file /x/a/b: Not a directory.");
 	wpe_path_say_refused(b, sizeof b, "file", "/x/loop", ELOOP);
 	chk_eq("link loop", b, "Cannot open file /x/loop: Too many levels of symbolic links.");
+	wpe_path_say_refused(b, sizeof b, "source", "/w/b.c", EACCES);
+	chk_eq("the noun the debugger uses", b, "Cannot open source /w/b.c: Permission denied.");
+	wpe_path_say_refused(b, sizeof b, "folder", "/w/closed", EACCES);
+	chk_eq("a folder", b, "Cannot open folder /w/closed: Permission denied.");
 	chk_eq("the reason of a missing name", wpe_path_refused_reason(ENOENT), "not found");
 	chk_eq("the reason of another", wpe_path_refused_reason(EACCES), "Permission denied");
 	/* the first letter is raised for ASCII a to z only */

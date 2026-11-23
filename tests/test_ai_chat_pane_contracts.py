@@ -146,6 +146,38 @@ def test_alt_g_a_opens_input_row_with_no_popup_and_ctrl_j_inserts_newline(tmp_pa
         "Ctrl-J did not insert a newline in the input row:\n" + "\n".join(after_cj)
 
 
+PANE_NAME_FILE_TEXT = "TEXT-OF-A-FILE-NAMED-AI"
+
+
+def _make_the_pane_name_in(folder, kind):
+    """Put a file or a folder called AI, the pane's own name, in the work folder."""
+    path = folder / "AI"
+    if kind == "folder":
+        path.mkdir()
+    else:
+        path.write_text(PANE_NAME_FILE_TEXT + "\n")
+
+
+# @scenario SC-ai-chat-01
+@pytest.mark.parametrize("kind", ["file", "folder"])
+def test_the_pane_opens_whatever_the_work_folder_holds_under_its_name(tmp_path, kind):
+    """A file or a folder called AI in the work folder neither refuses the pane
+    nor fills it: the pane is a window the editor writes, never read from the
+    disk.  A folder of that name used to give no pane at all, and a file's text
+    came up in it."""
+    _make_the_pane_name_in(tmp_path, kind)
+    with WpeSession(str(tmp_path), SEED, env_extra=_env(tmp_path, "SMOKEREPLY")) as s:
+        _arm_chat(s)
+        s.key("hi")
+        s.key("\r", delay=0.6)
+        assert _seen_within(s, "SMOKEREPLY", 6), \
+            "no reply reached the pane:\n" + "\n".join(s.display(drain=0))
+        screen = s.display(drain=0)
+    assert title_row(screen, "AI") >= 0, "the AI pane did not open:\n" + "\n".join(screen)
+    assert PANE_NAME_FILE_TEXT not in "\n".join(screen), \
+        "the text of the file named AI came up in the pane:\n" + "\n".join(screen)
+
+
 # @scenario SC-ai-chat-03
 @needs("gcc")
 def test_messages_already_open_shares_the_strip_with_the_pane(tmp_path):

@@ -12,8 +12,9 @@
 #
 #   check-path-buffers.sh [--srcdir DIR] [--allow FILE] [--list] [--selftest]
 #
-# --selftest runs only the canaries.  Twelve rules (the first ten numbered
-# below, the system's reason is said (R11), and the owner's size (R12)), each with canaries: the script plants an offender in a copy of
+# --selftest runs only the canaries.  Fourteen rules (the first ten numbered
+# below, the system's reason is said (R11), the owner's size (R12), the
+# cutting quoter (R13), and the windows the editor writes (R14)), each with canaries: the script plants an offender in a copy of
 # the sources and fails when the rule does not name it, so a scanner gone
 # blind fails instead of passing.  The compiler holds the same line from the
 # other end: warn_unused_result on the owner's declarations warns on a refusal
@@ -71,7 +72,25 @@
 #     snprintf or sprintf takes WPE_PATH_MAX, WPE_NAME_MAX,
 #     WPE_PLATFORM_PATH_MAX or WPE_PLATFORM_NAME_MAX as an argument (a site
 #     says wpe_path_say_too_long or wpe_path_say_name_too_long).
-# 11. The system's reason is said, not guessed (R11a, R11b).
+# 11. The system's reason is said, not guessed (R11a, R11b, R11c).  A
+#     function that asks the system about a path (access, stat, lstat, fopen,
+#     open, opendir, realpath, chdir, or a read of the read owner) and says a
+#     cause it guessed is named: R11b for a string literal that says "not
+#     found" or "cannot open" with no errno or strerror in the function, R11c
+#     for a message table entry (e_msg, e_p_msg, e_d_msg) whose words guess a
+#     cause, whether or not the function names errno, since a table entry can
+#     never carry the reason.  The entries are read from messages.h (the
+#     name of each index) and the three initializers (the words of each
+#     index); a count that differs from the defines fails the scan.  A name
+#     the table words match that is about something other than a path is
+#     listed in TABLE_NOT_A_PATH below.  R11a keeps the project's own
+#     sentences in the project reporter.
+# 14. A window the editor writes opens through e_edit_view.  A call of e_edit
+#     whose second argument is a string literal other than "", "Help",
+#     "Messages", "Watches" or "Stack", or a macro ending in _NAME, names a
+#     window that no file backs (the assistant's pane, a report); such a
+#     name opens through e_edit_view, which never reads the disk.  A name
+#     held in a variable is not seen.
 # 12. A buffer that holds a path is the owner's size.  A char array, local or
 #     file scope, passed as a path to a libc call that takes one (stat, fopen,
 #     getcwd, unlink ...), as the destination of the owner's writers, or as
@@ -113,6 +132,61 @@ done
 
 OWNER_HEADER=we_path.h
 
+# The message tables rule 11 reads: "table:file" for each (where its
+# initializer is).  The sources that hold them, and the entries whose words
+# are about something other than a path.
+TABLE_FILES="e_msg:we_main.c e_p_msg:we_prog.c e_d_msg:we_debug.c"
+# "Command not found" is the answer of a command that is looked up on the
+# PATH, not of a file or folder the user named.
+TABLE_NOT_A_PATH=" ERR_COMMAND "
+
+# The awk functions rule 11 shares between its scans (macros, sayers, words).
+WORDS_LIB='
+function load_set(file, set,   line) {
+  while ((getline line < file) > 0) set[line] = 1
+  close(file)
+}
+function word_in(code, name) {
+  return code ~ ("(^|[^A-Za-z0-9_])" name "([^A-Za-z0-9_]|$)")
+}
+# A call of a function that asks the system about a path, or a mention of
+# one that is not a call (a pointer to it, called through another name).
+function has_path_call(code,   c2) {
+  c2 = code; gsub(/struct[ \t]+stat/, "", c2)
+  if (c2 ~ /(^|[^A-Za-z0-9_.>])(access|stat|lstat|fopen|opendir|realpath|chdir)([^A-Za-z0-9_]|$)/) return 1
+  return c2 ~ /(^|[^A-Za-z0-9_.>])(open|wpe_read_(open|stream_open|text|folder|name_ok))[ \t]*[(]/
+}
+# Does the code say a table entry whose words guess a cause?  e_msg[ERR_X],
+# and the pointer form *(e_msg + ERR_X).
+function table_entry_said(code,   rest, m, tn, nm) {
+  rest = code
+  while (match(rest, /(e_msg|e_p_msg|e_d_msg)[ \t]*(\[[ \t]*|[+][ \t]*)ERR_[A-Za-z0-9_]+/)) {
+    m = substr(rest, RSTART, RLENGTH); rest = substr(rest, RSTART + RLENGTH)
+    tn = m; sub(/[ \t]*(\[|[+]).*/, "", tn)
+    nm = m; sub(/^.*(\[|[+])[ \t]*/, "", nm)
+    if ((tn "|" nm) in tabw) return 1
+  }
+  return 0
+}
+'
+
+# macros_of FILE - "NAME|body" for each #define of the (comment stripped)
+# file, a body continued over lines joined with blanks.
+macros_of() {
+  awk '
+    {
+      line = $0
+      if (cont) body = body " " line
+      else if (line ~ /^[ \t]*#[ \t]*define[ \t]+[A-Za-z_]/) {
+        s = line; sub(/^[ \t]*#[ \t]*define[ \t]+/, "", s)
+        name = s; sub(/[^A-Za-z0-9_].*$/, "", name)
+        body = substr(s, length(name) + 1)
+      } else next
+      if (body ~ /\\[ \t]*$/) { sub(/[ \t]*\\[ \t]*$/, "", body); cont = 1 }
+      else { cont = 0; print name "|" body }
+    }' "$1"
+}
+
 . "$(dirname "$0")/workdir.sh"
 work_dir path-buffers $BAD
 
@@ -122,6 +196,98 @@ strip_comments() {
   awk "$BLANK_C"'
     FNR == 1 { blank_incom = 0 }
     { print blank_c($0, 1) }' "$1"
+}
+
+# table_words DIR OUT - the message table entries of the sources in DIR whose
+# words guess a cause (not found, cannot open, access, find or read), as
+# "table|NAME" lines in OUT.  A problem of the reading itself (a file or a
+# table that is not there, an entry count that differs from the number of
+# defines) is printed as an R11c line, so a scan that cannot see the tables
+# fails instead of passing blind.  The result is kept per DIR: a canary tree
+# has no tables, so it asks for the real ones.
+table_words() {
+  tw_dir=$1; tw_out=$2
+  tw_cache=$WORK/tablewords.$(printf '%s' "$tw_dir" | cksum | cut -d' ' -f1)
+  if [ -f "$tw_cache" ]; then
+    cp "$tw_cache" "$tw_out"
+    cat "$tw_cache.problems"
+    return 0
+  fi
+  : > "$tw_out"; : > "$tw_cache.problems"
+  tw_work=$(mktemp -d "$WORK/tw.XXXXXX")
+  if [ ! -f "$tw_dir/messages.h" ]; then
+    echo "R11c: messages.h is missing in $tw_dir: the message tables cannot be read" >> "$tw_cache.problems"
+  else
+    # table|NAME|index, from the raw text: the sections are comments.
+    awk '
+      /errors defined in e_p_msg/ { t = "e_p_msg"; next }
+      /errors defined in e_d_msg/ { t = "e_d_msg"; next }
+      /errors defined in e_msg/   { t = "e_msg"; next }
+      t != "" && /^#[ \t]*define[ \t]+ERR_[A-Za-z0-9_]+[ \t]+[0-9]+/ { print t "|" $2 "|" $3 }' \
+      "$tw_dir/messages.h" > "$tw_work/defs"
+    : > "$tw_work/entries"
+    for spec in $TABLE_FILES; do
+      tab=${spec%%:*}; file=${spec#*:}
+      if [ ! -f "$tw_dir/$file" ]; then
+        echo "R11c: $file is missing in $tw_dir: the table $tab cannot be read" >> "$tw_cache.problems"
+        continue
+      fi
+      strip_comments "$tw_dir/$file" | awk -v tab="$tab" '
+        function flush() {
+          if (entry ~ /[^ \t\n]/) {
+            if (entry ~ /([Nn]ot found|Can[\\\047]*t (open|access|find|read))/) print "HIT|" tab "|" idx
+            idx++
+          }
+          entry = ""
+        }
+        { txt = txt $0 "\n" }
+        END {
+          # the definition, "*table[] = {", not the extern declaration of it
+          if (!match(txt, "\\*" tab "\\[\\][ \t\n]*=")) { print "MISSING|" tab; exit }
+          p = RSTART + RLENGTH
+          start = p + index(substr(txt, p), "{")
+          n = split(txt, ch, ""); depth = 0; in_s = 0; entry = ""; idx = 0
+          for (i = start; i <= n; i++) {
+            c = ch[i]
+            if (in_s) {
+              entry = entry c
+              if (c == "\\") { i++; entry = entry ch[i] }
+              else if (c == "\"") in_s = 0
+              continue
+            }
+            if (c == "\"") { in_s = 1; entry = entry c; continue }
+            if (c == "(" || c == "{") depth++
+            else if (c == ")") depth--
+            else if (c == "}") { if (depth == 0) { flush(); break } depth-- }
+            else if (c == "," && depth == 0) { flush(); continue }
+            entry = entry c
+          }
+          print "COUNT|" tab "|" idx
+        }' >> "$tw_work/entries"
+    done
+    awk -F'|' -v skip="$TABLE_NOT_A_PATH" '
+      FILENAME == ARGV[1] { name[$1 "|" $3] = $2; defs[$1]++; next }
+      $1 == "MISSING" { print "R11c: the table " $2 " is not found in its source: the scan is blind"; next }
+      $1 == "COUNT" {
+        if (defs[$2] + 0 != $3 + 0)
+          print "R11c: the table " $2 " has " $3 " entries and messages.h defines " defs[$2] + 0 ": the join by index is wrong"
+        next
+      }
+      $1 == "HIT" {
+        k = $2 "|" $3
+        if (!(k in name)) { print "R11c: the table " $2 " has a guessing entry (index " $3 ") that messages.h gives no name"; next }
+        if (index(skip, " " name[k] " ") == 0) print "WORD|" $2 "|" name[k]
+      }' "$tw_work/defs" "$tw_work/entries" > "$tw_work/joined"
+    grep '^R11c' "$tw_work/joined" >> "$tw_cache.problems"
+    awk -F'|' '$1 == "WORD" { print $2 "|" $3 }' "$tw_work/joined" > "$tw_cache"
+    if [ ! -s "$tw_cache" ]; then
+      echo "R11c: no message table entry guesses a cause in $tw_dir: the scan is blind" >> "$tw_cache.problems"
+    fi
+  fi
+  [ -f "$tw_cache" ] || : > "$tw_cache"
+  rm -rf "$tw_work"
+  cp "$tw_cache" "$tw_out"
+  cat "$tw_cache.problems"
 }
 
 # statements FILE REL - "rel|line|statement" for each statement of the
@@ -629,34 +795,133 @@ scan_tree() {
   # Rule 11: the system's reason is said, not guessed.  Per function, over
   # the comment stripped sources (strings kept): "P" when it holds a word of
   # the project's "did not open" sentences, "G" when it asks the system about
-  # a path (access, stat, lstat, fopen, open, opendir, realpath), holds a
-  # string that says "not found" or "cannot open", and names neither errno
-  # nor strerror: a cause the editor guessed after the system answered.
-  : > "$t/words"
-  for f in "$t"/s/*.c; do
-    [ -f "$f" ] || continue
-    rel=${f#"$t"/s/}
-    awk -v rel="$rel" '
-      function flush() {
-        if (fn == "") return
-        if (proj) print "P|" rel "|" fn
-        if (call && lit && !named) print "G|" rel "|" fn
-      }
-      {
-        out = $0
-        if (out ~ /^}/) { flush(); fn = ""; next }
-        if (out ~ /^[A-Za-z_]/ && out ~ /[(]/ && out !~ /;[ \t]*$/ && out !~ /^(typedef|struct[^(]*[{])/) {
-          name = out; sub(/[ \t]*[(].*/, "", name); sub(/.*[^A-Za-z0-9_]/, "", name)
-          if (name != "") { flush(); fn = name; call = 0; lit = 0; named = 0; proj = 0 }
+  # a path (access, stat, lstat, fopen, open, opendir, realpath, chdir),
+  # holds a string that says "not found" or "cannot open", and names neither
+  # errno nor strerror: a cause the editor guessed after the system answered.
+  # "T" when it asks the system about a path and says a message table entry
+  # whose words guess a cause (table_words): a table entry can never carry the
+  # reason, so errno named in the function does not excuse it.
+  table_words "${TABLES_FROM:-$dir}" "$t/tablewords" >> "$out"
+  # What a #define holds counts for the functions that use it: a macro that
+  # says a table entry, asks the system about a path, or holds a guessing
+  # string is the same offence at the place it is used.
+  : > "$t/macros"
+  for f in "$t"/s/*.c "$t"/s/*.h; do
+    [ -f "$f" ] && macros_of "$f" >> "$t/macros"
+  done
+  awk -v tw="$t/tablewords" "$WORDS_LIB"'
+    BEGIN { load_set(tw, tabw) }
+    function add(kind, name) {
+      if (!((kind "|" name) in cls)) { cls[kind "|" name] = 1; grew = 1 }
+    }
+    {
+      name = $0; sub(/[|].*/, "", name); body = substr($0, length(name) + 2)
+      code = body; gsub(/"([^"\\]|\\.)*"/, "\"\"", code)
+      macro[name] = code
+      if (table_entry_said(code)) add("tab", name)
+      if (has_path_call(code)) add("call", name)
+      if (body ~ /"[^"]*([Nn]ot found|Can[\\\047]*t open|[Cc]annot open)[^"]*"/) add("lit", name)
+      if (code ~ /(^|[^A-Za-z0-9_])(errno|strerror)([^A-Za-z0-9_]|$)/) add("named", name)
+    }
+    # a macro of a macro: a body that names a macro of a class is of that class
+    END {
+      for (round = 0; round < 8; round++) {
+        grew = 0
+        for (c in cls) {
+          kind = c; sub(/[|].*/, "", kind); cn = substr(c, length(kind) + 2)
+          for (m in macro)
+            if (m != cn && word_in(macro[m], cn)) pend[kind "|" m] = 1
         }
-        if (fn == "") next
-        code = out; gsub(/"([^"\\]|\\.)*"/, "\"\"", code)
-        if (code ~ /(^|[^A-Za-z0-9_.>])(access|stat|lstat|fopen|open|opendir|realpath|wpe_read_(open|stream_open|text|folder|name_ok))[ \t]*[(]/) call = 1
-        if (code ~ /(^|[^A-Za-z0-9_])(errno|strerror)([^A-Za-z0-9_]|$)/) named = 1
-        if (out ~ /"[^"]*([Nn]ot found|Can[\\\047]*t open|[Cc]annot open)[^"]*"/) lit = 1
-        if (out ~ /"[^"]*(Project file not found|Cannot open project)[^"]*"/) proj = 1
+        for (p in pend) { if (!(p in cls)) { cls[p] = 1; grew = 1 }; delete pend[p] }
+        if (!grew) break
       }
-      END { flush() }' "$f" >> "$t/words"
+      for (c in cls) print c
+    }' "$t/macros" > "$t/macroclass"
+  # The sayers: the functions that say a guessing table entry, wherever they
+  # are (a helper in another file that says it after the caller's stat), and
+  # the functions that call one, however many levels up, minus those an allow
+  # line has judged.  Each round scans every function with the sayers found
+  # by the round before, until no new sayer appears; the last round's rows
+  # are the words.  A function that asks the system about a path and calls a
+  # sayer is named.
+  : > "$t/sayers"; : > "$t/words"
+  rounds=0
+  while [ "$rounds" -lt 6 ]; do
+    rounds=$((rounds + 1))
+    : > "$t/words.round"
+    for f in "$t"/s/*.c; do
+      [ -f "$f" ] || continue
+      rel=${f#"$t"/s/}
+      awk -v rel="$rel" -v tw="$t/tablewords" -v mc="$t/macroclass" -v sy="$t/sayers" "$WORDS_LIB"'
+        BEGIN {
+          load_set(tw, tabw); load_set(mc, mclass); load_set(sy, sayer)
+          for (k in tabw) { en = k; sub(/^[^|]*[|]/, "", en); errname[en] = 1 }
+        }
+        function flush() {
+          if (fn == "") return
+          if (mention && errbare) tabhit = 1
+          if (tabhit || saycall) print "S|" rel "|" fn
+          if (proj) print "P|" rel "|" fn
+          if (call && lit && !named) print "G|" rel "|" fn
+          if (call && (tabhit || saycall)) print "T|" rel "|" fn
+        }
+        # a guessing ERR_ name on its own, as in "i = ERR_ACCFILE": the table
+        # entry is then reached through an index or an alias of the table
+        function bare_err_name(code,   rest, nm) {
+          rest = code
+          while (match(rest, /ERR_[A-Za-z0-9_]+/)) {
+            nm = substr(rest, RSTART, RLENGTH); rest = substr(rest, RSTART + RLENGTH)
+            if (nm in errname) return 1
+          }
+          return 0
+        }
+        function use_macros(code,   m) {
+          for (m in mclass) {
+            if (substr(m, 1, 4) == "tab|" && word_in(code, substr(m, 5))) tabhit = 1
+            else if (substr(m, 1, 5) == "call|" && word_in(code, substr(m, 6))) call = 1
+            else if (substr(m, 1, 4) == "lit|" && word_in(code, substr(m, 5))) lit = 1
+            else if (substr(m, 1, 6) == "named|" && word_in(code, substr(m, 7))) named = 1
+          }
+        }
+        function calls_a_sayer(code,   rest, nm) {
+          rest = code
+          while (match(rest, /[A-Za-z_][A-Za-z0-9_]*[ \t]*[(]/)) {
+            nm = substr(rest, RSTART, RLENGTH); sub(/[ \t]*[(]$/, "", nm)
+            rest = substr(rest, RSTART + RLENGTH)
+            if (nm != fn && (nm in sayer)) return 1
+          }
+          return 0
+        }
+        {
+          out = $0
+          if (indef) { indef = (out ~ /\\[ \t]*$/); next }
+          if (out ~ /^[ \t]*#[ \t]*define/) { indef = (out ~ /\\[ \t]*$/); next }
+          if (out ~ /^}/) { flush(); fn = ""; next }
+          if (out ~ /^[A-Za-z_]/ && out ~ /[(]/ && out !~ /;[ \t]*$/ && out !~ /^(typedef|struct[^(]*[{])/) {
+            name = out; sub(/[ \t]*[(].*/, "", name); sub(/.*[^A-Za-z0-9_]/, "", name)
+            if (name != "") { flush(); fn = name; call = 0; lit = 0; named = 0; proj = 0; tabhit = 0; saycall = 0; mention = 0; errbare = 0 }
+          }
+          if (fn == "") next
+          code = out; gsub(/"([^"\\]|\\.)*"/, "\"\"", code)
+          if (has_path_call(code)) call = 1
+          if (code ~ /(^|[^A-Za-z0-9_])(errno|strerror)([^A-Za-z0-9_]|$)/) named = 1
+          if (out ~ /"[^"]*([Nn]ot found|Can[\\\047]*t open|[Cc]annot open)[^"]*"/) lit = 1
+          if (out ~ /"[^"]*(Project file not found|Cannot open project)[^"]*"/) proj = 1
+          if (table_entry_said(code)) tabhit = 1
+          use_macros(code)
+          if (code ~ /(^|[^A-Za-z0-9_])(e_msg|e_p_msg|e_d_msg)([^A-Za-z0-9_]|$)/) mention = 1
+          if (bare_err_name(code)) errbare = 1
+          if (calls_a_sayer(code)) saycall = 1
+        }
+        END { flush() }' "$f" >> "$t/words.round"
+    done
+    # a sayer's rows stay in the words, so an allow line that judges one is
+    # not stale; only the callers it has are named
+    cp "$t/words.round" "$t/words"
+    awk -F'|' 'FILENAME == ARGV[1] { if ($1 == "GUESS") ok[$3] = 1; next }
+               $1 == "S" && !($3 in ok) { print $3 }' "$allow" "$t/words.round" | sort -u > "$t/sayers.new"
+    if cmp -s "$t/sayers" "$t/sayers.new"; then break; fi
+    cp "$t/sayers.new" "$t/sayers"
   done
   sort "$t/words" > "$t/words.sorted"
   cp "$t/words.sorted" "$WORK/last-words"
@@ -678,6 +943,12 @@ scan_tree() {
         pwseen[key] = 1
         if (!(key in pw))
           print "R11a: " $2 ": " $3 " says the project did not open in words of its own: the reporter e_prj_say_not_opened is the one place for them"
+      } else if ($1 == "S") {
+        gsseen[key] = 1     # a function that says a guessing entry: judged by its allow line, if any
+      } else if ($1 == "T") {
+        gsseen[key] = 1
+        if (!(key in gs))
+          print "R11c: " $2 ": " $3 " asks the system about a path and says it with a message table entry whose words guess a cause: say the system\047s reason (e_say_path_refused, e_say_read_refused)"
       } else {
         gsseen[key] = 1
         if (!(key in gs))
@@ -688,6 +959,153 @@ scan_tree() {
       for (k in pw) if (!(k in pwseen)) print "R11a: stale allow line, delete it: PROJECTWORDS " k
       for (k in gs) if (!(k in gsseen)) print "R11b: stale allow line, delete it: GUESS " k
     }' "$allow" "$t/words.sorted" >> "$out"
+
+  # Rule 14: a window the editor writes opens through e_edit_view.  A call of
+  # e_edit (a word of its own: lsp_apply_workspace_edit does not match) whose
+  # second argument is a string literal other than the views the editor knows
+  # by name, or a macro ending in _NAME, is named.  The argument is read to
+  # the comma or the closing parenthesis of its own level, so a call that
+  # spans lines, or one whose argument is itself a call, is read whole.
+  # A macro that wraps e_edit is read as e_edit, a macro that is a string
+  # literal is read as that literal, and a mention of e_edit that is not a call
+  # (a pointer to it) is named, since the call through it cannot be read.
+  awk '
+    {
+      name = $0; sub(/[|].*/, "", name); body = substr($0, length(name) + 2)
+      b = body; gsub(/^[ \t]+|[ \t]+$/, "", b)
+      # an object-like macro (no parameter list): what it stands for, to be
+      # read through however many macros it takes to reach a literal
+      if (body ~ /^[ \t]/ && b != "") { print "obj\t" name "\t" b; next }
+      if (body ~ /(^|[^A-Za-z0-9_.>])e_edit[ \t]*[(]/) print "wrap\t" name
+    }' "$t/macros" > "$t/editmacros"
+  for f in "$t"/s/*.c; do
+    [ -f "$f" ] || continue
+    rel=${f#"$t"/s/}
+    awk -v rel="$rel" -v mf="$t/editmacros" '
+      BEGIN {
+        names[1] = "e_edit"; nn = 1
+        while ((getline line < mf) > 0) {
+          split(line, p, "\t")
+          if (p[1] == "obj") objlit[p[2]] = p[3]
+          else if (p[1] == "wrap") names[++nn] = p[2]
+        }
+      }
+      function second_arg(s, p,   depth, i, n, c, in_s, arg, seen, ch) {
+        depth = 0; in_s = 0; seen = 0; arg = ""
+        n = split(s, ch, "")
+        for (i = p; i <= n; i++) {
+          c = ch[i]
+          if (in_s) {
+            if (seen == 1) arg = arg c
+            if (c == "\\") { i++; if (seen == 1) arg = arg ch[i] }
+            else if (c == "\"") in_s = 0
+            continue
+          }
+          if (c == "\"") { in_s = 1; if (seen == 1) arg = arg c; continue }
+          if (c == "(" || c == "{" || c == "[") depth++
+          else if (c == ")" || c == "}" || c == "]") { if (depth == 0) break; depth-- }
+          else if (c == "," && depth == 0) { seen++; if (seen == 2) break; continue }
+          if (seen == 1) arg = arg c
+        }
+        return arg
+      }
+      # Is the first "(" of the text closed by its last ")" and by no earlier one?
+      function wrapped_whole(a,   i, n, c, depth, ch) {
+        n = split(a, ch, ""); depth = 0
+        for (i = 1; i <= n; i++) {
+          c = ch[i]
+          if (c == "(") depth++
+          else if (c == ")") { depth--; if (depth == 0 && i < n) return 0 }
+        }
+        return depth == 0
+      }
+      # The argument without the casts and parentheses around it.
+      function bare_arg(a,   prev) {
+        do {
+          prev = a
+          gsub(/^[ \t\n]+|[ \t\n]+$/, "", a)
+          if (a ~ /^[(][ \t]*(const[ \t]+)?[A-Za-z_][A-Za-z0-9_ \t]*[*]+[ \t]*[)]/) sub(/^[(][^)]*[)][ \t]*/, "", a)
+          else if (a ~ /^[(].*[)]$/ && wrapped_whole(a)) a = substr(a, 2, length(a) - 2)
+        } while (a != prev)
+        return a
+      }
+      # Does this argument name a window no file backs?  A literal other than
+      # the views the editor knows, a macro that leads to one (a macro of a
+      # macro, a cast or parentheses on the way), a name ending in _NAME, either
+      # branch of a ?: , or a member of a structure the file fills with one.
+      function names_a_window(a,   hops, q, i, t, n, depth, c, qpos, cpos, ch) {
+        a = bare_arg(a)
+        for (hops = 0; (a in objlit) && hops < 8; hops++) a = bare_arg(objlit[a])
+        # x ? "A" : "B": each branch is judged
+        n = split(a, ch, ""); depth = 0; qpos = 0; cpos = 0; q = 0
+        for (i = 1; i <= n; i++) {
+          c = ch[i]
+          if (c == "\"") { q = !q; continue }
+          if (q) continue
+          if (c == "(" || c == "[") depth++
+          else if (c == ")" || c == "]") depth--
+          else if (depth == 0 && c == "?" && !qpos) qpos = i
+          else if (depth == 0 && c == ":" && qpos && !cpos) cpos = i
+        }
+        if (qpos && cpos)
+          return names_a_window(substr(a, qpos + 1, cpos - qpos - 1)) || names_a_window(substr(a, cpos + 1))
+        if (a ~ /^"/) return a != "\"\"" && a != "\"Help\"" && a != "\"Messages\"" && a != "\"Watches\"" && a != "\"Stack\""
+        if (a ~ /^[A-Z][A-Z0-9_]*_NAME$/) return 1
+        if (a ~ /^[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?(\.|->)[A-Za-z_]/) return member_holds_a_window_name(a)
+        return 0
+      }
+      # a.f or a->f: does the file give a an initializer, or a.f an assignment,
+      # that holds a literal which names a window?
+      function member_holds_a_window_name(a,   base, rest, lit, seg, p) {
+        base = a; sub(/(\[|\.|->).*/, "", base)
+        rest = txt
+        while (match(rest, "(^|[^A-Za-z0-9_])" base "[^;{]*=[ \t\n]*[{]")) {
+          seg = substr(rest, RSTART + RLENGTH - 1)
+          p = index(seg, ";"); if (p) seg = substr(seg, 1, p)
+          if (a_literal_names_a_window(seg)) return 1
+          rest = substr(rest, RSTART + RLENGTH)
+        }
+        rest = txt
+        while (match(rest, "(^|[^A-Za-z0-9_])" base "(\\.|->)[A-Za-z_][A-Za-z0-9_]*[ \t]*=[ \t]*\"")) {
+          seg = substr(rest, RSTART + RLENGTH - 1)
+          p = index(seg, ";"); if (p) seg = substr(seg, 1, p)
+          if (a_literal_names_a_window(seg)) return 1
+          rest = substr(rest, RSTART + RLENGTH)
+        }
+        return 0
+      }
+      function a_literal_names_a_window(seg,   rest, lit) {
+        rest = seg
+        while (match(rest, /"([^"\\]|\\.)*"/)) {
+          lit = substr(rest, RSTART, RLENGTH); rest = substr(rest, RSTART + RLENGTH)
+          if (lit != "\"\"" && lit != "\"Help\"" && lit != "\"Messages\"" && lit != "\"Watches\"" && lit != "\"Stack\"") return 1
+        }
+        return 0
+      }
+      { txt = txt $0 "\n" }
+      END {
+        for (k = 1; k <= nn; k++) {
+          nm = names[k]
+          rest = txt; base = 0
+          while (match(rest, "(^|[^A-Za-z0-9_])" nm "[ \t]*[(]")) {
+            st = RSTART + RLENGTH
+            arg = second_arg(rest, st)
+            pre = substr(txt, 1, base + st); ln = gsub(/\n/, "\n", pre) + 1
+            if (names_a_window(arg))
+              print "R14: " rel ":" ln ": " arg " names a window the editor writes: open it with e_edit_view, which never reads the disk"
+            base += st - 1; rest = substr(rest, st)
+          }
+        }
+        plain = txt; gsub(/"([^"\\]|\\.)*"/, "\"\"", plain); gsub(/e_edit[ \t]+[(]/, "e_edit(", plain)
+        rest = plain; base = 0
+        while (match(rest, /(^|[^A-Za-z0-9_.>])e_edit([^A-Za-z0-9_(]|$)/)) {
+          st = RSTART + RLENGTH
+          pre = substr(plain, 1, base + st); ln = gsub(/\n/, "\n", pre) + 1
+          print "R14: " rel ":" ln ": e_edit is named without a call (a pointer to it): the name of the window it opens cannot be read, call e_edit or e_edit_view directly"
+          base += st - 1; rest = substr(rest, st)
+        }
+      }' "$f" >> "$out"
+  done
 
   # Rule 12: a buffer that receives or names a path is the owner's size.  A
   # char array, of any scope, whose size is not WPE_PATH_SIZE, WPE_PATH_MAX or
@@ -851,9 +1269,15 @@ plant_tree() {
   cp "$SRCDIR/$OWNER_HEADER" "$c"/ 2>/dev/null
   : > "$c/we_planted.c"    # the rules that read the sources want one to exist
   printf '%s\n' "$code" > "$c/${PLANT_FILE:-we_planted.c}"
+  # a second source, for a helper that lives in another file than its caller
+  [ -z "$PLANT_CODE2" ] || printf '%s\n' "$PLANT_CODE2" > "$c/we_planted2.c"
   : > "$c/allow"
   [ -z "$lines" ] || printf '%s\n' "$lines" > "$c/allow"
+  # The planted tree has no message tables: rule 11 reads the real ones, so
+  # a planted e_msg[ERR_ACCFILE] is judged by what the table says of it.
+  TABLES_FROM=$SRCDIR
   scan_tree "$c" "$c/out" "$c/allow"
+  TABLES_FROM=
   PLANT_OUT=$c/out
 }
 
@@ -1073,6 +1497,86 @@ canary R11a 'void planted(FENSTER *f) { e_error("Project file not found", 0, f->
 canary R11a 'void planted(FENSTER *f) { e_error("Cannot open project x", 0, f->fb); }' || blind=1
 quiet_canary R11a 'void planted(FENSTER *f) { e_error("Project file not found", 0, f->fb); }' 'PROJECTWORDS|we_planted.c|planted|the reporter' || blind=1
 canary R11a 'void planted(FENSTER *f) { }' 'PROJECTWORDS|we_planted.c|planted|stale' || blind=1
+# Rule 11, the chdir of a folder and the words of the message tables.
+canary R11b 'void planted(FENSTER *f, const char *p) { if (chdir(p) != 0) e_error("Can\'"'"'t open X", 0, f->fb); }' || blind=1
+canary R11c 'void planted(FENSTER *f, const char *p) { struct stat st; if (stat(p, &st) != 0) e_error(e_msg[ERR_ACCFILE], 0, f->fb); }' || blind=1
+canary R11c 'void planted(FENSTER *f, const char *p) { if (chdir(p) != 0) e_error(e_msg[ERR_WORKDIRACCESS], 0, f->fb); }' || blind=1
+canary R11c 'void planted(FENSTER *f, const char *p) { struct stat st; if (stat(p, &st) != 0) { int e = errno; e_error(e_msg[ERR_ACCFILE], 0, f->fb); } }' || blind=1
+canary R11c 'void planted(FENSTER *f, const char *p) { if (access(p, 0) != 0) e_error(e_d_msg[ERR_CANTFILE], 0, f->fb); }' || blind=1
+quiet_canary R11c 'void planted(FENSTER *f, const char *p) { struct stat st; if (stat(p, &st) != 0) e_say_path_refused(f, "file", p, errno); }' || blind=1
+quiet_canary R11c 'void planted(FENSTER *f, const char *p) { struct stat st; if (stat(p, &st) != 0) e_error(e_msg[ERR_LOWMEM], 0, f->fb); }' || blind=1
+quiet_canary R11c 'void planted(FENSTER *f, const char *p) { if (access(p, 0) != 0) e_error(e_msg[ERR_COMMAND], 0, f->fb); }' || blind=1
+quiet_canary R11c 'void planted(FENSTER *f) { e_error(e_msg[ERR_ACCFILE], 0, f->fb); }' || blind=1
+quiet_canary R11c 'void planted(FENSTER *f, const char *p) { struct stat st; if (stat(p, &st) != 0) e_error(e_msg[ERR_ACCFILE], 0, f->fb); }' 'GUESS|we_planted.c|planted|keep|the word is about something else' || blind=1
+canary R11b 'void planted(FENSTER *f, const char *p) { if (stat(p, 0) != 0) e_error(e_msg[ERR_ACCFILE], 0, f->fb); }' 'GUESS|we_planted.c|gone|keep|stale' || blind=1
+# Rule 14: a window the editor writes opens through e_edit_view.
+canary R14 'void planted(ECNT *cn) { e_edit(cn, "Doctor"); }' || blind=1
+canary R14 'void planted(ECNT *cn) { if (e_edit(cn, AI_PANE_NAME)) return; }' || blind=1
+canary R14 'void planted(ECNT *cn) { e_edit(
+   cn,
+   "Report"); }' || blind=1
+quiet_canary R14 'void planted(ECNT *cn) { e_edit_view(cn, "Doctor"); e_edit_view(cn, AI_PANE_NAME); }' || blind=1
+quiet_canary R14 'void planted(ECNT *cn) { e_edit(cn, "Messages"); e_edit(cn, "Help"); e_edit(cn, ""); e_edit(cn, "Watches"); e_edit(cn, "Stack"); }' || blind=1
+quiet_canary R14 'void planted(ECNT *cn, char *w) { e_edit(cn, w); e_edit(cn, wpe_listsel_name(cn->df, cn->nf, "x")); }' || blind=1
+quiet_canary R14 'void planted(struct json_object *resp) { lsp_apply_workspace_edit(obj_obj(resp, "result"), "x"); }' || blind=1
+quiet_canary R14 'void planted(ECNT *cn) { /* e_edit(cn, "Doctor") */ }' || blind=1
+# Rule 14: a cast or parentheses, a macro around the call, a pointer to it,
+# a macro that is the literal.
+canary R14 'void planted(ECNT *cn) { e_edit(cn, (char *)"Doctor"); }' || blind=1
+canary R14 'void planted(ECNT *cn) { e_edit(cn, ("Doctor")); }' || blind=1
+canary R14 'void planted(ECNT *cn) { e_edit(cn, (char *)("Doctor")); }' || blind=1
+canary R14 '#define OPEN_WIN(c, n) e_edit(c, n)
+void planted(ECNT *cn) { OPEN_WIN(cn, "Doctor"); }' || blind=1
+canary R14 'void planted(ECNT *cn) { int (*op)(ECNT *, char *) = e_edit; op(cn, "Doctor"); }' || blind=1
+canary R14 '#define DOCTOR_TITLE "Doctor"
+void planted(ECNT *cn) { e_edit(cn, DOCTOR_TITLE); }' || blind=1
+quiet_canary R14 'void planted(ECNT *cn, char *title) { e_edit(cn, (char *)title); e_edit(cn, (char *)"Messages"); e_edit(cn, ("Stack")); }' || blind=1
+quiet_canary R14 '#define OPEN_WIN(c, n) e_edit(c, n)
+void planted(ECNT *cn, char *w) { OPEN_WIN(cn, w); OPEN_WIN(cn, "Help"); }' || blind=1
+# Rule 11c: the bypasses of the table scan: a macro that says the entry, a
+# macro with the whole check in it, a pointer to chdir, the pointer form of
+# the table entry, and a helper in another file that says it after the stat.
+canary R11c '#define NOACC e_msg[ERR_ACCFILE]
+void planted(FENSTER *f, const char *p) { struct stat st; if (stat(p, &st) != 0) e_error(NOACC, 0, f->fb); }' || blind=1
+canary R11c '#define FAIL_OPEN(f, p) do { struct stat st_; if (stat(p, &st_)) e_error(e_msg[ERR_ACCFILE], 0, (f)->fb); } while (0)
+void planted(FENSTER *f, const char *p) { FAIL_OPEN(f, p); }' || blind=1
+canary R11c 'void planted(FENSTER *f, const char *p) { int (*go)(const char *) = chdir; if (go(p) != 0) e_error(e_msg[ERR_WORKDIRACCESS], 0, f->fb); }' || blind=1
+canary R11c 'void planted(FENSTER *f, const char *p) { struct stat st; if (stat(p, &st) != 0) e_error(*(e_msg + ERR_ACCFILE), 0, f->fb); }' || blind=1
+PLANT_CODE2='void say_noaccess(FENSTER *f) { e_error(e_msg[ERR_ACCFILE], 0, f->fb); }'
+canary R11c 'void planted(FENSTER *f, const char *p) { struct stat st; if (stat(p, &st) != 0) say_noaccess(f); }' || blind=1
+quiet_canary R11c 'void planted(FENSTER *f, const char *p) { struct stat st; if (stat(p, &st) != 0) say_noaccess(f); }' 'GUESS|we_planted2.c|say_noaccess|keep|a helper the allow file has judged' || blind=1
+PLANT_CODE2=
+# Second-order bypasses of rule 11c: a macro of a macro, a chain of helpers,
+# a table indexed through a variable, a table reached through an alias.
+canary R11c '#define NOACC e_msg[ERR_ACCFILE]
+#define NOACC_TOO NOACC
+void planted(FENSTER *f, const char *p) { struct stat st; if (stat(p, &st) != 0) e_error(NOACC_TOO, 0, f->fb); }' || blind=1
+PLANT_CODE2='void deep_say(FENSTER *f) { e_error(e_msg[ERR_ACCFILE], 0, f->fb); }
+void mid_say(FENSTER *f) { deep_say(f); }'
+canary R11c 'void planted(FENSTER *f, const char *p) { struct stat st; if (stat(p, &st) != 0) mid_say(f); }' || blind=1
+quiet_canary R11c 'void planted(FENSTER *f, const char *p) { struct stat st; if (stat(p, &st) != 0) mid_say(f); }' 'GUESS|we_planted2.c|deep_say|keep|judged' || blind=1
+PLANT_CODE2=
+canary R11c 'void planted(FENSTER *f, const char *p) { struct stat st; int i = ERR_ACCFILE; if (stat(p, &st) != 0) e_error(e_msg[i], 0, f->fb); }' || blind=1
+canary R11c 'void planted(FENSTER *f, const char *p) { struct stat st; char **m = e_msg; if (stat(p, &st) != 0) e_error(m[ERR_ACCFILE], 0, f->fb); }' || blind=1
+quiet_canary R11c 'void planted(FENSTER *f, const char *p) { struct stat st; char **m = e_msg; if (stat(p, &st) != 0) e_error(m[ERR_LOWMEM], 0, f->fb); }' || blind=1
+# Second-order bypasses of rule 14: a ?: , a macro of a literal macro, a
+# structure that holds the literal.
+canary R14 'void planted(ECNT *cn, int x) { e_edit(cn, x ? "Doctor" : "Messages"); }' || blind=1
+canary R14 'void planted(ECNT *cn, int x) { e_edit(cn, x ? "Stack" : "Doctor"); }' || blind=1
+canary R14 '#define BASE_TITLE "Doctor"
+#define DOCTOR_TITLE BASE_TITLE
+void planted(ECNT *cn) { e_edit(cn, DOCTOR_TITLE); }' || blind=1
+canary R14 'static const struct { const char *name; } win = { "Doctor" };
+void planted(ECNT *cn) { e_edit(cn, win.name); }' || blind=1
+canary R14 'struct W { const char *name; };
+void planted(ECNT *cn, struct W *w) { w->name = "Doctor"; e_edit(cn, w->name); }' || blind=1
+quiet_canary R14 'void planted(ECNT *cn, int x) { e_edit(cn, x ? "Stack" : "Messages"); }' || blind=1
+quiet_canary R14 'struct W { const char *name; };
+void planted(ECNT *cn, struct W *w) { e_edit(cn, w->name); }' || blind=1
+# The owner of the file manager's change of folder says the system's reason:
+# put back the guessed words and the scan names it.
+canary R11c 'static void planted(ECNT *cn, FENSTER *f, const char *dir) { if (chdir(dir) == 0) return; e_error(e_msg[ERR_WORKDIRACCESS], 0, f->fb); }' || blind=1
+quiet_canary R11c 'static void planted(ECNT *cn, FENSTER *f, const char *dir) { if (chdir(dir) == 0) return; e_say_path_refused(f, "folder", dir, errno); }' || blind=1
 # Rule 10, the cuts of the containment pass: its token number and the model's
 # path in 1024 bytes.
 canary R10 '#define CONTAIN_TOKEN_MAX 256' || blind=1

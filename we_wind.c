@@ -1509,6 +1509,9 @@ void e_startcmd_typed(const char *folder, const char *key, const char *text)
    files it lists are what Run it makes the editor load. */
 #define E_STARTPLAN_WITH_RUN_FMT "With Run it: %s (%d line%s)"
 #define E_STARTPLAN_WITH_RUN_LONG_FMT "With Run it: %s (%ld bytes, cannot be shown whole)"
+/* A start-up file the system would not let the editor read: its reason. */
+#define E_STARTPLAN_RUNS_REFUSED_FMT "Runs at start: %s (%s)"
+#define E_STARTPLAN_WITH_RUN_REFUSED_FMT "With Run it: %s (%s)"
 #define E_STARTPLAN_DEBUGS_FMT   "Debugs: %s"
 #define E_STARTPLAN_NO_RUN_IT_FMT "Run it is not offered: %s"
 #define E_STARTPLAN_RUNS_LINE_FMT "    %s"
@@ -1687,12 +1690,14 @@ static void e_startplan_lines_file_text(e_startplan_lines *l, const char *text)
 static void e_startplan_lines_runs(e_startplan_lines *l, const WpeStartPlan *p)
 {
  const char *fmt = E_STARTPLAN_RUNS_FMT, *long_fmt = E_STARTPLAN_RUNS_LONG_FMT;
+ const char *refused_fmt = E_STARTPLAN_RUNS_REFUSED_FMT;
  int i, n;
 
  if (wpe_startplan_is_apart(p))
  {
   fmt = E_STARTPLAN_WITH_RUN_FMT;
   long_fmt = E_STARTPLAN_WITH_RUN_LONG_FMT;
+  refused_fmt = E_STARTPLAN_WITH_RUN_REFUSED_FMT;
  }
  for (i = 0; i < p->npath; i++)
  {
@@ -1700,7 +1705,10 @@ static void e_startplan_lines_runs(e_startplan_lines *l, const WpeStartPlan *p)
   if (s->role != WPE_PATH_READS)
    continue;
   n = e_startplan_text_lines(s->content);
-  if (s->too_long)
+  if (s->refused && !s->embedded)
+   e_startplan_line_add(l, E_STARTPLAN_KEEP_START, refused_fmt, s->path,
+                        wpe_path_refused_reason(s->refused));
+  else if (s->too_long)
    e_startplan_line_add(l, E_STARTPLAN_KEEP_START, long_fmt, s->path, s->length);
   else if (n == 1)
    e_startplan_line_add(l, E_STARTPLAN_KEEP_START, fmt, s->path, n, "");
@@ -2712,7 +2720,7 @@ int e_close_window(FENSTER *f)
   return(0);
  if (f != f0)
  {
-  if (f->save != 0 && f->ins != 8)
+  if (f->save != 0 && f->ins != 8 && wpe_write_window_is_a_file(f))
   {
    snprintf(text, sizeof(text), "File %s NOT saved!\nDo you want to save File ?", f->datnam);
    c = e_message(1, text, f);
@@ -3531,6 +3539,7 @@ int e_sv_window(int xa, int ya, int *n, struct dirfile *df, FENSTER *f)
   e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
  wpe_write_identity_forget(&f->file_id);
  wpe_write_copies_forget(&f->copies);
+ f->no_file = 0;
  if (xe > MAXSCOL-3) {  xe = MAXSCOL - 3;  xa = xe - 21;  }
  if (ye > MAXSLNS-3) {  ye = MAXSLNS - 3;  ya = ye - 6;  }
  f->fb = cn->fb;

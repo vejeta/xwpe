@@ -200,7 +200,10 @@ input; the byte past that is refused with `Input at its limit (32768 bytes)`,
 and the composer sends exactly the text it shows. A block pasted whole (Ctrl-V,
 Ctrl-K C) can take the composer past the limit; Esc then asks, with the
 composer still open, whether to go back and shorten it. Y, Esc and Cancel go back
-to the text; only N gives it up. Nothing is sent cut.
+to the text; only N gives it up. Nothing is sent cut. The composer is not a
+file: F2 in it says `This window is not a file.  Use Save As to keep its
+text.`, nothing is written under its title, quitting does not ask to save it,
+and a crash leaves no `.ESV` copy of it.
 The **Agent** can run on one of two **engines** (choose in Options > AI, only in
 a `--enable-ai-agent-host` build): *Built-in* (the editor's own tool loop, works
 with any backend) or *Claude Code* (runs the real `claude` CLI as a persistent
@@ -250,7 +253,11 @@ After the accept each changed file is open in its own window, and the
 (`src/parser.c:12: [Multi-file edit] changed`). **Alt-T** / **Alt-V** step
 through those rows as they step through compiler errors. There is no keep or
 revert step: the edits live in the buffers until you save each window, and
-**Ctrl-U** in a window takes that file's edit back.
+**Ctrl-U** in a window takes that file's edit back. A file the system will
+not let the editor read (closed to reading, a folder) is skipped, not
+applied, and the pane names it with the reason
+(`[Multi-file edit] could not open other.c: Permission denied`); the other
+files go on.
 `Alt-G m` opens the scrollable **model picker**.
 
 The pane keeps its `> ` prompt docked at the bottom while you type. To read back a

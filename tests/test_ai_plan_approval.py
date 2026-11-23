@@ -3,6 +3,7 @@ import os
 import time
 import subprocess
 import pytest
+from mode_premise import file_mode_is_obeyed
 from wpe_driver import WpeSession, ALT, WPE_BIN, pane_rows, wait_deadline, \
     wait_screen, wait_until
 
@@ -145,6 +146,39 @@ def test_plan_apply_all_opens_files_without_writing_disk_and_refuses_directories
             s.key("\x15", delay=0.8)   # undo t.c window too
             s._drain(0.5)
         assert os.path.isdir(tmp_path / "sub"), "directory proposal touched the directory path"
+
+
+# @scenario SC-ai-edit-44c
+def test_plan_apply_all_skips_a_file_the_system_refuses_and_names_the_reason(tmp_path):
+    """A plan that proposes a change to other.c (0000): apply all says "could
+    not open other.c: Permission denied" in the pane, raises no box that would
+    stop the loop, applies t.c, and other.c is as it was.  On the unfixed
+    tree a padlocked empty other.c window was "applied" (2 of 2) with the
+    proposal pasted into an empty buffer."""
+    file_mode_is_obeyed(str(tmp_path), 0o000, os.O_RDONLY)
+    other = tmp_path / "other.c"
+    other.write_text("int other = 1;\n")
+    os.chmod(str(other), 0o000)
+    plan = (
+        "PROPOSE t.c\n" + NEW + "@@END\n"
+        "PROPOSE other.c\nint other = 2;\n@@END\n"
+        "@@PLAN-DONE two files\n"
+    )
+    try:
+        with WpeSession(str(tmp_path), ORIG, env_extra=_env(tmp_path, plan), filename="t.c") as s:
+            _start_plan(s, "bump both files")
+            assert wait_screen(s, BOX_TITLE), "approval box did not open"
+            s.key("a", delay=0.9)
+            assert _wait_words(s, PREFIX + " applied 1 of 2 files"), \
+                "the refused file was counted as applied:\n" + "\n".join(s.display())
+            assert "could not open other.c: Permission denied" in _screen_words(s), \
+                "the pane does not say why other.c was skipped:\n" + "\n".join(s.display())
+            assert "Cannot open file" not in "\n".join(s.display()), \
+                "a box was raised for the refused file"
+            assert " other.c " not in "\n".join(s.display()), "a window opened for other.c"
+    finally:
+        os.chmod(str(other), 0o600)
+    assert other.read_text() == "int other = 1;\n", "other.c changed"
 
 
 # @scenario SC-ai-edit-44b

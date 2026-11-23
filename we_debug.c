@@ -202,7 +202,7 @@ static int  e_d_watch_refused(FENSTER *f);   /* a debugger without watches */
 static const char *e_d_start_label(void);
 static void e_d_show_stop_position(FENSTER *f);  /* line:column after a stop */
 static void e_d_note_output_closed(void);        /* the debugger's pipe ended */
-static void e_d_jdb_missing_forget(void);        /* classes without source */
+static void e_d_said_once_forget(void);          /* what was said once */
 static void e_d_jdb_pause_forget(void);          /* a Pause still held */
 static void e_d_end_forget(void);               /* how the last debugger ended */
 /* gdb's answers at a stop, read on the fd loop (e_d_ga, below). */
@@ -4041,7 +4041,7 @@ int e_d_quit_basic(FENSTER *f)
  e_d_jdb_vm_end();
  e_d_start_forget();
  e_d_end_forget();
- e_d_jdb_missing_forget();
+ e_d_said_once_forget();
  e_d_jdb_pause_forget();
  e_d_ga_forget();
  e_d_gj_forget_events();
@@ -5471,7 +5471,7 @@ int e_make_stack(FENSTER *f)
 	 e_make_line_num2((char *)b->bf[i].s, file)) < 0; i--);
    }
    if(e_d_p_watches(f, 0) == -1) return(-1);
-   e_d_goto_break(file, line, f);
+   e_d_goto_source(file, line, f);   /* Enter in the Stack window: the user asked */
    return(0);
 }
 /*******************************************************/
@@ -13415,36 +13415,45 @@ static int e_d_jdb_find_source(ECNT *cn, const char *cls, char *out, size_t n)
  return(e_d_jdb_try_source("", name, out, n));
 }
 
-/* Classes whose source was not found, each said once per session. */
-#define E_D_JDB_MISSING_MAX 16
+/* What the debugger says once per session, each thing by its own kind so a
+   class of jdb and the path of a source cannot be taken for one another. */
+#define E_D_SAID_ONCE_MAX 32
+#define E_D_SAID_CLASS  'c'     /* a class jdb found no source for */
+#define E_D_SAID_SOURCE 's'     /* a source file the system refused */
 #define E_D_JDB_NO_SOURCE_FMT "%s: source not found"
-static char e_d_jdb_missing[E_D_JDB_MISSING_MAX][E_D_STOP_PATH_MAX];
-static int e_d_jdb_nmissing = 0;
+static char e_d_said_once_key[E_D_SAID_ONCE_MAX][E_D_STOP_PATH_MAX];
+static char e_d_said_once_kind[E_D_SAID_ONCE_MAX];
+static int e_d_nsaid_once = 0;
 
 /**
- * e_d_jdb_missing_forget - Forget which classes had no source, for the
- * next session.
+ * e_d_said_once_forget - Forget what was said once, for the next session.
  */
-static void e_d_jdb_missing_forget(void)
+static void e_d_said_once_forget(void)
 {
- e_d_jdb_nmissing = 0;
+ e_d_nsaid_once = 0;
 }
 
 /**
- * e_d_jdb_missing_seen - Was this class already said to have no source?
- * @cls: the class; it is remembered when it was not.
- * Return: 1 when it was already said (or no room is left to remember it).
+ * e_d_said_once - Was this already said in this debugging session?
+ * @kind: E_D_SAID_CLASS or E_D_SAID_SOURCE; @key: the class or the path.
+ * Return: 1 when it was already said (or no room is left to remember it),
+ * else 0, and it is remembered.
+ *
+ * What the user gets: a stop that repeats on every step (the same library
+ * class, the same unreadable source) is said the first time and then stays
+ * quiet, where every stop used to raise a dialog.
  */
-static int e_d_jdb_missing_seen(const char *cls)
+static int e_d_said_once(char kind, const char *key)
 {
  int i;
 
- for (i = 0; i < e_d_jdb_nmissing; i++)
-  if (!strcmp(e_d_jdb_missing[i], cls))
+ for (i = 0; i < e_d_nsaid_once; i++)
+  if (e_d_said_once_kind[i] == kind && !strcmp(e_d_said_once_key[i], key))
    return(1);
- if (e_d_jdb_nmissing >= E_D_JDB_MISSING_MAX)
+ if (e_d_nsaid_once >= E_D_SAID_ONCE_MAX)
   return(1);
- snprintf(e_d_jdb_missing[e_d_jdb_nmissing++], E_D_STOP_PATH_MAX, "%s", cls);
+ e_d_said_once_kind[e_d_nsaid_once] = kind;
+ snprintf(e_d_said_once_key[e_d_nsaid_once++], E_D_STOP_PATH_MAX, "%s", key);
  return(0);
 }
 
@@ -13462,7 +13471,7 @@ static void e_d_jdb_say_no_source(FENSTER *f, const char *cls)
  char line[E_D_STOP_PATH_MAX + sizeof E_D_JDB_NO_SOURCE_FMT];
 
  e_d_switch_out(0);
- if (e_d_jdb_missing_seen(cls))
+ if (e_d_said_once(E_D_SAID_CLASS, cls))
   return;
  snprintf(line, sizeof line, E_D_JDB_NO_SOURCE_FMT, cls);
  e_status_say(f, line);
@@ -16681,7 +16690,7 @@ static int e_d_frame_goto(FENSTER *f, const e_d_frame *fr)
  if (!fr->file[0] || fr->line == E_D_FRAME_NO_LINE)
   return(e_error(e_d_msg[ERR_NOSOURCE], 0, f->fb));
  snprintf(file, sizeof file, "%s", fr->file);
- return(e_d_goto_break(file, fr->line, f));
+ return(e_d_goto_source(file, fr->line, f));
 }
 
 /**
@@ -18060,13 +18069,56 @@ static void e_d_show_stop_position(FENSTER *f)
  e_refresh();
 }
 
-int e_d_goto_break(char *file, int line, FENSTER *f)
+/* Who asked for a source to be shown: the program stopped there, or the user
+   picked it (a frame, a symbol, a reference). */
+#define E_D_SOURCE_STOP  0
+#define E_D_SOURCE_ASKED 1
+
+/**
+ * e_d_say_source_refused - Tell the user the system will not let the editor
+ * read the source the debugger wants to show.
+ * @f: the window on top; @file: the source; @err: the errno of the refusal,
+ * 0 when the editor already said why; @asked: E_D_SOURCE_ASKED or
+ * E_D_SOURCE_STOP.
+ *
+ * A source the user picked (a frame in the Stack window, a reference) gets
+ * the box every time, since they asked.  A stop repeats with every step in
+ * the same file, so it is said on the status row the first time and later
+ * stops in that file stay quiet: no box is left waiting while the program
+ * runs, and the stop, the Stack and the Watches are shown as usual.
+ */
+static void e_d_say_source_refused(FENSTER *f, const char *file, int err, int asked)
+{
+ char line[WPE_PATH_REFUSED_MAX];
+
+ if (err == 0)
+  return;
+ if (asked == E_D_SOURCE_ASKED)
+ {
+  e_say_path_refused(f, "source", file, err);
+  return;
+ }
+ if (e_d_said_once(E_D_SAID_SOURCE, file))
+  return;
+ (void)wpe_path_say_refused(line, sizeof line, "source", file, err);
+ e_status_say_until_key(f, line);
+}
+
+/**
+ * e_d_show_source - Show a source line of the program: the window of the
+ * file on top, the cursor and the debugger's mark on the line.
+ * @file, @line: the place; @f: the window the command came from;
+ * @asked: E_D_SOURCE_STOP or E_D_SOURCE_ASKED, who decides the words when the
+ * source cannot be read.
+ * Return: 0 when shown, else the debugger's refusal.
+ */
+static int e_d_show_source(char *file, int line, FENSTER *f, int asked)
 {
  ECNT *cn = f->ed;
  BUFFER *b;
  SCHIRM *s;
  FENSTER ftmp;
- int i;
+ int i, open_err = 0;
  char str[WPE_PATH_SIZE + 64];
 
 /*   if(schirm != e_d_save_schirm) e_d_switch_out(0);  */
@@ -18102,8 +18154,11 @@ int e_d_goto_break(char *file, int line, FENSTER *f)
    snprintf(str, sizeof(str), e_d_msg[ERR_CANTFILE], file);
    return(e_error(str, 0, f->fb));
   }
-  if (e_edit(cn, file))
+  if (e_edit_outcome(cn, file, &open_err))
+  {
+   e_d_say_source_refused(f, file, open_err, asked);
    return(WPE_ESC);
+  }
   b = cn->f[cn->mxedt]->b;
   s = cn->f[cn->mxedt]->s;
  }
@@ -18120,6 +18175,33 @@ int e_d_goto_break(char *file, int line, FENSTER *f)
  e_d_pty_flush_to_messages(f);
  e_raise_editor();
  return(0);
+}
+
+/**
+ * e_d_goto_break - Show the source line a stop of the program is on.
+ * @file, @line: the stop; @f: the window on top.
+ * Return: 0 when shown, else the debugger's refusal.
+ *
+ * For the stops: a source the system will not let the editor read is said
+ * once on the status row, never as a box for every step.
+ */
+int e_d_goto_break(char *file, int line, FENSTER *f)
+{
+ return(e_d_show_source(file, line, f, E_D_SOURCE_STOP));
+}
+
+/**
+ * e_d_goto_source - Show the source line the user picked: a frame of the
+ * Stack window, a symbol, a reference.
+ * @file, @line: the place; @f: the window the key was pressed in.
+ * Return: 0 when shown, else the debugger's refusal.
+ *
+ * A source the system will not let the editor read gets its box every time
+ * the user asks, naming the file and the reason.
+ */
+int e_d_goto_source(char *file, int line, FENSTER *f)
+{
+ return(e_d_show_source(file, line, f, E_D_SOURCE_ASKED));
 }
 
 /* ==== the line that says a gdb run began ====
@@ -21613,12 +21695,16 @@ static void e_d_gs_say_no_stack(E_D_GA_CTX *st)
  * e_d_gs_mark - Mark the stop on its source line, or say gdb named none.
  * @file, @line: the stop's place; @line is -1 when gdb named none.
  *
+ * @asked: E_D_SOURCE_ASKED when the user picked the frame in the Stack
+ * window, E_D_SOURCE_STOP for a stop of the program (they decide the words
+ * when the source cannot be read).
+ *
  * Called with the stop's context already given back: a stop in code with
  * no source here asks gdb once more, through a context of its own.
  * Return: 1 when the program runs on (its source is not here, so it was
  * sent on to main), else 0.
  */
-static int e_d_gs_mark(char *file, int line)
+static int e_d_gs_mark(char *file, int line, int asked)
 {
  FENSTER *f = e_d_ga_window();
 
@@ -21628,7 +21714,7 @@ static int e_d_gs_mark(char *file, int line)
   return(0);
  }
  snprintf(e_d_file, sizeof e_d_file, "%s", file);
- e_d_goto_break(file, line, f);
+ e_d_show_source(file, line, f, asked);
  return(e_d_run_going() || e_d_ga_answering());
 }
 
@@ -21662,7 +21748,7 @@ static void e_d_gs_stop_finished(const E_D_CHAIN_END *end, void *ctx)
  }
  snprintf(file, sizeof file, "%s", st->file);
  e_d_gs_free(st);
- if (e_d_gs_mark(file, line))
+ if (e_d_gs_mark(file, line, E_D_SOURCE_STOP))
   return;
  _messages_activated = 0;
  e_refresh();
@@ -22012,7 +22098,7 @@ static void e_d_gs_follow_finished(const E_D_CHAIN_END *end, void *ctx)
  }
  snprintf(file, sizeof file, "%s", st->file);
  e_d_gs_free(st);
- if (!e_d_gs_mark(file, line))
+ if (!e_d_gs_mark(file, line, E_D_SOURCE_ASKED))
   e_d_act_schedule();
 }
 
@@ -31448,7 +31534,7 @@ static void e_lsp_jump_show(FENSTER *f, const e_lsp_ask_t *a)
   e_error(msg, 0, f->fb);
   return;
  }
- e_d_goto_break((char *)a->target, a->line + 1, f);  /* 0-based -> 1-based */
+ e_d_goto_source((char *)a->target, a->line + 1, f);  /* 0-based -> 1-based */
 }
 
 /* AltQ D -- jump to the definition of the symbol under the cursor. */
@@ -32483,7 +32569,7 @@ static void e_lsp_lenses_show(FENSTER *f, const e_lsp_ask_t *a)
  sel = e_lsp_pick(f, "Code lenses - Enter to go", labels, a->n);
  if (sel < 0)
   return;
- e_d_goto_break((char *)a->path, a->rows[sel].line + 1, f);
+ e_d_goto_source((char *)a->path, a->rows[sel].line + 1, f);
 }
 
 /* AltQ O -- the file outline: a picker of its symbols, when the server
@@ -32524,7 +32610,7 @@ static void e_lsp_outline_show(FENSTER *f, const e_lsp_ask_t *a)
  sel = e_lsp_pick(f, "File symbols - Enter to go", labels, a->n);
  if (sel < 0)
   return;
- e_d_goto_break((char *)a->path, a->rows[sel].line + 1, f);
+ e_d_goto_source((char *)a->path, a->rows[sel].line + 1, f);
 }
 
 /* A workspace/symbol "result" Metals returns that is not a real code symbol but
@@ -32604,7 +32690,7 @@ static void e_lsp_symbols_show(FENSTER *f, const e_lsp_ask_t *a)
   return;
  sel = keep[sel];
  jumpfile = a->rows[sel].path ? a->rows[sel].path : a->path;
- e_d_goto_break((char *)jumpfile, a->rows[sel].line + 1, f);
+ e_d_goto_source((char *)jumpfile, a->rows[sel].line + 1, f);
 }
 
 /* AltQ A -- code actions / quick-fixes at the cursor (organize imports, import

@@ -23,6 +23,7 @@ import deep_folder
 import procinfo
 from deep_folder import folder_of_length
 from host_tools import needs
+from mode_premise import folder_mode_is_obeyed
 from wpe_driver import WpeSession
 
 CTRL_F9 = "\033[20;5~"      # Run
@@ -337,25 +338,6 @@ def test_new_project_whose_path_cannot_be_held_says_so(tmp_path):
     assert not [n for n in os.listdir(folder) if n.endswith(".prj")], os.listdir(folder)
 
 
-def _folder_refuses_new_files(folder):
-    """Does the system keep a new file out of @folder when it is 0500?  Root,
-    or a user whose file modes are overridden, makes the file anyway, and the
-    row would fail for a reason that has nothing to do with the editor."""
-    probe = os.path.join(folder, "probe_new")
-    os.chmod(folder, 0o500)
-    try:
-        with open(probe, "x"):
-            pass
-        made = True
-    except OSError:
-        made = False
-    finally:
-        os.chmod(folder, 0o700)
-    if made:
-        os.remove(probe)
-    return not made
-
-
 def _saved_project_option(home):
     """The Project value Options > Save wrote into the session's xwperc."""
     with open(os.path.join(home, ".config", "xwpe", "xwperc")) as fh:
@@ -376,9 +358,7 @@ def test_new_project_in_a_folder_closed_to_writing_says_why(tmp_path):
     folder = str(tmp_path)
     with WpeSession(folder, "int main(void){return 0;}\n", filename="t.c", wait=2.0,
                     cols=140, rows=40, env_extra=ASAN_ENV) as w:
-        if not _folder_refuses_new_files(folder):
-            pytest.skip("this user can create files in a 0500 folder "
-                        "(root, or a capability that overrides file modes)")
+        folder_mode_is_obeyed(folder, 0o500, create=True)
         os.chmod(folder, 0o500)
         try:
             w.key(ALT_P, delay=1.0)
