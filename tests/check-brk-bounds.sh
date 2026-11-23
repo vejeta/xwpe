@@ -35,27 +35,38 @@
 #  that takes a row and its length (e_scfbol, e_mk_col).  Neither its result
 #  nor what such a consumer gives back may be followed by "[", "+" or "-", so
 #  a row's address never outlives the statement that asked for it.  A copy
-#  (memcpy, memmove) is never given a count of its own, since it takes every
-#  byte it is told to and a row shorter than that is read past its NUL.
+#  (memcpy, memmove) takes every byte it is told to, so a row shorter than the
+#  count is read past its NUL: the count is the row's own (wpe_row_len,
+#  wpe_row_nrc) or a quantity the caller computed at run time, and a literal,
+#  an arithmetic of literals, a sizeof or a name the file defines as a macro
+#  is a count of the caller's own.
 #  Two readers keep a row past the statement that asked for it: wpe_row_view,
 #  for a walk that reads the rows later, and wpe_row_cstr or wpe_row_from
 #  stored into what the row owner takes whole.  wpe_row_view, and an entry of
-#  an array of rows or of pieces, are allowed only in the one function KEEPERS
-#  names for them: an array outlives the statement and anybody can index it.
+#  an array of rows or of pieces, are allowed only in the one file and
+#  function KEEPERS names for them: an array outlives the statement, anybody
+#  can index it, and the same function name in another file keeps nothing.
 #  One piece of a line (a part's ".s"), which goes straight into the owner's
-#  splice, is allowed where it is written.
+#  splice, is wpe_row_from's alone (wpe_row_cstr gives a whole row, not a
+#  piece of one) and is allowed where it is written; a "[", "+" or "-" on that
+#  field later in the same function is the read the store was allowed for.
 #  every other top level .c and .h except we_buffer.c (the row owner): no line
 #  outside the functions named in the allow file names "bf" (the array of
 #  rows: its bytes, its fields, its address), reaches a row through a name
 #  declared STRING * (a parameter or not), casts to one, or declares such a
 #  name in a body.  A line that writes a row in place and reads one on the
 #  right-hand side of that write is a read as well, and the write does not
-#  cover it.
+#  cover it: that read is an entry of the row array, the array's address as an
+#  operand, or a name declared STRING *.
 #
 # A function starts at the "{" that follows the last IDENT( of the code at
 # file level and ends where the braces balance, so a body written on one line
 # belongs to its own function and an indented closing brace cannot pass an
-# exemption on to the next one (K&R headers and split headers included).
+# exemption on to the next one (K&R headers and split headers included).  A
+# brace inside a parameter list (a struct a function takes by value) is no
+# body: the finder counts parentheses and only a "{" outside them opens or
+# closes a function, so such a parameter cannot leave the body of its own
+# function attributed to "(file scope)".
 #
 # tests/row-reads.allow lists the lines kept on purpose:
 #
@@ -71,9 +82,9 @@
 # stale: the count falls when a function moves, never rises.
 #
 # Limits of a scan of the text: a row reached through a pointer the scan never
-# sees named (a char * a function was handed) and a typedef'd row pointer are
-# out of its reach.  The units under ASan, with their hostile frames, are the
-# check for those.
+# sees named (a char * a function was handed), a typedef'd row pointer and a
+# count that a macro of another file gives a copy are out of its reach.  The
+# units under ASan, with their hostile frames, are the check for those.
 #
 # --list prints the allow lines the tree needs; --selftest plants each kind of
 # offence in a copy and fails unless the scan names it.
@@ -92,8 +103,10 @@ POINTERS="strstr strchr strrchr"
 # The consumers that take every byte they are told to, so the count they are
 # given must be the row's own and not a number of the caller's.
 COPIERS="memcpy memmove"
-# reader=function: the one function that may keep a row past the statement.
-KEEPERS="wpe_row_view=e_p_run_begin wpe_row_cstr=e_lsp_buffer_text wpe_row_from=e_ins_long_run"
+# reader=file|function: the one place that may keep a row past the statement.
+# The file is part of the key: a function of that name in another file is
+# another function, and keeps nothing.
+KEEPERS="wpe_row_view=we_prog.c|e_p_run_begin wpe_row_cstr=we_debug.c|e_lsp_buffer_text wpe_row_from=we_edit.c|e_ins_long_run"
 OWNER=we_buffer.c
 
 while [ $# -gt 0 ]; do
@@ -163,26 +176,77 @@ AWK_SCAN='
       if (!(name in pointer_consumer)) return 0
       return after_outer(tail) ~ /^[ \t]*[-+\[]/
     }
+    # Whether text holds a name this file defines as a macro: what such a name
+    # stands for was fixed where it was defined, so it is no count the row gave.
+    function macro_in(text,    mkey, mpart) {
+      for (mkey in macro) {
+        split(mkey, mpart, SUBSEP)
+        if (mpart[1] != FILENAME) continue
+        if (match(text, "(^|[^A-Za-z0-9_])" mpart[2] "([^A-Za-z0-9_]|$)")) return 1
+      }
+      return 0
+    }
     # Whether a copy is told how many bytes to take by a number of its own
     # instead of by the row: a copy takes every byte it is told to, so a row
-    # shorter than that number is read past its NUL.
+    # shorter than that number is read past its NUL.  Only wpe_row_len and
+    # wpe_row_nrc give the count of the row itself.  A literal, an arithmetic of
+    # literals, a sizeof or a macro of the file is a constant the caller made
+    # up; what is left is a quantity it computed at run time.
     function copied_past_the_row(name, tail,    rest) {
       if (!(name in copier)) return 0
       rest = outer_rest(tail)
       sub(/^[^,]*,/, "", rest)
       gsub(/[ \t]/, "", rest)
-      return rest ~ /^(\([A-Za-z_][A-Za-z0-9_]*\))*[0-9]+;?$/
+      if (rest ~ /wpe_row_(len|nrc)[ \t]*\(/) return 0
+      if (rest ~ /[0-9]/ || rest ~ /sizeof/) return 1
+      return macro_in(rest)
+    }
+    # Whether this line is the one place KEEPERS names for a reader: a file and
+    # a function, since a function of that name in another file is another
+    # function and keeps nothing.
+    function in_keeper(name) {
+      return keeper[name] == filefn "|" linefn
+    }
+    # The piece of a line ("p.s", "pp->s") a store fills, "" when what is
+    # stored into is no such field.
+    function piece_field(before,    f) {
+      if (!match(before, /[A-Za-z_][A-Za-z0-9_]*[ \t]*(->|\.)[ \t]*s[ \t]*=[ \t]*$/))
+        return ""
+      f = substr(before, RSTART, RLENGTH)
+      sub(/[ \t]*=[ \t]*$/, "", f)
+      gsub(/[ \t]/, "", f)
+      return f
     }
     # Whether the result of the reader is stored where the row owner takes it
-    # whole: one piece of a line anywhere, an entry of an array of pieces or of
-    # rows only in the function named for that reader (an array outlives the
-    # statement, so only the function that builds it may fill it).
-    function hands_to_owner(name, before) {
-      if (before ~ /(^|[^A-Za-z0-9_])[A-Za-z_][A-Za-z0-9_]*[ \t]*(->|\.)[ \t]*s[ \t]*=[ \t]*$/)
+    # whole: one piece of a line anywhere, which only wpe_row_from gives
+    # (wpe_row_cstr gives a whole row, not a piece of one); an entry of an
+    # array of pieces or of rows only in the place named for that reader (an
+    # array outlives the statement, so only the function that builds it may
+    # fill it).  A piece stored here is remembered, since what the function
+    # reads through it later is a read of the row.
+    function hands_to_owner(name, before,    f) {
+      if (name == "wpe_row_from" && (f = piece_field(before)) != "") {
+        piece[FILENAME SUBSEP linefn SUBSEP f] = 1
         return 1
+      }
       if (before ~ /\[[^]]*\]([.][A-Za-z_][A-Za-z0-9_]*)?[ \t]*=[ \t]*$/)
-        return linefn == keeper[name]
+        return in_keeper(name)
       return 0
+    }
+    # The piece of a line a reader filled that text indexes or offsets, ""
+    # when text leaves every piece whole.  The piece holds the bytes of the row
+    # itself, so a read through it is the read the store was allowed for.
+    function piece_read(text,    pkey, ppart, f, acc) {
+      for (pkey in piece) {
+        split(pkey, ppart, SUBSEP)
+        if (ppart[1] != FILENAME || ppart[2] != linefn) continue
+        f = ppart[3]
+        acc = (index(f, "->") > 0) ? "->" : "\\."
+        sub(/(->|\.)s$/, "", f)
+        if (match(text, "(^|[^A-Za-z0-9_])" f "[ \t]*" acc "s[ \t]*[-+\\[]"))
+          return ppart[3]
+      }
+      return ""
     }
     # Whether the call of NAME at pos in code stands where the rule allows.
     function call_ok(name, pos, list,    before, rest, tail, outer) {
@@ -194,7 +258,7 @@ AWK_SCAN='
       if (tail ~ /^[ \t]*[-+\[]/) return 0
       if (escapes_through(outer, tail)) return 0
       if (copied_past_the_row(outer, tail)) return 0
-      if (name == "wpe_row_view") return linefn == keeper[name]
+      if (name == "wpe_row_view") return in_keeper(name)
       if ((name == "wpe_row_cstr" || name == "wpe_row_from") &&
           hands_to_owner(name, before))
         return 1
@@ -244,14 +308,28 @@ AWK_SCAN='
       }
       return at ? substr(c, at + 1) : ""
     }
-    # Whether a line that writes a row reads one on the right of that write,
-    # which the write would otherwise hide.  Handing the own bytes of the row
-    # to the allocator that gives them back is the write, not a read of it.
+    # The name declared STRING * in this file that text reaches a row through,
+    # "" when it reaches none.  A row reached through such a name is read
+    # without a reader, whatever the name is called.
+    function string_name_in(text,    skey, spart) {
+      for (skey in strname) {
+        split(skey, spart, SUBSEP)
+        if (spart[1] != FILENAME) continue
+        if (match(text, "(^|[^A-Za-z0-9_.>])" spart[2] "[ \t]*(->|\\[)")) return spart[2]
+      }
+      return ""
+    }
+    # What a line that writes a row reads on the right of that write, "" when
+    # it reads no row there: an entry of the row array, the address of that
+    # array as an operand, or a name declared STRING *.  Handing the own bytes
+    # of the row to the allocator that gives them back is the write, not a read
+    # of it.
     function reads_after_write(c,    rhs) {
       rhs = assigned(c)
       if (rhs ~ /^[ \t]*(\([ \t]*[A-Za-z_][A-Za-z0-9_]*[ \t]*\)[ \t]*)*(REALLOC|MALLOC|FREE|realloc|malloc|free)[ \t]*\(/)
-        return 0
-      return rhs ~ /(^|[^A-Za-z0-9_])bf[ \t]*\[/
+        return ""
+      if (rhs ~ /(^|[^A-Za-z0-9_])bf([^A-Za-z0-9_]|$)/) return "bf"
+      return (!prep && string_name_in(rhs) != "") ? "string-name" : ""
     }
     BEGIN {
       n = split(readers, r, " ")
@@ -270,19 +348,33 @@ AWK_SCAN='
     FNR == 1 {
       seen[FILENAME]++
       pass = seen[FILENAME]
-      blank_incom = 0; inmacro = 0; depth = 0; ppsp = 0
+      blank_incom = 0; inmacro = 0; depth = 0; parens = 0; ppsp = 0
       fn = "(file scope)"; lastname = ""; prevcode = ""; hasassign = 0
+      filefn = FILENAME; sub(/^.*\//, "", filefn)
     }
     {
       code = blank_c($0, 2)
-      # The two sides of an #if hold the same braces: the second side starts
-      # from the depth the first started from, or a text written twice would
-      # count its braces twice and every function below it would be lost.
-      if (!inmacro && code ~ /^[ \t]*#[ \t]*if/) { ppsp++; ppdepth[ppsp] = depth; ppfn[ppsp] = fn }
-      else if (!inmacro && code ~ /^[ \t]*#[ \t]*(else|elif)/ && ppsp > 0) { depth = ppdepth[ppsp]; fn = ppfn[ppsp] }
+      # The two sides of an #if hold the same braces and the same parentheses:
+      # the second side starts from the depth the first started from, or a text
+      # written twice would count its braces twice and every function below it
+      # would be lost.
+      if (!inmacro && code ~ /^[ \t]*#[ \t]*if/) {
+        ppsp++; ppdepth[ppsp] = depth; ppfn[ppsp] = fn; ppparens[ppsp] = parens
+      }
+      else if (!inmacro && code ~ /^[ \t]*#[ \t]*(else|elif)/ && ppsp > 0) {
+        depth = ppdepth[ppsp]; fn = ppfn[ppsp]; parens = ppparens[ppsp]
+      }
       else if (!inmacro && code ~ /^[ \t]*#[ \t]*endif/ && ppsp > 0) ppsp--
       prep = (inmacro || code ~ /^[ \t]*#/)
       inmacro = (prep && $0 ~ /\\[ \t]*$/)
+      # A name this file defines as a macro stands for what its definition says,
+      # so what it gives a copy is no count the row gave (pass 1 collects).
+      if (pass == 1 && prep && code ~ /^[ \t]*#[ \t]*define[ \t]+[A-Za-z_]/) {
+        mac = code
+        sub(/^[ \t]*#[ \t]*define[ \t]+/, "", mac)
+        sub(/[^A-Za-z0-9_].*$/, "", mac)
+        macro[FILENAME SUBSEP mac] = 1
+      }
       startdepth = depth; startfn = fn; openedfn = ""
       if (!prep) {
         n = length(code); ident = ""; lastident = ""
@@ -290,18 +382,28 @@ AWK_SCAN='
           c = substr(code, p, 1)
           if (isident(c)) { ident = ident c; continue }
           if (ident != "") { lastident = ident; ident = "" }
-          if (c == "(" && depth == 0 && lastident != "") lastname = lastident
-          if (c == "=" && depth == 0) hasassign = 1
+          if (c == "(") {
+            if (depth == 0 && parens == 0 && lastident != "") lastname = lastident
+            parens++
+          } else if (c == ")") {
+            if (parens > 0) parens--
+          }
+          if (c == "=" && depth == 0 && parens == 0) hasassign = 1
           if (c == ";" && depth == 0) hasassign = 0
-          if (c == "{") {
-            if (depth == 0) {
-              fn = (hasassign || lastname == "") ? "(file scope)" : lastname
-              if (openedfn == "") openedfn = fn
+          # A brace inside a parameter list (a struct a function takes by value)
+          # is no body of its own: only a brace outside the parentheses opens or
+          # closes a function.
+          if (parens == 0) {
+            if (c == "{") {
+              if (depth == 0) {
+                fn = (hasassign || lastname == "") ? "(file scope)" : lastname
+                if (openedfn == "") openedfn = fn
+              }
+              depth++
+            } else if (c == "}") {
+              depth--
+              if (depth <= 0) { depth = 0; fn = "(file scope)"; lastname = ""; hasassign = 0 }
             }
-            depth++
-          } else if (c == "}") {
-            depth--
-            if (depth <= 0) { depth = 0; fn = "(file scope)"; lastname = ""; hasassign = 0 }
           }
           if (c != " " && c != "\t") lastident = ""
         }
@@ -336,21 +438,19 @@ AWK_SCAN='
               if (code ~ /STRING[ \t]*\*+[ \t]*bf/) kind = "D"
               else if (write_kind(code)) {
                 kind = "W"
-                if (reads_after_write(code)) flag("R", "bf")
+                # A write of a row that reads one on the right of that write is
+                # both, whatever reaches the row it reads.
+                rhsread = reads_after_write(code)
+                if (rhsread == "string-name") flag("S", "string-name")
+                else if (rhsread != "") flag("R", "bf")
               }
               else kind = "R"
               flag(kind, "bf")
             } else {
-              for (name in strname) {
-                split(name, part, SUBSEP)
-                if (part[1] != FILENAME) continue
-                if (!prep && match(code, "(^|[^A-Za-z0-9_.>])" part[2] "[ \t]*(->|\\[)")) {
-                  kind = (part[2] == "lines") ? "A" : "S"
-                  flag(kind, "string-name")
-                  break
-                }
-              }
-              if (kind == "" && declares && startdepth > 0)
+              struck = (!prep) ? string_name_in(code) : ""
+              if (struck != "")
+                flag((struck == "lines") ? "A" : "S", "string-name")
+              else if (declares && startdepth > 0)
                 flag((decl == "lines" || linefn == "(file scope)") ? "A" : "S", "string-decl")
             }
             # A cast to a row is a row: it reaches the bytes without a reader.
@@ -361,6 +461,10 @@ AWK_SCAN='
           if (code ~ /wpe_row_from/) check_calls("wpe_row_from", walk)
           if (code ~ /wpe_row_cstr/) check_calls("wpe_row_cstr", walk)
           if (code ~ /wpe_row_view/) check_calls("wpe_row_view", walk)
+          # A piece of a line a reader filled holds the bytes of the row itself:
+          # a "[", "+" or "-" on it later in the function reads the row without
+          # a reader.
+          if (piece_read(code) != "") flag("R", "row-piece")
         }
       }
       if (code !~ /^[ \t]*$/) prevcode = code
@@ -369,7 +473,8 @@ AWK_SCAN='
 # scan MODE FILE...: one "KIND<TAB>FILE<TAB>LINE<TAB>FUNCTION<TAB>TOKEN" per
 # offence.  MODE is strict (every line), readers (strict outside the readers)
 # or generic (the lines the allow file counts).  Each file is read twice: the
-# first pass collects the names declared STRING *, the second flags.
+# first pass collects the names declared STRING * and the names defined as a
+# macro, the second flags.
 scan() {
   mode=$1
   shift
@@ -456,10 +561,10 @@ plant_strict() {
 }
 
 # plant_generic OUT: a file of the shapes the generic rule names, and of
-# plant_generic OUT: a file of the shapes the generic rule names, and of
 # shapes it does not.  Each named function is one canary; the ones called
 # after the code that keeps a row are the code's own shape, planted under the
-# one name the rule allows it under.
+# one name the rule allows it under.  The shapes a keeper is allowed are
+# planted by plant_keepers, in files of the names KEEPERS gives them.
 plant_generic() {
   {
     printf 'static int planted_byte(BUFFER *b, int i, int j)\n{\n return b->bf[i].s[j];\n}\n'
@@ -469,6 +574,7 @@ plant_generic() {
     printf 'static void planted_addr(BUFFER *b, int y)\n{\n STRING *r = &b->bf[y];\n}\n'
     printf 'static void planted_array(BUFFER *b)\n{\n STRING *rows = b->bf;\n}\n'
     printf '#define RAW(b,y,x) ((b)->bf[(y)].s[(x)])\n'
+    printf '#define PLANTED_ROW_BYTES 500\n'
     printf 'static int planted_alias(BUFFER *b, int y)\n{\n return wpe_row_text(b, y, 0)[-1];\n}\n'
     printf 'static int planted_local(BUFFER *b, int y)\n{\n const char *t = wpe_row_text(b, y, 0);\n return t[1];\n}\n'
     printf 'static int planted_bytes(BUFFER *b, int y, int n)\n{\n return *(wpe_row_bytes(b, y, &n) + 3);\n}\n'
@@ -485,22 +591,55 @@ plant_generic() {
     printf ' lns[0] = wpe_row_cstr(b, y);\n lns[0][0] = (char) y;\n return lns[0][-1];\n}\n'
     printf 'static int planted_from_escape(BUFFER *b, int y, WpeBufferPart *parts)\n{\n'
     printf ' parts[0].s = wpe_row_from(b, y, 0);\n return parts[0].s[-1];\n}\n'
-    # What a consumer of a reader gives back, and the count a copy is given.
+    # A keeper is a file and a function: its own name in another file is
+    # another function, and keeps nothing.
+    printf 'static int e_p_run_begin(BUFFER *b, int y)\n{\n const char *s; int n;\n'
+    printf ' wpe_row_view(b, y, &s, &n);\n return s[-1];\n}\n'
+    # A piece of a line holds the bytes of the row itself, so what the function
+    # reads through it later is a read; and only wpe_row_from gives a piece
+    # (wpe_row_cstr gives a whole row, which no field of a part takes).
+    printf 'static int planted_piece_index(BUFFER *b, int y)\n{\n WpeBufferPart p;\n'
+    printf ' p.s = wpe_row_from(b, y, 0);\n return p.s[-1];\n}\n'
+    printf 'static int planted_piece_offset(BUFFER *b, int y)\n{\n WpeBufferPart p;\n'
+    printf ' p.s = wpe_row_from(b, y, 0);\n return *(p.s + 1);\n}\n'
+    printf 'static int planted_piece_arrow(BUFFER *b, int y, WpeBufferPart *pp)\n{\n'
+    printf ' pp->s = wpe_row_from(b, y, 0);\n return pp->s[-1];\n}\n'
+    printf 'static int planted_cstr_piece(BUFFER *b, int y)\n{\n struct { const char *s; } keep;\n'
+    printf ' keep.s = wpe_row_cstr(b, y);\n return keep.s[-1];\n}\n'
+    # What a consumer of a reader gives back, and the count a copy is given: a
+    # constant of the caller's own (a literal, an arithmetic of literals, a
+    # sizeof, a macro of the file) is named, since no row gave it.
     printf 'static int planted_consumer_index(BUFFER *b, int y)\n{\n'
     printf ' return strstr(wpe_row_text(b, y, 0), "x")[-1];\n}\n'
     printf 'static void planted_consumer_count(BUFFER *b, int y, char *dst)\n{\n'
     printf ' memcpy(dst, wpe_row_text(b, y, 0), 500);\n}\n'
+    printf 'static void planted_copy_sizeof(BUFFER *b, int y, char *dst)\n{\n'
+    printf ' memcpy(dst, wpe_row_text(b, y, 0), sizeof dst);\n}\n'
+    printf 'static void planted_copy_macro(BUFFER *b, int y, char *dst)\n{\n'
+    printf ' memcpy(dst, wpe_row_text(b, y, 0), PLANTED_ROW_BYTES);\n}\n'
+    printf 'static void planted_copy_arith(BUFFER *b, int y, char *dst)\n{\n'
+    printf ' memcpy(dst, wpe_row_text(b, y, 0), 2 * 8);\n}\n'
     # A row reached through a cast: no name declared STRING * to see.
     printf 'static int planted_cast_row(BUFFER *b, int y)\n{\n'
     printf ' return (*(STRING **)b)[y].s[-1];\n}\n'
     # A write of another struct's field is the read of a row it names, and a
-    # write of a row that reads one on its right is both.
+    # write of a row that reads one on its right is both, whatever reaches the
+    # row it reads: the array of rows itself as an operand, or a name declared
+    # STRING *.
     printf 'static WpeBufferPart planted_write_off_row(BUFFER *b, int y, int from)\n{\n'
     printf ' WpeBufferPart p;\n p.s = b->bf[y].s + from;\n p.n = 0;\n return p;\n}\n'
     printf 'static void planted_write_reads_row(BUFFER *b, int y, int x, Undo *rec)\n{\n'
     printf ' b->bf[y].s[x] = rec->u.c + b->bf[y].s[x - 1];\n}\n'
+    printf 'static void planted_write_reads_addr(BUFFER *b, int y, int x)\n{\n'
+    printf ' b->bf[y].s[x] = *(b->bf + y - 1)->s;\n}\n'
+    printf 'static void planted_write_reads_string(BUFFER *b, int y, int x, STRING *row)\n{\n'
+    printf ' b->bf[y].s[x] = row->s[x - 1];\n}\n'
     printf 'static void planted_write_from_reader(BUFFER *b, int y)\n{\n'
     printf ' b->bf[y].len = e_str_len(wpe_row_bytes(b, y, NULL));\n}\n'
+    # A struct in a parameter list is no body of its own: the lines of the
+    # function belong to the function, not to "(file scope)".
+    printf 'static int planted_struct_param(struct { int n; } mark, BUFFER *b)\n{\n'
+    printf ' return b->bf[mark.n].len;\n}\n'
     # The shapes the rules above must let through.
     printf 'static int planted_next(BUFFER *b)\n{\n return 0;\n}\n'
     printf 'static WpeBufferPart planted_part_from_reader(BUFFER *b, int y, int from)\n{\n'
@@ -509,19 +648,37 @@ plant_generic() {
     printf ' int total = strlen(wpe_row_text(b, y, 0)) + 1;\n return total;\n}\n'
     printf 'static void planted_copy_row_len(BUFFER *b, int y, char *dst)\n{\n'
     printf ' memcpy(dst, wpe_row_text(b, y, 0), (size_t) wpe_row_len(b, y));\n}\n'
-    printf 'static void e_p_run_begin(BUFFER *b, struct e_p_run *run, int i)\n{\n'
-    printf ' wpe_row_view(b, i, &run->rows[i].s, &run->rows[i].len);\n}\n'
-    printf 'static const char *e_lsp_buffer_text(BUFFER *b, const char **lns, int y)\n{\n'
-    printf ' lns[y] = wpe_row_cstr(b, y);\n return lns[0];\n}\n'
-    printf 'static int e_ins_long_run(BUFFER *b, int ya, int xa, WpeBufferPart *parts)\n{\n'
-    printf ' parts[0].s = wpe_row_from(b, ya, 0);\n parts[2].s = wpe_row_from(b, ya, xa);\n'
-    printf ' return parts[0].n;\n}\n'
+    printf 'static void planted_copy_run_count(BUFFER *b, int y, char *dst)\n{\n'
+    printf ' int n = 0;\n memcpy(dst, wpe_row_bytes(b, y, &n), (size_t) n);\n}\n'
     printf 'static int planted_ok(BUFFER *b, int y, int x, STRING *out)\n{\n'
     printf ' int bfx = 0;  /* bf[0] in a comment */\n'
     printf ' char *m = "b->bf[0].s";\n'
     printf ' bfx = wpe_row_byte(b, y, x) + wpe_row_len(b, y);\n'
     printf ' return strncmp(wpe_row_text(b, y, 0), "ld", 2) + (out == NULL) + bfx + (m != NULL);\n}\n'
   } > "$1"
+}
+
+# plant_keepers DIR: the shape each keeper is allowed, in a file of the name
+# KEEPERS gives it, and one function of that file that is not the keeper.  A
+# keeper is a file and a function: the same function name in another file
+# keeps nothing, and another function of the right file keeps nothing either.
+plant_keepers() {
+  mkdir -p "$1"
+  {
+    printf 'static void e_p_run_begin(BUFFER *b, struct e_p_run *run, int i)\n{\n'
+    printf ' wpe_row_view(b, i, &run->rows[i].s, &run->rows[i].len);\n}\n'
+    printf 'static int planted_view_wrong_fn(BUFFER *b, int y)\n{\n const char *s; int n;\n'
+    printf ' wpe_row_view(b, y, &s, &n);\n return s[-1];\n}\n'
+  } > "$1/we_prog.c"
+  {
+    printf 'static const char *e_lsp_buffer_text(BUFFER *b, const char **lns, int y)\n{\n'
+    printf ' lns[y] = wpe_row_cstr(b, y);\n return lns[0];\n}\n'
+  } > "$1/we_debug.c"
+  {
+    printf 'static int e_ins_long_run(BUFFER *b, int ya, int xa, WpeBufferPart *parts)\n{\n'
+    printf ' parts[0].s = wpe_row_from(b, ya, 0);\n parts[2].s = wpe_row_from(b, ya, xa);\n'
+    printf ' return parts[0].n;\n}\n'
+  } > "$1/we_edit.c"
 }
 
 # expect_named FOUND WANT...: fail unless each "function: token (kind)" is in
@@ -562,6 +719,9 @@ selftest() {
   plant_generic "$WORK/generic.c"
   scan generic "$WORK/generic.c" |
     awk -F'\t' '{ print $4 "\t" $4 ": " $5 " (" $1 ")" }' > "$WORK/generic.txt"
+  plant_keepers "$WORK/keep"
+  scan generic "$WORK/keep/we_prog.c" "$WORK/keep/we_debug.c" "$WORK/keep/we_edit.c" |
+    awk -F'\t' '{ print $4 "\t" $4 ": " $5 " (" $1 ")" }' > "$WORK/keepers.txt"
   cp "$SRCDIR/we_rowread.h" "$WORK/rowread.h"
   {
     printf '\nstatic inline int planted_reader(const BUFFER *b, int y)\n{\n return b->bf[y].len;\n}\n'
@@ -589,7 +749,17 @@ selftest() {
     "planted_consumer_count: row-call (R)" "planted_cast_row: string-cast (S)" \
     "planted_write_off_row: bf (R)" \
     "planted_write_reads_row: bf (W)" "planted_write_reads_row: bf (R)" \
-    "planted_write_from_reader: bf (W)" || bad=1
+    "planted_write_from_reader: bf (W)" \
+    "e_p_run_begin: row-call (R)" \
+    "planted_piece_index: row-piece (R)" "planted_piece_offset: row-piece (R)" \
+    "planted_piece_arrow: row-piece (R)" "planted_cstr_piece: row-call (R)" \
+    "planted_copy_sizeof: row-call (R)" "planted_copy_macro: row-call (R)" \
+    "planted_copy_arith: row-call (R)" \
+    "planted_write_reads_addr: bf (W)" "planted_write_reads_addr: bf (R)" \
+    "planted_write_reads_string: bf (W)" \
+    "planted_write_reads_string: string-name (S)" \
+    "planted_struct_param: bf (R)" || bad=1
+  expect_named "$WORK/keepers.txt" "planted_view_wrong_fn: row-call (R)" || bad=1
   expect_named "$WORK/readers.txt" "planted_reader: bf (R)" "(file scope): bf (R)" \
     "wpe_row_len2: mxlines (R)" || bad=1
   # A write of a row that reads nothing but a reader's answer is no read, and
@@ -601,8 +771,8 @@ selftest() {
     fi
   done
   expect_legal "$WORK/generic.txt" planted_ok planted_next planted_part_from_reader \
-    planted_strlen_result planted_copy_row_len e_p_run_begin e_lsp_buffer_text \
-    e_ins_long_run || bad=1
+    planted_strlen_result planted_copy_row_len planted_copy_run_count || bad=1
+  expect_legal "$WORK/keepers.txt" e_p_run_begin e_lsp_buffer_text e_ins_long_run || bad=1
   expect_legal "$WORK/strict.txt" planted_ok || bad=1
   expect_legal "$WORK/readers.txt" wpe_row_len || bad=1
   if [ $bad -ne 0 ]; then
