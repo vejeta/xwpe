@@ -23,7 +23,7 @@ import pytest
 pytest.importorskip("pyte")
 
 from mode_premise import file_mode_is_obeyed, folder_mode_is_obeyed   # noqa: E402
-from wpe_driver import WpeSession                                     # noqa: E402
+from wpe_driver import WpeSession, wait_screen, wait_until            # noqa: E402
 
 F3 = "\033OR"
 F2 = "\033OQ"
@@ -42,6 +42,9 @@ COLS_ROWS = dict(cols=200, rows=40)
 SEED = "int t;\n"
 SECRET = "secret text\n"
 PRJ_TEXT = "CMP=\tgcc\nEXENAME=\td\nFILES=\textra.c t.c util.c\n"
+# How long a row waits for a state the editor paints or writes: seconds on an
+# idle machine, which the owner of the wait stretches by the wait scale.
+STATE_WAIT_S = 8.0
 
 
 class Squashed(str):
@@ -54,8 +57,8 @@ class Squashed(str):
         return re.search(pattern, str(self)) is not None
 
 
-def _squash(w):
-    return Squashed(re.sub(r"[^\x21-\x7e]", "", "".join(w.display())))
+def _squash(w, drain=0.6):
+    return Squashed(re.sub(r"[^\x21-\x7e]", "", "".join(w.display(drain=drain))))
 
 
 def _typed(w, text):
@@ -71,11 +74,42 @@ def _put(folder, name, text, mode):
     return path
 
 
-def _titled(w, name):
+def _titled(w, name, drain=0.6):
     """True when a window titled @name is drawn: its name sits between the
     frame's line characters, unlike the same word in a field of a dialog."""
     pattern = re.compile(r"q %s q" % re.escape(name))
-    return any(pattern.search(row) for row in w.display())
+    return any(pattern.search(row) for row in w.display(drain=drain))
+
+
+def _said(w, *needles):
+    """True when the screen's squashed text holds every one of @needles.  This
+    is what a wait polls, so it reads with drain=0: the wait drains between two
+    of its reads, and a drain of its own would make every turn of it slow."""
+    screen = _squash(w, drain=0)
+    return all(needle in screen for needle in needles)
+
+
+def _wait_said(w, *needles):
+    """The squashed screen once it says every one of @needles, or the last
+    screen seen when STATE_WAIT_S runs out.
+
+    A row never decides from one read after a key's fixed delay: under load the
+    editor paints its box later than that delay, and the row reads a screen
+    that is not there yet.  So a row waits for the state it wants and asserts
+    on the screen the wait ended on."""
+    wait_until(w, lambda: _said(w, *needles), STATE_WAIT_S)
+    return _squash(w)
+
+
+def _wait_titled(w, name):
+    """True once a window titled @name is drawn, False when STATE_WAIT_S runs
+    out."""
+    return wait_until(w, lambda: _titled(w, name, drain=0), STATE_WAIT_S)
+
+
+def _manager_open(w):
+    """True while the File Manager's own window is on the screen."""
+    return "File-Manager" in "\n".join(w.display(drain=0))
 
 
 def _open_with_f3(w, name):
@@ -94,7 +128,7 @@ def test_file_open_of_a_file_closed_to_reading_says_why_and_opens_no_window(tmp_
     try:
         with WpeSession(str(tmp_path), SEED, filename="t.c", **COLS_ROWS) as w:
             _open_with_f3(w, "locked.c")
-            screen = _squash(w)
+            screen = _wait_said(w, "Cannotopenfile", "locked.c", "Permissiondenied")
             assert "Cannotopenfile" in screen and "locked.c" in screen, "\n".join(w.display())
             assert "Permissiondenied" in screen, "\n".join(w.display())
             assert not _titled(w, "locked.c"), "\n".join(w.display())
@@ -111,10 +145,11 @@ def test_a_name_under_a_file_from_the_command_line_says_not_a_directory(tmp_path
     would then refuse."""
     _put(tmp_path, "t.c", SEED, 0o644)
     with WpeSession(str(tmp_path), SEED, filename="t.c", args=("t.c/x",), **COLS_ROWS) as w:
-        screen = _squash(w)
+        screen = _wait_said(w, "Cannotopenfile", "Notadirectory")
         assert "Cannotopenfile" in screen and "Notadirectory" in screen, "\n".join(w.display())
         w.key(CR, delay=0.8)
-        assert _titled(w, "t.c"), "\n".join(w.display())
+        assert _wait_titled(w, "t.c"), \
+            "t.c did not open once the box was answered:\n%s" % "\n".join(w.display())
         assert not _titled(w, "x"), "\n".join(w.display())
         assert w.alive()
 
@@ -126,7 +161,7 @@ def test_file_open_of_a_loop_of_links_says_so_and_opens_no_window(tmp_path):
     os.symlink("loop", os.path.join(str(tmp_path), "loop"))
     with WpeSession(str(tmp_path), SEED, filename="t.c", **COLS_ROWS) as w:
         _open_with_f3(w, "loop")
-        screen = _squash(w)
+        screen = _wait_said(w, "Cannotopenfile", "Toomanylevelsofsymboliclinks")
         assert "Cannotopenfile" in screen and "Toomanylevelsofsymboliclinks" in screen, \
             "\n".join(w.display())
         assert not _titled(w, "loop"), "\n".join(w.display())
@@ -145,12 +180,14 @@ def test_block_read_of_a_file_closed_to_reading_says_why_and_leaves_the_text(tmp
             w.key("r", delay=1.0)
             _typed(w, "locked.c")
             w.key(CR, delay=1.0)
-            screen = _squash(w)
+            screen = _wait_said(w, "Cannotopenfile", "Permissiondenied")
             assert "Cannotopenfile" in screen and "Permissiondenied" in screen, \
                 "\n".join(w.display())
             assert "Can'taccess" not in screen, "\n".join(w.display())
             w.key(CR, delay=0.6)
             w.key(ESC, delay=0.6)
+            assert wait_until(w, lambda: not _manager_open(w), STATE_WAIT_S), \
+                "Esc should leave the File Manager:\n%s" % "\n".join(w.display())
             assert w.text() == SEED, w.text()
     finally:
         os.chmod(locked, 0o600)
@@ -166,7 +203,7 @@ def test_attributes_of_a_loop_of_links_says_why(tmp_path):
         w.key("\t")
         _typed(w, "loop")
         w.key(ALT_A, delay=1.0)
-        screen = _squash(w)
+        screen = _wait_said(w, "Cannotopenfile", "Toomanylevelsofsymboliclinks")
         assert "Cannotopenfile" in screen and "Toomanylevelsofsymboliclinks" in screen, \
             "\n".join(w.display())
         assert "Can'taccess" not in screen, "\n".join(w.display())
@@ -193,11 +230,13 @@ def test_change_folder_into_a_folder_closed_to_reading_says_why(tmp_path):
     try:
         with WpeSession(str(tmp_path), SEED, filename="t.c", **COLS_ROWS) as w:
             _change_folder_to(w, closed)
-            screen = _squash(w)
+            screen = _wait_said(w, "Cannotopenfolder", "Permissiondenied")
             assert "Cannotopenfolder" in screen and "Permissiondenied" in screen, \
                 "\n".join(w.display())
             assert "Can'topendirectory" not in screen, "\n".join(w.display())
             w.key(CR, delay=0.6)
+            assert wait_until(w, lambda: not _said(w, "Cannotopenfolder"), STATE_WAIT_S), \
+                "the box should go once it is answered:\n%s" % "\n".join(w.display())
             assert "File-Manager" in "".join(w.display()), "\n".join(w.display())
             assert w.alive()
     finally:
@@ -211,9 +250,11 @@ def test_change_folder_into_a_file_says_not_a_directory(tmp_path):
     _put(tmp_path, "t.c", SEED, 0o644)
     with WpeSession(str(tmp_path), SEED, filename="t.c", **COLS_ROWS) as w:
         _open_with_f3(w, "t.c/x")
-        screen = _squash(w)
+        screen = _wait_said(w, "Cannotopenfolder", "Notadirectory")
         assert "Cannotopenfolder" in screen and "Notadirectory" in screen, "\n".join(w.display())
         w.key(CR, delay=0.6)
+        assert wait_until(w, lambda: not _said(w, "Cannotopenfolder"), STATE_WAIT_S), \
+            "the box should go once it is answered:\n%s" % "\n".join(w.display())
         assert "File-Manager" in "".join(w.display()), "\n".join(w.display())
 
 
@@ -242,7 +283,7 @@ def test_show_definition_with_a_project_closed_to_reading_says_so(tmp_path):
             w.key("s", delay=1.2)
             w.key("ZZ", delay=0.6)
             w.key(CR, delay=2.5)
-            screen = _squash(w)
+            screen = _wait_said(w, "Cannotopenprojectfile", "Permissiondenied")
             assert "Cannotopenprojectfile" in screen and "Permissiondenied" in screen, \
                 "\n".join(w.display())
             assert "notfound!" not in screen, "\n".join(w.display())
@@ -261,10 +302,13 @@ def test_a_file_the_system_refuses_to_read_is_not_opened_from_the_command_line(t
     try:
         with WpeSession(str(tmp_path), SEED, filename="t.c", args=("locked.c",),
                         **COLS_ROWS) as w:
+            assert wait_screen(w, "Cannot open file", STATE_WAIT_S), "\n".join(w.display())
             disp = "\n".join(w.display())
             assert "Cannot open file" in disp and "Permission denied" in disp, disp
             assert "\U0001F512" not in disp and " locked.c " not in w.display()[1], disp
             w.key(CR, delay=0.8)
+            assert _wait_titled(w, "t.c"), \
+                "t.c did not open once the box was answered:\n%s" % "\n".join(w.display())
             disp = w.display()
             assert not any(" locked.c " in row for row in disp), "\n".join(disp)
             assert " t.c " in "\n".join(disp[:3]), "\n".join(disp)
@@ -283,12 +327,17 @@ def test_a_write_only_file_is_refused_and_keeps_its_text(tmp_path):
     try:
         with WpeSession(str(tmp_path), SEED, filename="t.c", **COLS_ROWS) as w:
             _open_with_f3(w, "secret.c")
+            assert wait_screen(w, "Cannot open file", STATE_WAIT_S), "\n".join(w.display())
             disp = "\n".join(w.display())
             assert "Cannot open file" in disp and "Permission denied" in disp, disp
             w.key(CR, delay=0.6)            # answer the box
             w.key(ESC, delay=0.6)           # leave the File Manager, still open after a refusal
+            assert wait_until(w, lambda: not _manager_open(w), STATE_WAIT_S), \
+                "Esc should leave the File Manager:\n%s" % "\n".join(w.display())
             w.key("a", delay=0.3)           # lands in t.c, the window on top
             w.key(F2, delay=1.0)            # saves t.c
+            assert wait_until(w, lambda: w.text() == "a" + SEED, STATE_WAIT_S), \
+                "F2 should have saved the key into t.c:\n%s" % "\n".join(w.display())
             assert not _titled(w, "secret.c"), "\n".join(w.display())
             os.chmod(secret, 0o600)         # the row cannot read a 0200 file otherwise
             with open(secret) as fh:

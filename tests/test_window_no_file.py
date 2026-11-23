@@ -16,13 +16,18 @@ import time
 
 import pytest
 
-from wpe_driver import WpeSession, ALT, WPE_BIN
+from wpe_driver import WpeSession, ALT, WPE_BIN, wait_screen, wait_until
 
 SEED = "int t;\n"
 TITLE = "AI agent task  [Esc = done, then Y sends, N cancels]"
 F2 = "\033OQ"
 NOT_A_FILE = "This window is not a file."
+SEND_QUESTION = "Send this prompt"
+SENT_TEXT = "hellomore"     # the composer's "hello" and the "more" typed after
 EXIT_DEADLINE_S = 15
+# How long a row waits for a state the editor paints or writes: seconds on an
+# idle machine, which the owner of the wait stretches by the wait scale.
+STATE_WAIT_S = 8.0
 
 
 def _ai_build():
@@ -59,8 +64,44 @@ def _files_named_after_the_title(tmp_path):
     return sorted(n for n in os.listdir(str(tmp_path)) if "AI agent task" in n)
 
 
-def _screen(w):
-    return "\n".join(w.display())
+def _screen(w, drain=0.6):
+    return "\n".join(w.display(drain=drain))
+
+
+def _text_of(path):
+    """The text of the file at @path, "" while there is no such file."""
+    try:
+        with open(str(path)) as fh:
+            return fh.read()
+    except OSError:
+        return ""
+
+
+def _said(w, *needles):
+    """True when the screen holds every one of @needles.  This is what a wait
+    polls, so it reads with drain=0: the wait drains between two of its reads,
+    and a drain of its own would make every turn of it slow."""
+    screen = _screen(w, drain=0)
+    return all(needle in screen for needle in needles)
+
+
+def _wait_said(w, *needles):
+    """The screen once it holds every one of @needles, or the last screen seen
+    when STATE_WAIT_S runs out.
+
+    A row never decides from one read after a key's fixed delay: under load the
+    editor paints its box later than that delay, and the row reads a screen
+    that is not there yet.  So a row waits for the state it wants and asserts
+    on the screen the wait ended on."""
+    wait_until(w, lambda: _said(w, *needles), STATE_WAIT_S)
+    return _screen(w)
+
+
+def _quit_answered(w):
+    """True once Alt-X has been answered: the editor ended, or it asks the
+    composer's own question.  Either way the editor had its chance to ask the
+    save question these rows are about."""
+    return not w.alive() or SEND_QUESTION in _screen(w, drain=0)
 
 
 # @scenario SC-window-no-file-01
@@ -71,8 +112,9 @@ def test_f2_in_the_composer_says_it_is_not_a_file_and_writes_nothing(tmp_path):
     with _session(tmp_path) as w:
         _open_composer(w)
         w.key(F2, delay=1.0)
-        assert NOT_A_FILE in _screen(w), _screen(w)
-        assert "Save As" in _screen(w), _screen(w)
+        screen = _wait_said(w, NOT_A_FILE, "Save As")
+        assert NOT_A_FILE in screen, screen
+        assert "Save As" in screen, screen
     assert _files_named_after_the_title(tmp_path) == []
 
 
@@ -85,7 +127,8 @@ def test_f2_in_the_composer_leaves_a_file_of_the_titles_name_alone(tmp_path):
     with _session(tmp_path) as w:
         _open_composer(w)
         w.key(F2, delay=1.0)
-        assert NOT_A_FILE in _screen(w), _screen(w)
+        screen = _wait_said(w, NOT_A_FILE)
+        assert NOT_A_FILE in screen, screen
     assert mine.read_text() == "my own text\n"
     assert _files_named_after_the_title(tmp_path) == [TITLE]
 
@@ -98,10 +141,14 @@ def test_quitting_with_a_changed_composer_does_not_ask_to_save_it(tmp_path):
     with _session(tmp_path) as w:
         _open_composer(w)
         w.key("\033x", delay=1.5)
+        assert wait_until(w, lambda: _quit_answered(w), STATE_WAIT_S), \
+            "Alt-X was never answered:\n%s" % _screen(w)
         screen = _screen(w)
         assert "NOT saved" not in screen, screen
         w.key("n", delay=0.8)           # the composer's own "send it?" box, if it came
         w.key("\033x", delay=1.5)
+        assert wait_until(w, lambda: _quit_answered(w), STATE_WAIT_S), \
+            "the second Alt-X was never answered:\n%s" % _screen(w)
         assert "NOT saved" not in _screen(w), _screen(w)
     assert _files_named_after_the_title(tmp_path) == []
 
@@ -128,6 +175,8 @@ def test_save_as_in_the_composer_writes_the_text_and_keeps_the_composer_open(tmp
     before and Y sends the text.  Save As used to end the composer
     into that question at once, so the sentence F2 gives ("Use Save As") led
     nowhere."""
+    keep = tmp_path / "keep.txt"
+    trace = tmp_path / "ai.trace"
     with _session(tmp_path) as w:
         _open_composer(w)
         w.key(ALT.FILE, delay=1.0)
@@ -135,16 +184,17 @@ def test_save_as_in_the_composer_writes_the_text_and_keeps_the_composer_open(tmp
         for ch in "keep.txt":
             w.key(ch, delay=0.05)
         w.key("\r", delay=1.5)
-        assert "Send this prompt" not in _screen(w), _screen(w)
-        assert (tmp_path / "keep.txt").read_text().startswith("hello"), \
-            os.listdir(str(tmp_path))
+        assert wait_until(w, lambda: _text_of(keep).startswith("hello"), STATE_WAIT_S), \
+            "Save As never wrote the file: %s" % os.listdir(str(tmp_path))
+        assert SEND_QUESTION not in _screen(w), _screen(w)
+        assert keep.read_text().startswith("hello"), os.listdir(str(tmp_path))
         w.key("more", delay=0.5)            # still the composer: keys go to its text
         w.key("\033", delay=1.0)
-        assert "Send this prompt" in _screen(w), _screen(w)
+        assert wait_screen(w, SEND_QUESTION, STATE_WAIT_S), _screen(w)
         w.key("y", delay=1.0)               # Y sends what the composer holds
+        assert wait_until(w, lambda: SENT_TEXT in _text_of(trace), STATE_WAIT_S), _screen(w)
         w._drain(1.5)
-    trace = tmp_path / "ai.trace"
-    assert "hellomore" in (trace.read_text() if trace.exists() else "")
+    assert SENT_TEXT in _text_of(trace)
 
 
 # @scenario SC-window-no-file-05
