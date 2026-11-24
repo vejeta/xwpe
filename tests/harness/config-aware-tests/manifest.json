@@ -17,7 +17,7 @@
   {"id": "SC-config-13", "requirement": "On a build without the assistant, test_bindings names the bars it could not check; a build with it prints no such line", "layer": "c-unit", "test": "tests/check-build-config.sh", "status": "new"},
   {"id": "SC-config-14", "requirement": "On a build without the assistant, the rows that need it skip by name", "layer": "ncurses", "test": "tests/test_ai_options_render.py", "status": "new", "needs": ["python3"]},
   {"id": "SC-config-14", "requirement": "On a build without the assistant, the rows that need it skip by name", "layer": "ncurses", "test": "tests/test_opt_dialog_paste.py", "status": "new", "needs": ["python3"]},
-  {"id": "SC-config-14", "requirement": "On a build without the assistant, the rows that need it skip by name", "layer": "ncurses", "test": "tests/test_ai_options.py", "status": "new", "needs": ["python3"]},
+  {"id": "SC-config-14", "requirement": "On a build without the assistant, the rows that need it skip by name", "layer": "ncurses", "test": "tests/test_ai_options.py", "status": "new", "needs": ["python3", "local Ollama"]},
   {"id": "SC-config-14", "requirement": "On a build without the assistant, the rows that need it skip by name", "layer": "ncurses", "test": "tests/test_opt_dialog_buttons.py", "status": "new", "needs": ["python3"]},
   {"id": "SC-config-14", "requirement": "On a build without the assistant, the rows that need it skip by name", "layer": "ncurses", "test": "tests/test_ai_options_web.py", "status": "new", "needs": ["python3"]},
   {"id": "SC-config-14", "requirement": "On a build without the assistant, the rows that need it skip by name", "layer": "ncurses", "test": "tests/test_ai_options_contracts.py", "status": "new", "needs": ["python3"]},
@@ -25,7 +25,7 @@
   {"id": "SC-config-14", "requirement": "On a build without the assistant, the rows that need it skip by name", "layer": "ncurses", "test": "tests/test_ai_options_persist.py", "status": "new", "needs": ["python3"]},
   {"id": "SC-config-14", "requirement": "On a build without the assistant, the rows that need it skip by name", "layer": "ncurses", "test": "tests/test_opt_dialog_click.py", "status": "new", "needs": ["python3"]},
   {"id": "SC-config-14", "requirement": "On a build without the assistant, the rows that need it skip by name", "layer": "ncurses", "test": "tests/test_opt_dialog_engine.py", "status": "new", "needs": ["python3"]},
-  {"id": "SC-config-14", "requirement": "On a build without the assistant, the rows that need it skip by name", "layer": "ncurses", "test": "tests/test_menu_console_mouse.py", "status": "new", "needs": ["python3"]},
+  {"id": "SC-config-14", "requirement": "On a build without the assistant, the rows that need it skip by name", "layer": "ncurses", "test": "tests/test_menu_console_mouse.py", "status": "new", "needs": ["python3", "GPM daemon"]},
   {"id": "SC-config-14", "requirement": "On a build without the assistant, the rows that need it skip by name", "layer": "ncurses", "test": "tests/test_opt_dialog_move.py", "status": "new", "needs": ["python3"]},
   {"id": "SC-config-14", "requirement": "On a build without the assistant, the rows that need it skip by name", "layer": "ncurses", "test": "tests/test_opt_dialog_drag.py", "status": "new", "needs": ["python3"]},
   {"id": "SC-config-14", "requirement": "On a build without the assistant, the rows that need it skip by name", "layer": "ncurses", "test": "tests/test_debug_prefix_after_end.py::test_gdb_alt_g_after_continue_is_a_prefix", "status": "new", "needs": ["python3", "gcc", "gdb"]}
