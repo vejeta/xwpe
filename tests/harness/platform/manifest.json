@@ -8,6 +8,9 @@
   {"id": "SC-platform-05", "requirement": "An undeclared function is an error on every compiler: Makefile.am does not hide it and the probed flag wins over a compiler that only warns", "layer": "c-unit", "test": "tests/check-platform.sh", "status": "new"},
   {"id": "SC-platform-06", "requirement": "The -Wno- flags configure chose are known to the compiler in use (no unknown warning option)", "layer": "c-unit", "test": "tests/check-platform.sh", "status": "new"},
   {"id": "SC-platform-07", "requirement": "A file size is printed as a long long", "layer": "c-unit", "test": "tests/check-platform.sh", "status": "new"},
-  {"id": "SC-platform-08", "requirement": "configure names libm for floor and ceil where the linker does not find them through another library", "layer": "c-unit", "test": "tests/check-platform.sh", "status": "new"}
+  {"id": "SC-platform-08", "requirement": "configure names libm for floor and ceil where the linker does not find them through another library", "layer": "c-unit", "test": "tests/check-platform.sh", "status": "new"},
+  {"id": "SC-platform-row-clock-02", "requirement": "A job an interrupt cuts keeps the junit of every row it finished, so the gate still reads what ran", "layer": "ncurses", "test": "tests/test_row_clock.py::test_a_job_cut_by_an_interrupt_keeps_the_junit_of_the_rows_it_finished", "status": "new"},
+  {"id": "SC-platform-ci-shard-02", "requirement": "A shard the job cuts keeps the 124 of the cut and the junit of every row it finished", "layer": "ncurses", "test": "tests/test_ci_shard.py::test_a_cut_shard_keeps_exit_124_and_the_junit_of_the_rows_it_finished", "status": "new", "needs": ["pytest-xdist", "pytest-rerunfailures"]},
+  {"id": "SC-platform-ci-shard-03", "requirement": "The gate reads a cut shard and names the rows it never ran", "layer": "ncurses", "test": "tests/test_ci_shard.py::test_the_gate_reads_a_cut_shard_and_names_the_rows_it_never_ran", "status": "new", "needs": ["pytest-xdist", "pytest-rerunfailures"]}
  ]
 }

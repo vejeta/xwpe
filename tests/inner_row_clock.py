@@ -19,6 +19,11 @@ from wpe_driver import WpeSession, incoherence
 COUNT_FILE_VAR = "XWPE_INNER_COUNT_FILE"
 STARTED_FILE_VAR = "XWPE_INNER_STARTED_FILE"
 CLOSED_FILE_VAR = "XWPE_INNER_CLOSED_FILE"
+# The file the row that hangs leaves its mark in, on entry: the parent waits
+# for it and cuts the run then (gui_owner.run_nested_cut_on_mark), so the
+# interrupt arrives at a row that has started and not at a run that is still
+# starting.
+HANG_FILE_VAR = "XWPE_INNER_HANG_FILE"
 NEVER_S = 100000
 
 
@@ -26,6 +31,13 @@ def note_in(variable):
     """Append a line to the file the parent named in @variable."""
     with open(os.environ[variable], "a", encoding="utf-8") as fh:
         fh.write("x\n")
+
+
+def note_when_named(variable):
+    """Append a line to the file the parent named in @variable, when it named
+    one: a row run by a parent that has no mark to wait for leaves none."""
+    if variable in os.environ:
+        note_in(variable)
 
 
 def test_a_row_holding_an_editor_waits_forever(tmp_path):
@@ -100,4 +112,8 @@ def test_another_quick_row_before_the_hang():
 
 
 def test_a_row_that_hangs_with_no_clock_of_its_own():
+    """The row a cut job is measured on: it leaves its mark on entry, so the
+    cut arrives once it has started, and then it hangs with no clock of its
+    own for the job's own `timeout` to end."""
+    note_when_named(HANG_FILE_VAR)
     gui_owner.wait_for(lambda: False, "an event that never comes", NEVER_S)

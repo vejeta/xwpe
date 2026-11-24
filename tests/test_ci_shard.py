@@ -31,8 +31,15 @@ QUICK = ["%s::test_a_quick_row_before_the_hang" % INNER,
          "%s::test_another_quick_row_before_the_hang" % INNER]
 HANGS = "%s::test_a_row_that_hangs_with_no_clock_of_its_own" % INNER
 SCRIPT_TIMEOUT_S = 150
-CUT_AFTER = "12s"
+# The seconds a shard may take to reach the row that hangs and leave its mark.
+# The cut waits for that mark and comes as soon as it is there, so a runner
+# that is still bringing its test workers up delays the cut instead of losing
+# it; the shard's own `timeout` deadline is a net derived from this
+# (gui_owner.cut_deadline_s), never the cut.
+MARK_WAIT_S = 30
 LONG_BUDGET_S = "600"
+# The mark the row that hangs leaves on entry (tests/inner_row_clock.py).
+HANG_MARK = "hang"
 
 needs_the_job_plugins = pytest.mark.skipif(
     importlib.util.find_spec("xdist") is None
@@ -58,18 +65,38 @@ def make_plan(tmp_path, ids):
     return plan_dir
 
 
-def run_shard(tmp_path, plan_dir, cut):
-    """Run `sh tests/ci-shard.sh 0` on the plan with the clock out of the way
-    and the shard cut after @cut; returns (exit status, the output folder)."""
+def shard_command(tmp_path, plan_dir, cut):
+    """`sh tests/ci-shard.sh 0` on the plan, with the clock out of the way and
+    the shard's own `timeout` deadline at @cut: (its argv, its environment, the
+    folder the shard writes its junit and status in)."""
     out = tmp_path / "shard-out"
     env = {"HOME": str(tmp_path), "TERM": "xterm", "PY": sys.executable,
            "PLAN_DIR": str(plan_dir), "SHARD_OUT": str(out), "SHARD_CUT": cut,
            gui_owner.ROW_BUDGET_VAR: LONG_BUDGET_S,
            "XWPE_INNER_COUNT_FILE": str(tmp_path / "count"),
            "XWPE_INNER_STARTED_FILE": str(tmp_path / "started"),
-           "XWPE_INNER_CLOSED_FILE": str(tmp_path / "closed")}
-    done = gui_owner.run_nested(["sh", "tests/ci-shard.sh", "0"], SCRIPT_TIMEOUT_S,
-                                cwd=TOP, extra_env=env)
+           "XWPE_INNER_CLOSED_FILE": str(tmp_path / "closed"),
+           "XWPE_INNER_HANG_FILE": str(tmp_path / HANG_MARK)}
+    return ["sh", "tests/ci-shard.sh", "0"], env, out
+
+
+def run_shard(tmp_path, plan_dir, cut):
+    """Run the shard to completion; returns (exit status, the output folder,
+    what the script printed)."""
+    argv, env, out = shard_command(tmp_path, plan_dir, cut)
+    done = gui_owner.run_nested(argv, SCRIPT_TIMEOUT_S, cwd=TOP, extra_env=env)
+    return done.returncode, out, done.stdout.decode("utf-8", "replace")
+
+
+def run_cut_shard(tmp_path, plan_dir):
+    """Run the shard and cut it once the row that hangs has left its mark, the
+    way the job's own `timeout` cuts a shard that reached its minutes; returns
+    (exit status, the output folder, what the script printed)."""
+    argv, env, out = shard_command(
+        tmp_path, plan_dir, "%ds" % gui_owner.cut_deadline_s(MARK_WAIT_S))
+    done = gui_owner.run_nested_cut_on_mark(
+        argv, SCRIPT_TIMEOUT_S, str(tmp_path / HANG_MARK), MARK_WAIT_S,
+        cwd=TOP, extra_env=env)
     return done.returncode, out, done.stdout.decode("utf-8", "replace")
 
 
@@ -90,7 +117,7 @@ def test_a_shard_runs_its_node_ids_and_says_it_ended_with_zero(tmp_path):
 # @scenario SC-platform-ci-shard-02
 def test_a_cut_shard_keeps_exit_124_and_the_junit_of_the_rows_it_finished(tmp_path):
     plan_dir = make_plan(tmp_path, QUICK + [HANGS])
-    status, out, text = run_shard(tmp_path, plan_dir, CUT_AFTER)
+    status, out, text = run_cut_shard(tmp_path, plan_dir)
     assert status == 124, "the cut is not masked: %s\n%s" % (status, text[-1500:])
     written = json.loads((out / "shard-0-status.json").read_text())
     assert written["exit"] == 124 and written["cut"], written
@@ -106,7 +133,7 @@ def test_the_gate_reads_a_cut_shard_and_names_the_rows_it_never_ran(
     """The cut shard's junit holds the quick rows and not the row that hung:
     the gate calls that one MISSING and says the shard was cut."""
     plan_dir = make_plan(tmp_path, QUICK + [HANGS])
-    status, out, _text = run_shard(tmp_path, plan_dir, CUT_AFTER)
+    status, out, _text = run_cut_shard(tmp_path, plan_dir)
     assert status == 124
     monkeypatch.setattr(harness, "load_manifest", lambda cap: {"scenarios": [
         {"id": "SC-hang-01", "status": "new", "layer": "ncurses", "test": HANGS},

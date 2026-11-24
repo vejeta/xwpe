@@ -23,14 +23,22 @@ INNER_TIMEOUT_S = 150
 # and end ladder.
 BUDGET_S = "3"
 LONG_BUDGET_S = "600"
-INTERRUPT_AFTER_S = "14"
+# The seconds a cut run may take to reach the row that hangs and leave its
+# mark.  The cut waits for that mark and comes as soon as it is there, so a
+# runner that is still bringing its test workers up delays the cut instead of
+# losing it; the wrapper's own deadline is a net derived from this
+# (gui_owner.cut_deadline_s), never the cut.
+MARK_WAIT_S = 30
 KILL_AFTER_GRACE_S = "20"
+# The mark the row that hangs leaves on entry (tests/inner_row_clock.py).
+HANG_MARK = "hang"
 
 
-def inner_run(tmp_path, cases, budget, pytest_args=(), wrapper=(), extra_env=None):
-    """Run the planted rows named in @cases under a child pytest with
-    XWPE_ROW_BUDGET_S=@budget.  Returns (exit status, text, the folder with
-    the files the rows wrote)."""
+def inner_command(tmp_path, cases, budget, pytest_args=(), wrapper=(),
+                  extra_env=None):
+    """The child pytest of the planted rows named in @cases, with
+    XWPE_ROW_BUDGET_S=@budget under @wrapper: (its argv, its environment, the
+    folder the rows write their marks in)."""
     home = tmp_path / "home"
     home.mkdir(exist_ok=True)
     marks = tmp_path / "marks"
@@ -39,12 +47,23 @@ def inner_run(tmp_path, cases, budget, pytest_args=(), wrapper=(), extra_env=Non
            gui_owner.ROW_BUDGET_VAR: budget,
            "XWPE_INNER_COUNT_FILE": str(marks / "count"),
            "XWPE_INNER_STARTED_FILE": str(marks / "started"),
-           "XWPE_INNER_CLOSED_FILE": str(marks / "closed")}
+           "XWPE_INNER_CLOSED_FILE": str(marks / "closed"),
+           "XWPE_INNER_HANG_FILE": str(marks / HANG_MARK)}
     env.update(extra_env or {})
     argv = list(wrapper) + [
         sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "-rfE",
         "--basetemp", str(tmp_path / "inner")] + list(pytest_args)
     argv += ["%s::%s" % (INNER, case) for case in cases]
+    return argv, env, marks
+
+
+def inner_run(tmp_path, cases, budget, pytest_args=(), extra_env=None):
+    """Run the planted rows named in @cases under a child pytest with
+    XWPE_ROW_BUDGET_S=@budget.  Returns (exit status, text, the folder with
+    the files the rows wrote)."""
+    argv, env, marks = inner_command(tmp_path, cases, budget,
+                                     pytest_args=pytest_args,
+                                     extra_env=extra_env)
     done = gui_owner.run_nested(argv, INNER_TIMEOUT_S, cwd=str(tmp_path),
                                 extra_env=env)
     return done.returncode, done.stdout.decode("utf-8", "replace"), marks
@@ -155,12 +174,13 @@ def test_without_rerun_except_the_same_row_runs_three_times(tmp_path):
 
 
 def interrupted_run(tmp_path, signal_name, in_workers):
-    """Two quick rows and a row that hangs, under `timeout -s <signal>`,
-    with the clock out of the way; in two test workers when @in_workers and
-    xdist is installed.  Returns (status, junit path)."""
+    """Two quick rows and a row that hangs, under the job's
+    `timeout -s <signal>` with the clock out of the way, cut once the row that
+    hangs has left its mark; in two test workers when @in_workers and xdist is
+    installed.  Returns (status, junit path)."""
     junit = tmp_path / "inner.xml"
     workers = ["-n", "2"] if in_workers and importlib.util.find_spec("xdist") else []
-    status, text, _marks = inner_run(
+    argv, env, marks = inner_command(
         tmp_path,
         ["test_a_quick_row_before_the_hang",
          "test_another_quick_row_before_the_hang",
@@ -168,8 +188,11 @@ def interrupted_run(tmp_path, signal_name, in_workers):
         LONG_BUDGET_S,
         pytest_args=workers + ["--junitxml", str(junit)],
         wrapper=["timeout", "-s", signal_name, "-k", KILL_AFTER_GRACE_S,
-                 INTERRUPT_AFTER_S])
-    return status, junit
+                 str(gui_owner.cut_deadline_s(MARK_WAIT_S))])
+    done = gui_owner.run_nested_cut_on_mark(
+        argv, INNER_TIMEOUT_S, str(marks / HANG_MARK), MARK_WAIT_S,
+        cwd=str(tmp_path), extra_env=env)
+    return done.returncode, junit
 
 
 # @scenario SC-platform-row-clock-02

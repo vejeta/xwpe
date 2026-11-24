@@ -98,3 +98,5 @@ the Wayland build|-|condition|
 GPM daemon|-|condition|the gpm daemon is not installed by the job
 local Ollama|-|condition|no Ollama server runs on the job; the model list row asks a local one
 the rxvt-unicode-256color terminfo entry|ncurses-term|condition|ncurses-term is installed by the job
+pytest-xdist|-|condition|the suite's venv installs it (tests/ci-venv.sh); a host without it skips the rows that run a shard as the job runs it
+pytest-rerunfailures|-|condition|the same venv; it gives --rerun-except, which keeps a row the clock cut from running again
