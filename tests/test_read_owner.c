@@ -906,6 +906,123 @@ static void row_memory_stream(void)
 }
 
 /**
+ * check_stream_end - Read a bounded stream to its end and compare it with the file.
+ * @what: the name the failure lines carry; @path: the file; @text/@len: its bytes.
+ *
+ * A bounded stream is a stream over the bytes the owner read, and where a
+ * reader meets its end is a fact of the library: one stops at the bytes
+ * written, one goes on to the end of the buffer the owner asked for.  What a
+ * caller gets is the file's own bytes and then the end of the stream.
+ */
+static void check_stream_end(const char *what, const char *path, const char *text, size_t len)
+{
+ WpeReadAsk ask = ask_of(0, BOUND_REFUSE);
+ WpeReadOutcome o;
+ char label[128], back[BOUND + 2];
+ FILE *fp;
+ size_t got;
+
+ fp = wpe_read_stream_open(path, &ask, &o);
+ snprintf(label, sizeof label, "%s: a bounded stream opens", what);
+ chk_int(label, fp != NULL, 1);
+ if (fp == NULL)
+  return;
+ got = fread(back, 1, sizeof back, fp);
+ snprintf(label, sizeof label, "%s: the bytes a reader is given", what);
+ chk_int(label, (long)got, (long)len);
+ snprintf(label, sizeof label, "%s: the reader is at the end", what);
+ chk_int(label, feof(fp) != 0, 1);
+ snprintf(label, sizeof label, "%s: the bytes are the file's own", what);
+ chk_int(label, got == len && (len == 0 || memcmp(back, text, len) == 0), 1);
+ fclose(fp);
+}
+
+/**
+ * row_stream_end_is_the_last_byte - A bounded stream ends at the file's last byte.
+ *
+ * What goes wrong if it does not: a caller that loops on fgets or getline runs
+ * once too often over a byte the file does not hold, and a caller that counts
+ * what it was given counts a byte it never had.  NetBSD reads a memory stream
+ * to the end of the buffer the owner asked for, so it gives that byte back when
+ * the owner asks for one more than the text; FreeBSD and macOS stop at the
+ * bytes written.  The owner asks for what the text needs on the library it runs
+ * on.
+ */
+static void row_stream_end_is_the_last_byte(void)
+{
+ char exact[BOUND];
+
+ test_watchdog_case("the end of a bounded stream", CELL_SECS);
+ memset(exact, 'x', sizeof exact);
+ check_stream_end("a text", obj_path[OB_REG], TEXT_REG, LEN_REG);
+ check_stream_end("a text with NUL bytes", obj_path[OB_NUL], TEXT_NUL, LEN_NUL);
+ check_stream_end("a text of exactly the bound", obj_path[OB_EXACT], exact, sizeof exact);
+ check_stream_end("an empty text", obj_path[OB_EMPTY], "", 0);
+}
+
+/**
+ * check_stream_full_buffer - A file that fills its stream exactly reads back whole.
+ * @len: how many bytes the file holds.
+ *
+ * The last byte is one of its own, so a library that keeps a NUL terminator
+ * inside the buffer gives itself away at once: the reader gets the file's
+ * length but not the file's last byte.
+ */
+static void check_stream_full_buffer(size_t len)
+{
+ WpeReadAsk ask = ask_of(0, BOUND_REFUSE);
+ WpeReadOutcome o;
+ char name[32], path[TEST_DIR_PATH_SIZE], label[128];
+ char text[BOUND], back[BOUND + 2];
+ FILE *fp;
+ size_t i, got;
+
+ snprintf(name, sizeof name, "full_%u", (unsigned)len);
+ if (test_path_join(path, sizeof path, dir, name) != 0)
+  return;
+ for (i = 0; i < len; i++)
+  text[i] = (char)('a' + (int)(i % 26));
+ if (len > 0)
+  text[len - 1] = 'Z';
+ if (put_text(name, text, len) != 0)
+  return;
+ fp = wpe_read_stream_open(path, &ask, &o);
+ snprintf(label, sizeof label, "a file of %u bytes opens", (unsigned)len);
+ chk_int(label, fp != NULL, 1);
+ if (fp == NULL)
+  return;
+ got = fread(back, 1, sizeof back, fp);
+ snprintf(label, sizeof label, "a file of %u bytes reads back whole", (unsigned)len);
+ chk_int(label, (long)got, (long)len);
+ if (got == len && len > 0)
+ {
+  snprintf(label, sizeof label, "a file of %u bytes keeps its last byte", (unsigned)len);
+  chk_int(label, back[len - 1], text[len - 1]);
+ }
+ fclose(fp);
+}
+
+/**
+ * row_stream_keeps_a_full_buffer - A memory stream of exactly the text keeps the text.
+ *
+ * What goes wrong if it does not: the last byte of every file the owner reads
+ * whole for a bounded reader is a NUL, so an options or a project file loses
+ * its last character and a last line that had no newline of its own gains one.
+ * A library that keeps its terminator inside the buffer needs a byte more than
+ * the text, and a byte more is a byte a reader of the other libraries is
+ * given, so the room is measured and not guessed (row above).
+ */
+static void row_stream_keeps_a_full_buffer(void)
+{
+ static const size_t lens[] = { 1, 2, 3, 7, 8, BOUND - 1, BOUND };
+ size_t i;
+
+ test_watchdog_case("a buffer exactly the text", CELL_SECS);
+ for (i = 0; i < sizeof lens / sizeof lens[0]; i++)
+  check_stream_full_buffer(lens[i]);
+}
+
+/**
  * row_grows_while_read - A file that grows while it is read is never handed over past the bound.
  *
  * The hook appends to the file just before the first read.  The look and the
@@ -1191,6 +1308,8 @@ int main(void)
  row_swapped_to_fifo();
  row_link_by_name_not_errno();
  row_memory_stream();
+ row_stream_end_is_the_last_byte();
+ row_stream_keeps_a_full_buffer();
  row_grows_while_read();
  row_outcome_facts();
  row_name_ok();

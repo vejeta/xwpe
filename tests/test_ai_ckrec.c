@@ -585,6 +585,185 @@ static void row_removed_beside_a_cut_place(void)
  wpe_ckrec_free(r);
 }
 
+/**
+ * clear_no_birth_hook - Stop playing a system whose birth time proves nothing.
+ *
+ * What the user gets: the rows after this one judge identity on the file
+ * system they really run on.  The hook is a lie told to every look made while
+ * it is set, so a row that sets it clears it on every way out of itself, and
+ * the clearing lives here in one place instead of one copy per path.
+ */
+static void clear_no_birth_hook(void)
+{
+ unsetenv(WPE_SEEN_TEST_FAIL_ENV);
+}
+
+/**
+ * row_claimed_removal_under_a_cut - A removal a new name claims, in a review the bound cut.
+ *
+ * What the user gets: an answer for the file the run removed, even when a file
+ * the review found looks like it.  A system that hands a removed file's number
+ * back to the next file made, and whose birth time proves nothing (the three
+ * BSDs and macOS, and any file system that keeps no birth), lets the new name
+ * claim the removed one.  The review was cut, so nobody can tell a move from a
+ * number that came back: the removed name reads CANNOT_SAY with the bound's
+ * cause instead of going silent, and the new name still reads MOVED.  The row
+ * plays that system with the identity owner's own hook, and skips by name on a
+ * file system that never gives a number back.
+ */
+static void row_claimed_removal_under_a_cut(void)
+{
+ char w[NAME_MAX_TEST], p[NAME_MAX_TEST], f[64];
+ WpeCkRecord *r = new_record(BOUND_BIG);
+ struct stat removed, taken;
+ const char *row = "a claimed removal under a cut";
+ int i, reused;
+ row_folder(w, sizeof w);
+ make_folder(w, "a");
+ put_file(w, "gone", "GONE\n");
+ path_of(p, sizeof p, w, "gone");
+ if (stat(p, &removed) != 0) {
+  say_fail(row, "stat gone: %s", strerror(errno));
+  clear_no_birth_hook();
+  wpe_ckrec_free(r);
+  return;
+ }
+ setenv(WPE_SEEN_TEST_FAIL_ENV, WPE_SEEN_TEST_FAIL_NO_BIRTH, 1);
+ walk_side(r, WPE_CK_THEN, w);
+ remove_file(w, "gone");
+ /* the next file made is the one a recycling system gives the number to, and
+    it sits in a folder the walk reads to its end, so the cut below never hides it */
+ put_file(w, "a/taken", "T\n");
+ path_of(p, sizeof p, w, "a/taken");
+ if (stat(p, &taken) != 0) {
+  say_fail(row, "stat a/taken: %s", strerror(errno));
+  clear_no_birth_hook();
+  wpe_ckrec_free(r);
+  return;
+ }
+ reused = removed.st_dev == taken.st_dev && removed.st_ino == taken.st_ino;
+ if (!test_observation(reused, row, "this folder's file system never gives a removed file's number back")) {
+  clear_no_birth_hook();
+  wpe_ckrec_free(r);
+  return;
+ }
+ make_folder(w, "a/deep");
+ for (i = 0; i < BOUND_BIG + 1; i++) {
+  snprintf(f, sizeof f, "a/deep/n%02d", i);
+  put_file(w, f, "n\n");
+ }
+ walk_side(r, WPE_CK_NOW, w);
+ clear_no_birth_hook();
+ expect_kind(row, r, w, "gone", WPE_CK_CANNOT_SAY);
+ expect_why(row, r, w, "gone", WPE_CK_WHY_BOUND);
+ expect_kind(row, r, w, "a/taken", WPE_CK_MOVED);
+ wpe_ckrec_free(r);
+}
+
+/**
+ * birth_time_here - Can a look in this row's folder prove an object is the one?
+ * @w: the row's folder; @rel: a name in it to look at; @row: the name a skip carries.
+ *
+ * What the user gets: a row whose answer rests on a birth time says by name
+ * when the file system keeps none, instead of failing for a reason that is the
+ * system's and not the record's.
+ * Return: 1 when a birth time is there to judge with.
+ */
+static int birth_time_here(const char *w, const char *rel, const char *row)
+{
+ char p[NAME_MAX_TEST];
+ WpeSeen seen;
+
+ path_of(p, sizeof p, w, rel);
+ if (wpe_seen_look_name(p, 0, &seen) != 0) {
+  say_fail(row, "look %s: %s", rel, strerror(errno));
+  return 0;
+ }
+ return test_observation(seen.seen_has_birth, row, "this folder's file system keeps no birth time");
+}
+
+/**
+ * row_proven_rename_under_a_cut - A rename the birth time proves, in a review the bound cut.
+ *
+ * What the user gets: a file the run renamed is still told as moved when the
+ * review stopped early, and the name it had is not a second row of its own.
+ * The proof is the birth time the file system keeps, so this row plays no
+ * hook: the object at the new name is the object the checkpoint saw, and that
+ * answer does not wait on how far the review read.  Losing it would turn every
+ * rename in a workspace too large for one review into a "cannot say", so the
+ * user would be asked about a file that is sitting under the name the run gave
+ * it, and a revert would leave the old name alone as though nothing held it.
+ * The row skips by name on a file system that keeps no birth time.
+ */
+static void row_proven_rename_under_a_cut(void)
+{
+ char w[NAME_MAX_TEST], f[64];
+ WpeCkRecord *r = new_record(BOUND_BIG);
+ const char *row = "a proven rename under a cut";
+ int i;
+ row_folder(w, sizeof w);
+ make_folder(w, "a");
+ put_file(w, "a/notes", "USER\n");
+ if (!birth_time_here(w, "a/notes", row)) {
+  wpe_ckrec_free(r);
+  return;
+ }
+ walk_side(r, WPE_CK_THEN, w);
+ rename_to(w, "a/notes", "a/notes.moved");
+ /* the bound is spent in a deeper folder, so the folder of the rename is read to its end */
+ make_folder(w, "a/deep");
+ for (i = 0; i < BOUND_BIG + 1; i++) {
+  snprintf(f, sizeof f, "a/deep/n%02d", i);
+  put_file(w, f, "n\n");
+ }
+ walk_side(r, WPE_CK_NOW, w);
+ expect_kind(row, r, w, "a/notes.moved", WPE_CK_MOVED);
+ expect_kind(row, r, w, "a/notes", ROW_NO_VERDICT);
+ wpe_ckrec_free(r);
+}
+
+/**
+ * row_proven_claim_survives_a_later_one - Two names claim one old name in a review the bound cut.
+ *
+ * What the user gets: one row for the file the run moved, and no question about
+ * the name it had.  A file moved out of a folder the run then renamed leaves
+ * two names claiming the old one: the name it moved to, which proves the move,
+ * and a new file at its old place below the renamed folder, which the review
+ * reads as a move of the same old name and proves nothing.  The proof the first
+ * claim gave is kept, so a workspace too large for one review does not ask about
+ * a file that is sitting under the name the run gave it.  The row skips by name
+ * on a file system that keeps no birth time, where no claim can be proven.
+ */
+static void row_proven_claim_survives_a_later_one(void)
+{
+ char w[NAME_MAX_TEST], f[64];
+ WpeCkRecord *r = new_record(BOUND_BIG);
+ const char *row = "a proven claim beside a later one";
+ int i;
+ row_folder(w, sizeof w);
+ make_folder(w, "d");
+ put_file(w, "d/f.c", "USER\n");
+ if (!birth_time_here(w, "d/f.c", row)) {
+  wpe_ckrec_free(r);
+  return;
+ }
+ walk_side(r, WPE_CK_THEN, w);
+ rename_to(w, "d/f.c", "b.c");
+ rename_to(w, "d", "e");
+ put_file(w, "e/f.c", "BRAND NEW\n");
+ /* the bound is spent in a deeper folder, so the folders of both claims are read to their end */
+ make_folder(w, "e/deep");
+ for (i = 0; i < BOUND_BIG + 1; i++) {
+  snprintf(f, sizeof f, "e/deep/n%02d", i);
+  put_file(w, f, "n\n");
+ }
+ walk_side(r, WPE_CK_NOW, w);
+ expect_kind(row, r, w, "b.c", WPE_CK_MOVED);
+ expect_kind(row, r, w, "e/f.c", WPE_CK_MOVED);
+ expect_kind(row, r, w, "d/f.c", ROW_NO_VERDICT);
+ wpe_ckrec_free(r);
+}
+
 /** A folder a tool ignored, replaced by another folder, keeps its cause: nothing under it is new. */
 static void row_unread_folder_replaced(void)
 {
@@ -817,6 +996,8 @@ static void row_no_birth(void)
  walk_side(r, WPE_CK_NOW, w);
  unsetenv(WPE_SEEN_TEST_FAIL_ENV);
  expect_kind("a rename on a system with no birth time", r, w, "b.c", WPE_CK_MOVED);
+ /* the review was read to its end, so a claim it could not prove still answers for the old name */
+ expect_kind("a rename on a system with no birth time", r, w, "a.c", ROW_NO_VERDICT);
  wpe_ckrec_free(r);
 }
 
@@ -998,6 +1179,9 @@ int main(void)
  row_spelling();
  row_no_look_is_no_identity();
  row_removed_beside_a_cut_place();
+ row_claimed_removal_under_a_cut();
+ row_proven_rename_under_a_cut();
+ row_proven_claim_survives_a_later_one();
  row_unread_folder_replaced();
  row_ignored_files_on_both_sides();
  row_root_replaced_by_a_link();

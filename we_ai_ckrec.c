@@ -42,6 +42,7 @@ typedef struct {
  const char *hidden_to;   /* the judge: a hidden name now holds this object */
  int      image;          /* HELD: the before image's number */
  int      claimed;        /* the judge: an object seen under this name was found elsewhere */
+ int      claimed_proven; /* the judge: a listed name proved the object is this one; once set, kept */
  WpeSeen  seen;
 } CkEntry;
 
@@ -1131,13 +1132,30 @@ static void ck_verdict_of_call(const CkCall *c, const CkEntry *now, WpeCkVerdict
  * @then: the entry of the old name; @now: the entry that holds the object.
  *
  * The old name is then not "removed": it is moved, or it is a hidden name the
- * review never lists (the old name then gets its own verdict).
+ * review never lists (the old name then gets its own verdict).  Kept with it
+ * is how sure that is, which is what the user gains: a claim the identity
+ * proved is the object itself under a new name, and one it could not prove may
+ * be a number the file system gave back to a file the run made.
+ *
+ * Several names can claim one old name: a second name of the same object, a
+ * hidden name beside a visible one, or a name below a folder that moved, which
+ * the review reads as a move of the same old name and proves nothing about.
+ * The proof is then gathered and never overwritten, so what the user gets is
+ * the surest answer those names can give, and a last claimer that proved
+ * nothing cannot take away the proof an earlier one had.  A hidden claimer is
+ * left out of the proof because it is not the name that answers for the old
+ * one: the old name goes silent only for a name the review lists, so only that
+ * name's proof is an answer.
  */
 static void ck_claim(CkEntry *then, const CkEntry *now)
 {
  then->claimed = 1;
- if (!now->hidden) then->claimed_visible = 1;
- else if (!then->hidden_to) then->hidden_to = now->path;
+ if (now->hidden) {
+  if (!then->hidden_to) then->hidden_to = now->path;
+  return;
+ }
+ then->claimed_visible = 1;
+ if (wpe_seen_judge(&then->seen, &now->seen) == WPE_SEEN_SAME) then->claimed_proven = 1;
 }
 
 /**
@@ -1274,6 +1292,26 @@ static void ck_hidden_verdict(const CkEntry *t, WpeCkVerdict *v)
  v->from = t->hidden_to;
 }
 
+/**
+ * ck_claim_stands - Does a claim answer for this name, so the name needs no verdict of its own?
+ * @r: the record; @t: the then entry another name now holds the object of.
+ *
+ * What the user gets: a name the checkpoint listed is never silent.  A claim
+ * the identity proved is the object itself under a new name, and it stands
+ * whatever the review did.  A claim the identity could not prove, in a review
+ * the bound cut, may be a number the file system gave back to a file the run
+ * made: the review then never read far enough to tell a move from a removal,
+ * so the name is answered by the rule for a name that is not there now, which
+ * says CANNOT_SAY with the bound's cause.  A review read to its end keeps the
+ * move, which is the direction that keeps a renamed file alive.
+ * Return: 1 when the claim answers for the name, 0 when the name needs its own answer.
+ */
+static int ck_claim_stands(WpeCkRecord *r, const CkEntry *t)
+{
+ if (t->claimed_proven) return 1;
+ return !ck_side(r, WPE_CK_NOW)->bound_noted;
+}
+
 /** Emit what became of the names the checkpoint knew that are not present now. */
 static int ck_emit_then_names(WpeCkRecord *r, int *cap)
 {
@@ -1285,8 +1323,8 @@ static int ck_emit_then_names(WpeCkRecord *r, int *cap)
   if (!ck_seen_state(t)) continue;
   if (t->state == CK_HELD) ck_held_verdict(r, t, &v);
   else if (t->hidden || t->ignored || ck_present_now(r, t->path)) continue;
-  else if (t->claimed && t->claimed_visible) continue;
-  else if (t->claimed) ck_hidden_verdict(t, &v);
+  else if (t->claimed && t->claimed_visible && ck_claim_stands(r, t)) continue;
+  else if (t->claimed && !t->claimed_visible) ck_hidden_verdict(t, &v);
   else ck_gone_verdict(r, t, &v);
   if (ck_push_verdict(r, cap, &v) != 0) return -1;
  }
@@ -1319,6 +1357,7 @@ int wpe_ckrec_judge_all(WpeCkRecord *r, const WpeCkVerdict **v)
  for (i = 0; i < then->n; i++) {
   then->e[i].claimed = 0;
   then->e[i].claimed_visible = 0;
+  then->e[i].claimed_proven = 0;
   then->e[i].hidden_to = NULL;
  }
  calls = calloc((size_t)now->n + 1, sizeof *calls);

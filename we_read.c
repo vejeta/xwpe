@@ -22,6 +22,9 @@
 
 #define READ_FLAGS_BASE (O_RDONLY | O_NONBLOCK | O_NOCTTY | O_CLOEXEC)
 #define READ_CHUNK      ((size_t)65536)   /* what one read asks for */
+#define READ_STREAM_PROBE_ROOM ((size_t)1) /* a memory stream of exactly one byte */
+#define READ_STREAM_PROBE_BYTE 'x'        /* the byte written into it and read back */
+#define READ_STREAM_LEAST_ROOM ((size_t)1) /* the least a memory stream may be asked for */
 
 /**
  * read_note_system - Record a refusal that came from the system.
@@ -413,20 +416,66 @@ char *wpe_read_text(const char *path, const WpeReadAsk *ask, size_t *len, WpeRea
 }
 
 /**
+ * read_stream_needs_a_spare_byte - Does a memory stream here need a byte after the text?
+ *
+ * What the user gets: the last byte of the file a reader was given, and never
+ * a byte the file does not hold.  The probe measures one rule and infers the
+ * other.  It measures whether the library keeps the last byte written into a
+ * buffer of exactly that byte, or loses it to the NUL terminator it writes
+ * inside its own buffer.  From that it infers whether a read stops at the
+ * bytes written or runs past them to the end of the buffer, which is the rule
+ * that decides if a spare byte reaches the reader of a longer text.  The
+ * inference holds for glibc, musl, FreeBSD and NetBSD, measured or emulated.
+ * Where a read stops at the bytes written the terminator stays inside the
+ * buffer and eats the text's last byte, so the text needs a byte more: glibc
+ * does, and FreeBSD and macOS were shown to stop there.  Where a read runs to
+ * the end of the buffer that spare byte would reach the reader, so the text
+ * must not have one: NetBSD reads to the buffer's size.  Nothing is read from
+ * the system's name and nothing is kept between calls: a fact of the library
+ * is then never a shared one, and a stream is not opened often enough for the
+ * measure to matter.
+ * Return: 1 when the buffer needs a byte more than the text, 0 when it must not.
+ */
+static int read_stream_needs_a_spare_byte(void)
+{
+ FILE *probe = fmemopen(NULL, READ_STREAM_PROBE_ROOM, "w+");
+ int back;
+
+ if (probe == NULL)
+  return 1;                       /* nothing measured: the byte that keeps the text whole */
+ if (fputc(READ_STREAM_PROBE_BYTE, probe) != READ_STREAM_PROBE_BYTE)
+ {
+  fclose(probe);
+  return 1;
+ }
+ rewind(probe);
+ back = getc(probe);
+ fclose(probe);
+ return back != READ_STREAM_PROBE_BYTE;
+}
+
+/**
  * read_stream_of_bytes - A stream over bytes held in memory.
  * @bytes/@len: the bytes.
  *
- * The stream owns a copy (fmemopen with no buffer of the caller's), so fclose
- * frees it and no caller keeps a second pointer to release.  One byte more
- * than the text is asked for because a stream that is written to its last byte
- * can drop it from the end of a line on some systems; an empty text is a
- * stream already at its end.
+ * What the user gets: a reader of a file under a bound reads that file's bytes
+ * and then the end of the stream, so a line loop stops where the file does and
+ * a reader that counts is given the count the file has.  The stream owns a
+ * copy (fmemopen with no buffer of the caller's), so fclose frees it and no
+ * caller keeps a second pointer to release.  How much room the copy needs is
+ * measured on the library this build runs against, because a byte more is a
+ * byte a reader of one family is given and a byte less costs a reader of the
+ * other its last byte.  An empty text is a stream already at its end.
  * Return: the stream, or NULL when out of memory.
  */
 static FILE *read_stream_of_bytes(const char *bytes, size_t len)
 {
- FILE *fp = fmemopen(NULL, len + 1, "w+");
+ size_t room = len + (size_t)read_stream_needs_a_spare_byte();
+ FILE *fp;
 
+ if (room == 0)
+  room = READ_STREAM_LEAST_ROOM;  /* a stream of no bytes still needs a buffer */
+ fp = fmemopen(NULL, room, "w+");
  if (fp == NULL)
   return NULL;
  if (len > 0 && fwrite(bytes, 1, len, fp) != len)
