@@ -302,7 +302,12 @@ jobs:
     name: X11 and native Wayland GUI suites
     needs: build
     runs-on: ubuntu-26.04
-    timeout-minutes: 90
+    # Above the sum of the step limits below, so a suite that runs too long
+    # is stopped by its own step limit and the collect and upload steps still
+    # run.  When the job limit ends the job instead, every later step is
+    # dropped with it, and the logs of the row that ran too long never leave
+    # the runner.
+    timeout-minutes: 120
     env:
       XDG_RUNTIME_DIR: /tmp/xdg
     steps:
@@ -338,10 +343,15 @@ jobs:
         # that names the checkout as its working folder is refused when the farm
         # is inside it, which is what tests/x11/test_session_owner.py does (it
         # runs a pytest in the tree it is running from).
+        # The step limit keeps time for the steps after it (see the job's
+        # limit); a run of about 32 minutes took 89 when one row stopped
+        # moving.  faulthandler_timeout prints every thread's stack of a row
+        # that runs past it, so the log names the row and the line it waits on.
         if: always()
+        timeout-minutes: 45
         run: |
           XWPE_BIN="$PWD/xwpe" /tmp/ptenv/bin/python -m pytest -q tests/x11 \
-            --basetemp "$RUNNER_TEMP/x11-logs"
+            --basetemp "$RUNNER_TEMP/x11-logs" -o faulthandler_timeout=300
 
       - name: Native Wayland resize/relayout gate (BLOCKING)
         # The one cross-cutting concern that has silently regressed before (the
@@ -356,6 +366,7 @@ jobs:
         # keeps every process's log in the row's folder under --basetemp, which
         # the log upload below collects.
         if: always()
+        timeout-minutes: 10
         run: |
           XWPE_BIN="$PWD/xwpe" /tmp/ptenv/bin/python -m pytest -q \
             tests/wayland/test_resize.py tests/wayland/test_resize_mouse.py \
@@ -380,12 +391,13 @@ jobs:
         # breadth and uploads logs.
         continue-on-error: true
         if: always()
+        timeout-minutes: 45
         # The weston log and each row's editor log stay under --basetemp, so a
         # failure on a loaded runner is explainable (a real crash vs a
         # slow-runner mistime).
         run: |
           XWPE_BIN="$PWD/xwpe" /tmp/ptenv/bin/python -m pytest -q tests/wayland \
-            --basetemp "$RUNNER_TEMP/wl-logs/full" -rxX
+            --basetemp "$RUNNER_TEMP/wl-logs/full" -rxX -o faulthandler_timeout=300
 
       - name: Collect the log trees for the upload
         # A row plants link loops in its own folder on purpose (a folder
