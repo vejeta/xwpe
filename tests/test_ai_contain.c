@@ -1077,15 +1077,34 @@ static void test_the_note_names_a_long_folder_whole(void)
 #define DEEP_PART     200
 #define OLD_CUT_AT    255
 #define HUGE_ENTRY    5000
-#define FOLDER_LONG   3000
+#define FOLDER_LONG_WANTED 3000
 #define FOLDER_MEDIUM 300
+
+/**
+ * folder_long - How long the long test folder is: 3000 bytes, or the longest
+ * path this system can open when that is shorter.
+ *
+ * A folder the system cannot name is one the editor rightly drops, so the
+ * row that keeps a long folder whole asks for the longest one that can be
+ * opened: OpenBSD's PATH_MAX is 1024, Linux's 4096.
+ * Return: the length, in bytes.
+ */
+static size_t folder_long(void)
+{
+	if (FOLDER_LONG_WANTED < PATH_MAX)
+		return FOLDER_LONG_WANTED;
+	return PATH_MAX - 1;
+}
 
 /**
  * deep_dir_make - Make nested folders under @base so that the last one's
  * path is exactly @want bytes long.
  * @base: an existing folder; @want: the length of the result; @fill: the
  * letter the folder names are made of (two rows use two letters, so their
- * folders never meet); @out: receives it.
+ * folders never meet); @out: receives it, @n bytes.
+ *
+ * A length that does not fit in @out is a fault of the row, said once: the
+ * path could not grow, and the loop would make the same folder for ever.
  */
 static void deep_dir_make(const char *base, size_t want, int fill, char *out, size_t n)
 {
@@ -1093,6 +1112,11 @@ static void deep_dir_make(const char *base, size_t want, int fill, char *out, si
 	size_t left;
 
 	snprintf(out, n, "%s", base);
+	if (want >= n) {
+		printf("FAIL: a %zu-byte folder does not fit in its %zu-byte buffer\n", want, n);
+		fails++;
+		return;
+	}
 	while (strlen(out) + 1 + 1 <= want) {
 		left = want - strlen(out) - 1;
 		if (left > DEEP_PART)
@@ -1143,8 +1167,8 @@ static void test_an_allowed_folder_of_any_length_is_kept_whole(void)
 	free(got);
 	wpe_contain_path_allow_set(NULL);
 
-	deep_dir_make(ws, FOLDER_LONG, 'l', d3000, sizeof d3000);
-	chk("the long folder is 3000 bytes", (long)strlen(d3000), FOLDER_LONG);
+	deep_dir_make(ws, folder_long(), 'l', d3000, sizeof d3000);
+	chk("the long folder is as long as asked", (long)strlen(d3000), (long)folder_long());
 	/* a first word no system could open: it is skipped, the two after it are read */
 	huge[0] = '/';
 	memset(huge + 1, 'x', HUGE_ENTRY - 1);
@@ -1153,7 +1177,7 @@ static void test_an_allowed_folder_of_any_length_is_kept_whole(void)
 	snprintf(path, sizeof path, "%s:/usr/bin:%s", d3000, d300);
 	wpe_contain_path_allow_set(allow);
 	got = engine_path_of(path, ws);
-	chk_true("a 3000-byte allowed folder is kept, with the 300-byte one, in order",
+	chk_true("the long allowed folder is kept, with the 300-byte one, in order",
 	         got && !strcmp(got, path));
 	free(got);
 	wpe_contain_path_allow_set(NULL);
