@@ -78,8 +78,10 @@ def test_sigterm_writes_nothing_to_the_terminal(xwpe):
     wait_for_the_end(xwpe)
     saved = xwpe.srcfile + ".ESV"
     # The one line the editor does say, to tell where the work went, is a
-    # message for the user's shell, not a terminal control.
-    report = ("File %s saved!\r\n" % os.path.basename(saved)).encode()
+    # message for the user's shell, not a terminal control.  It names the
+    # .ESV by its full path, which still finds the file from a shell in
+    # another folder (we_unix.c e_err_save_report).
+    report = ("File %s saved!\r\n" % os.path.abspath(saved)).encode()
     written = written_to_the_terminal(xwpe).replace(report, b"")
     assert written == b"", \
         "SIGTERM wrote %d bytes to the launching terminal:\n%r" \
