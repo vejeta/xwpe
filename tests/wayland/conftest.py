@@ -33,6 +33,7 @@ is for an event, and an editor a failed row leaves behind is ended and
 reported as an error of that row.  A row asks for the display by
 display_name(), never by a constant.
 """
+import contextlib
 import os
 import pty
 import sys
@@ -124,9 +125,28 @@ def _sleep(seconds):
 
 
 # The compositor of this run (a WaylandDisplay of the owner) and the id of the
-# row that last started an editor: set by the xserver fixture once the
-# servers are up, cleared when the session ends.
+# row that last started an editor: served by the xserver fixture once the
+# servers are up, and by serve_display() alone.
 _SERVED = {"display": None, "row": None}
+
+
+@contextlib.contextmanager
+def serve_display(compositor):
+    """Serve @compositor to the rows that ask for it, and put the one served
+    before it back when the caller is done.
+
+    A restore and not a clear: the suite's compositor is served by a session
+    fixture, and a module whose rows end their own weston serves a compositor
+    of their own from a fixture of the same name.  That fixture shadows the
+    session's one without running it again, so a row of that module that
+    cleared the record left every later row of the session asking a display
+    nobody serves."""
+    before = _SERVED["display"]
+    _SERVED["display"] = compositor
+    try:
+        yield compositor
+    finally:
+        _SERVED["display"] = before
 
 
 def _served_display():
@@ -453,11 +473,8 @@ def xserver(gui_owner, tmp_path_factory, request):
     x_display = owner_api.start_x_server(gui_owner, request, log_dir, SCREEN)
     compositor = owner_api.start_compositor(gui_owner, request, x_display,
                                             log_dir, WL_WIDTH, WL_HEIGHT)
-    _SERVED["display"] = compositor
-    try:
+    with serve_display(compositor):
         yield compositor
-    finally:
-        _SERVED["display"] = None
 
 
 def pytest_configure(config):

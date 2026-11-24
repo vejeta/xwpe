@@ -36,8 +36,8 @@ import pytest
 from host_tools import needs
 
 import gui_owner as owner_api
-from conftest import (SCREEN, _SERVED, _WAIT_SCALE, _start_window_manager,
-                      _xdo)
+from conftest import (SCREEN, _WAIT_SCALE, _start_window_manager, _xdo,
+                      serve_display)
 from test_debug_answer_wait import (
     DBX_BREAK_LINE, DBX_STUB_ENV, DBX_STUB_LOG, MIN_BAR_PIXELS, STOP_GREEN,
     STOP_TIMEOUT_S, _count, _go_to_line, _wait, dbx_stub)
@@ -67,14 +67,12 @@ SLOW_QUIT_ENV = dict(LOST_STUB_ENV, XWPE_STUB_QUIT_NAP_S=SLOW_QUIT_NAP_S)
 def xserver(gui_owner, tmp_path, request):
     """An X server of this row, with its window manager, in place of the
     suite's: the row ends it, so no other row may depend on it.  The owner
-    ends what is left with the row."""
+    ends what is left with the row, and the rows after this one ask the
+    suite's display again, not this one."""
     display = owner_api.start_x_server(gui_owner, request, str(tmp_path), SCREEN)
-    _SERVED["display"] = display
-    try:
+    with serve_display(display):
         _start_window_manager(gui_owner, request, display, str(tmp_path))
         yield display
-    finally:
-        _SERVED["display"] = None
 
 
 def _wait_exit(editor, deadline=EXIT_DEADLINE_S):

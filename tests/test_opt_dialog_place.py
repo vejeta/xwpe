@@ -34,6 +34,11 @@ F2_SAVE = "\033OQ"
 CORNER_TL, CORNER_TR, CORNER_BL, V_BORDER = "l", "k", "m", "x"
 # Labels of the AI settings widgets whose row lies past a 16-row screen.
 BELOW_16_ROWS = ("CA file", "API key", "Advanced", " Ok ", "Cancel")
+# The smallest screen the editor lays its own frames out on (we_grid.h:
+# WPE_GRID_MIN_COLS x WPE_GRID_MIN_ROWS).  A terminal below it keeps the floor
+# as its grid and curses cuts what does not fit, so the right edge of a frame
+# is not on the screen there whatever the clamping decided.
+FLOOR_COLS, FLOOR_ROWS = 30, 6
 
 
 def _open_ai_settings(s):
@@ -106,14 +111,18 @@ def test_dialog_over_docked_pane_centres_on_screen(tmp_path):
 
 # @scenario SC-dialog-engine-03
 def test_degenerate_geometry_falls_back_to_corner(tmp_path):
-    # A 20x6 screen cannot hold a 64x21 box: the frame is clamped to column 0,
+    # A 30x6 screen cannot hold a 64x21 box: the frame is clamped to column 0,
     # row 1 (menu bar above, status line below) and, because it is clipped,
     # the engine also takes the too-small path: keys are swallowed until Esc.
     # Both are asserted; the corner is the placement, the swallow is the
-    # consequence of the clipping.
-    with WpeSession(str(tmp_path), SEED, cols=20, rows=6, env_extra=ENV) as s:
+    # consequence of the clipping.  The screen is the editor's floor and not a
+    # narrower one: below the floor the grid keeps its 30 columns and curses
+    # cuts what the terminal has no room for, so the frame's right edge is off
+    # the screen there and no clamping can put it at the last column.
+    with WpeSession(str(tmp_path), SEED, cols=FLOOR_COLS, rows=FLOOR_ROWS,
+                    env_extra=ENV) as s:
         _open_ai_settings(s)
-        assert s.alive(), "xwpe died opening a dialog on a 20x6 screen"
+        assert s.alive(), "xwpe died opening a dialog on a 30x6 screen"
         rows = s.display()
         assert rows[1][0] == CORNER_TL and rows[1][-1] == CORNER_TR, \
             "frame top is not at column 0 / row 1:\n" + "\n".join(rows)
@@ -123,7 +132,11 @@ def test_degenerate_geometry_falls_back_to_corner(tmp_path):
         assert s.display() == rows, \
             "keys were not swallowed on the clipped dialog:\n" + "\n".join(s.display())
         s.key(ESC, delay=0.6)
-        assert s.display()[1][0] != CORNER_TL, \
+        # The dialog's title and not the corner at row 1, column 0: the source
+        # window's own frame has a corner there on every screen the editor lays
+        # out on, its grid being at least FLOOR_COLS wide.  The sibling row
+        # test_screen_too_small_swallows_keys_until_esc reads it this way.
+        assert _row_of(s, TITLE) is None, \
             "Esc did not close the clipped dialog:\n" + "\n".join(s.display())
         s.key("QQ", delay=0.3)
         s.key(F2_SAVE, delay=0.6)

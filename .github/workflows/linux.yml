@@ -327,17 +327,21 @@ jobs:
         # The conftest starts its own Xvfb + window manager; it skips cleanly if
         # a tool is missing.  always(): run even if an earlier step failed, so a
         # flake in one backend never hides another's result.
-        # --basetemp inside the workspace, as the Wayland steps have it: the
-        # owner keeps every process's log, the session's Xvfb log and an
-        # editor's crash file in the row's folder under it, and the upload
-        # below collects them.  Without it they stay in /tmp/pytest-of-runner,
-        # which no artifact holds, so the three display_lost rows that died of
-        # SIGSEGV left neither a crash file nor a backtrace to read.
+        # --basetemp under the runner's own temporary folder, never inside the
+        # checkout: the owner keeps every process's log, the session's Xvfb log
+        # and an editor's crash file in the row's folder under it, and the
+        # collect step below copies them into the artifact.  With no --basetemp
+        # they stay in /tmp/pytest-of-runner, which no artifact holds, so the
+        # display_lost rows that died of SIGSEGV left neither a crash file nor a
+        # backtrace to read.  Inside the checkout they break a row instead: the
+        # session puts the owner's tool farm under its basetemp, and a launch
+        # that names the checkout as its working folder is refused when the farm
+        # is inside it, which is what tests/x11/test_session_owner.py does (it
+        # runs a pytest in the tree it is running from).
         if: always()
         run: |
-          mkdir -p x11-logs
           XWPE_BIN="$PWD/xwpe" /tmp/ptenv/bin/python -m pytest -q tests/x11 \
-            --basetemp "$PWD/x11-logs"
+            --basetemp "$RUNNER_TEMP/x11-logs"
 
       - name: Native Wayland resize/relayout gate (BLOCKING)
         # The one cross-cutting concern that has silently regressed before (the
@@ -353,10 +357,9 @@ jobs:
         # the log upload below collects.
         if: always()
         run: |
-          mkdir -p wl-logs
           XWPE_BIN="$PWD/xwpe" /tmp/ptenv/bin/python -m pytest -q \
             tests/wayland/test_resize.py tests/wayland/test_resize_mouse.py \
-            --basetemp "$PWD/wl-logs/gate" -rxX
+            --basetemp "$RUNNER_TEMP/wl-logs/gate" -rxX
 
       - name: Native Wayland GUI suite -- full breadth (Xvfb + weston)
         # The conftest starts its own Xvfb + weston (x11-backend, kiosk-shell) and
@@ -381,19 +384,40 @@ jobs:
         # failure on a loaded runner is explainable (a real crash vs a
         # slow-runner mistime).
         run: |
-          mkdir -p wl-logs
           XWPE_BIN="$PWD/xwpe" /tmp/ptenv/bin/python -m pytest -q tests/wayland \
-            --basetemp "$PWD/wl-logs/full" -rxX
+            --basetemp "$RUNNER_TEMP/wl-logs/full" -rxX
+
+      - name: Collect the log trees for the upload
+        # A row plants link loops in its own folder on purpose (a folder
+        # operation must not follow one), and upload-artifact stats every entry
+        # it walks: one loop ended the upload with ELOOP, so the artifact held
+        # nothing at all and the X11 logs never left the runner.  Copy the
+        # regular files out first: find does not follow a link and -type f never
+        # names one, so the loops stay behind while every log, screenshot and
+        # crash file goes.  Empty folders go with them, since a file's own
+        # folder is made by the copy.
+        if: always()
+        run: |
+          out="$PWD/gui-logs"
+          for tree in x11-logs wl-logs; do
+            [ -d "$RUNNER_TEMP/$tree" ] || continue
+            mkdir -p "$out/$tree"
+            ( cd "$RUNNER_TEMP/$tree" && find . -type f -printf '%P\0' \
+                | xargs -0 -r cp --parents -t "$out/$tree" )
+          done
 
       - name: Upload test logs
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: gui-test-logs
-          path: |
-            wl-logs/
-            x11-logs/
+          path: gui-logs/
           if-no-files-found: ignore
+          # An editor that crashes writes its crash file to its state folder,
+          # which a row's HOME puts under ".local/state/xwpe" (we_unix.c
+          # wpe_crash_path_init).  Hidden files are excluded by default, so
+          # without this the one file a SIGSEGV row leaves would stay behind.
+          include-hidden-files: true
 
   gate:
     name: Capability gates

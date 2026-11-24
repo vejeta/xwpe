@@ -534,6 +534,14 @@
    "needs": ["pidfd"]
   },
   {
+   "id": "SC-harness-owner-33",
+   "requirement": "A row that serves a display of its own leaves the suite's display served to the rows after it",
+   "layer": "x11",
+   "test": "tests/x11/test_session_owner.py::test_a_display_of_a_rows_own_leaves_the_suites_display_served",
+   "status": "new",
+   "needs": ["Xvfb", "xdotool", "xwd"]
+  },
+  {
    "id": "SC-harness-owner-29",
    "requirement": "Known defect, strict expected failure: a detached editor cannot run the jdb keys shape",
    "layer": "x11",

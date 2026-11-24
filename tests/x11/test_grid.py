@@ -36,9 +36,9 @@ import re
 import pytest
 
 import gui_owner as owner_api
-from conftest import (SCREEN, SCREEN_W, SCREEN_H, XwpeSession, _SERVED,
+from conftest import (SCREEN, SCREEN_W, SCREEN_H, XwpeSession,
                       _find_xwpe_window, _window_size, _xdo, launch_editor,
-                      wait_for)
+                      serve_display, wait_for)
 
 TRACE = "ui.trace"
 # Deadlines, in seconds before XWPE_TEST_WAIT_SCALE: how long a row waits for
@@ -95,14 +95,12 @@ SETTLE_S = 1.5
 
 @pytest.fixture
 def bare_display(gui_owner, tmp_path, request):
-    """An X server with no window manager, for this row only."""
+    """An X server with no window manager, for this row only.  The rows after
+    this one ask the suite's display again, not this one."""
     display = owner_api.start_x_server(gui_owner, request, str(tmp_path),
                                        SCREEN)
-    _SERVED["display"] = display
-    try:
+    with serve_display(display):
         yield display
-    finally:
-        _SERVED["display"] = None
 
 
 def _trace(tmp_path):

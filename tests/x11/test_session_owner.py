@@ -17,7 +17,8 @@ import pytest
 from host_tools import needs
 
 import gui_owner
-from conftest import PreviousRowLeft, launch_editor
+from conftest import (PreviousRowLeft, _SERVED, display_name, launch_editor,
+                      serve_display)
 from gui_owner import scaled, wait_for
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -116,6 +117,37 @@ def test_a_run_asked_to_rerun_failed_rows_is_refused(tmp_path):
     assert done.returncode != 0 and RERUNS_REFUSED in text, \
         "a run with --reruns 1 was not refused (exit %d): %s" % (
             done.returncode, text[-800:])
+
+
+class DisplayRecord:
+    """A stand-in for the owner's record of a display: the served display is
+    read for its name and nothing else."""
+
+    def __init__(self, name):
+        self.name = name
+
+
+# @scenario SC-harness-owner-33
+def test_a_display_of_a_rows_own_leaves_the_suites_display_served():
+    """A module whose rows end their own X server serves that display while
+    the row runs, and the suite's one again after it.
+
+    A row fixture of that name shadows the session's fixture without running
+    it again, so a row that cleared the record instead of putting it back
+    left every later row of the session asking for a display nobody serves:
+    one run of this suite errored 388 rows that way, from the row after the
+    module to the end of the suite."""
+    suite, rows_own = DisplayRecord(":9"), DisplayRecord(":8")
+    served_before = _SERVED["display"]
+    with serve_display(suite):
+        assert display_name() == ":9", "the suite's display is not served"
+        with serve_display(rows_own):
+            assert display_name() == ":8", \
+                "a row's own display is not served while the row runs"
+        assert display_name() == ":9", \
+            "the suite's display was not served again after a row's own"
+    assert _SERVED["display"] is served_before, \
+        "the last row that served a display did not put the record back"
 
 
 # @scenario SC-harness-owner-24

@@ -29,6 +29,7 @@ for a number of seconds; and what an editor leaves running is found, ended
 and reported as an error of its row.  A row asks for the display by
 display_name(), never by a constant.
 """
+import contextlib
 import os
 import pty
 import subprocess
@@ -126,9 +127,28 @@ def _sleep(seconds):
     _real_sleep(seconds * _WAIT_SCALE)
 
 
-# The X display of this run: set by the xserver fixture once the server has
-# said which number it took, cleared when the session ends.
+# The X display of this run: served by the xserver fixture once the server has
+# said which number it took, and by serve_display() alone.
 _SERVED = {"display": None, "row": None}
+
+
+@contextlib.contextmanager
+def serve_display(display):
+    """Serve @display to the rows that ask for it by name, and put the display
+    served before it back when the caller is done.
+
+    A restore and not a clear: the suite's display is served by a session
+    fixture, and a module whose rows end their own X server serves a display
+    of their own from a fixture of the same name.  That fixture shadows the
+    session's one without running it again, so a row of that module that
+    cleared the record left every later row of the session asking a display
+    nobody serves."""
+    before = _SERVED["display"]
+    _SERVED["display"] = display
+    try:
+        yield display
+    finally:
+        _SERVED["display"] = before
 
 
 def display_name():
@@ -479,12 +499,9 @@ def xserver(gui_owner, tmp_path_factory, request):
     running and nothing of another run is touched."""
     log_dir = str(tmp_path_factory.mktemp("x11-session"))
     display = owner_api.start_x_server(gui_owner, request, log_dir, SCREEN)
-    _SERVED["display"] = display
-    try:
+    with serve_display(display):
         _start_window_manager(gui_owner, request, display, log_dir)
         yield display.name
-    finally:
-        _SERVED["display"] = None
 
 
 def pytest_configure(config):
