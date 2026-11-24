@@ -260,8 +260,15 @@ jobs:
             uname -a
             export PATH=/usr/pkg/bin:/usr/pkg/sbin:$PATH
             # The image has pkg_add but not pkgin (the action's own README
-            # installs with /usr/sbin/pkg_add); pkgin comes first from it.
-            command -v pkgin >/dev/null 2>&1 || /usr/sbin/pkg_add pkgin
+            # installs with /usr/sbin/pkg_add); pkgin comes first from it,
+            # from the NetBSD CDN tree of the release that is running.  The
+            # mirror list the action writes at start found no pkgin for 11.1
+            # on 2026-11-24 ("no pkg found for 'pkgin'"), while the CDN's
+            # 11.1/All holds pkgin-26.4.0; pkgin then reads its own
+            # repositories.conf, which names the same tree.
+            command -v pkgin >/dev/null 2>&1 || \
+              PKG_PATH="https://cdn.NetBSD.org/pub/pkgsrc/packages/NetBSD/$(uname -p)/$(uname -r)/All" \
+              /usr/sbin/pkg_add pkgin
             pkgin -y update
             pkgin -y install gmake autoconf automake pkgconf cairo pango json-c \
               ncurses openssl python314 py314-test py314-pyte py314-wcwidth \
