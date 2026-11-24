@@ -21,7 +21,20 @@ def _has_ai():
         return False
 
 
-NEWFILE = "int main(void)\n{\n    return 42;\n}\n"
+# A rewrite of the fixture's nine-line t.c that changes two of its lines, so
+# the diff carries both removed (red) and added (green) lines.  It keeps the
+# file's length: a reply much shorter than the file is first questioned
+# ("reply has 4 lines, file has 9: review anyway?"), and the overlay this row
+# measures would never open.
+NEWFILE = ("int main(){\n"
+           "  int a = 1;\n"
+           "  int b = 2;\n"
+           "  int c = 3;\n"
+           "  int d = 4;\n"
+           "  int e = 5;\n"
+           "  int f = 7;\n"
+           "  return 42;\n"
+           "}\n")
 AI_ENV = {
     "XWPE_AI_ENABLE": "1",
     "XWPE_AI_BACKEND": "mock",
