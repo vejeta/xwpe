@@ -1135,7 +1135,10 @@ static void ck_verdict_of_call(const CkCall *c, const CkEntry *now, WpeCkVerdict
  * review never lists (the old name then gets its own verdict).  Kept with it
  * is how sure that is, which is what the user gains: a claim the identity
  * proved is the object itself under a new name, and one it could not prove may
- * be a number the file system gave back to a file the run made.
+ * be a number the file system gave back to a file the run made.  Proved is the
+ * identity owner's word, not this one's: only a birth time both looks carry
+ * proves it, so on a system that keeps none (OpenBSD, ext3, most FUSE) no
+ * claim is proved, however much the two looks agree.
  *
  * Several names can claim one old name: a second name of the same object, a
  * hidden name beside a visible one, or a name below a folder that moved, which
@@ -1155,7 +1158,7 @@ static void ck_claim(CkEntry *then, const CkEntry *now)
   return;
  }
  then->claimed_visible = 1;
- if (wpe_seen_judge(&then->seen, &now->seen) == WPE_SEEN_SAME) then->claimed_proven = 1;
+ if (wpe_seen_judge_proved(&then->seen, &now->seen) == WPE_SEEN_SAME) then->claimed_proven = 1;
 }
 
 /**
@@ -1297,13 +1300,14 @@ static void ck_hidden_verdict(const CkEntry *t, WpeCkVerdict *v)
  * @r: the record; @t: the then entry another name now holds the object of.
  *
  * What the user gets: a name the checkpoint listed is never silent.  A claim
- * the identity proved is the object itself under a new name, and it stands
- * whatever the review did.  A claim the identity could not prove, in a review
- * the bound cut, may be a number the file system gave back to a file the run
- * made: the review then never read far enough to tell a move from a removal,
- * so the name is answered by the rule for a name that is not there now, which
- * says CANNOT_SAY with the bound's cause.  A review read to its end keeps the
- * move, which is the direction that keeps a renamed file alive.
+ * the identity proved (a birth time both looks carried) is the object itself
+ * under a new name, and it stands whatever the review did.  A claim the
+ * identity could not prove, in a review the bound cut, may be a number the
+ * file system gave back to a file the run made: the review then never read far
+ * enough to tell a move from a removal, so the name is answered by the rule for
+ * a name that is not there now, which says CANNOT_SAY with the bound's cause.
+ * A review read to its end keeps the move, which is the direction that keeps a
+ * renamed file alive.
  * Return: 1 when the claim answers for the name, 0 when the name needs its own answer.
  */
 static int ck_claim_stands(WpeCkRecord *r, const CkEntry *t)

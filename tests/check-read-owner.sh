@@ -42,9 +42,15 @@
 # In we_read.c itself:
 #  i. a string that holds "Cannot", "not found", "it is" or "larger": the
 #     words are we_path.c's.
-#  j. fmemopen with anything but a NULL buffer and the mode "w+": the memory
-#     stream owns its bytes, so fclose frees them and no caller holds a second
-#     pointer to release.  Outside we_read.c, fmemopen at all.
+#  j. a memory stream made anywhere but in read_stream_of_hold, or made in a
+#     shape a reader can write to or that leaves the bytes with the caller:
+#     fmemopen, fopencookie whose mode is not "r", funopen with a write
+#     callback, tmpfile.  The stream owns its bytes, so fclose frees them, no
+#     caller holds a second pointer to release, and a reader is given no byte
+#     the file does not hold.  On a system with neither callback family the
+#     bytes live in a temporary file, which is why tmpfile is named here too
+#     and belongs to the one function that makes the stream.  Outside
+#     we_read.c: fmemopen, fopencookie, funopen and tmpfile.
 #  l. ELOOP, EMLINK, EFTYPE, ENXIO, EOPNOTSUPP or ENOTSUP: another file at the
 #     name is decided by looking at the name again, never from an errno that
 #     each system spells its own way.
@@ -272,17 +278,21 @@ scan() {
       count_word(m, "WPE_READ_UNBOUNDED|WPE_READ_ASK_SCAN|WPE_READ_ASK_LOAD", "r22g")
     }
     # the clauses of we_read.c itself
-    function note_owner(s, m,   t, p, e, lit, a, mode) {
+    function note_owner(s, m,   t, p, e, lit, a, mode, name) {
       t = s
       while (match(t, /"([^"\\]|\\.)*"/)) {
         lit = substr(t, RSTART, RLENGTH)
         if (lit ~ /Cannot|not found|it is|larger/) note("r22i", 1)
         t = substr(t, RSTART + RLENGTH)
       }
+      count_word(m, "fmemopen", "r22j")
       t = s
-      while (match(t, /(^|[^A-Za-z0-9_.>])fmemopen[ \t]*[(]/)) {
+      while (match(t, /(^|[^A-Za-z0-9_.>])(fopencookie|funopen|tmpfile)[ \t]*[(]/)) {
+        name = substr(t, RSTART, RLENGTH); sub(/^[^A-Za-z]/, "", name); sub(/[ \t]*[(]$/, "", name)
         p = RSTART + RLENGTH - 1
-        if (nth_arg(t, p, 1) != "NULL" || nth_arg(t, p, 3) != "\"w+\"") note("r22j", 1)
+        if (fn != "read_stream_of_hold") note("r22j", 1)
+        else if (name == "fopencookie" && nth_arg(t, p, 2) != "\"r\"") note("r22j", 1)
+        else if (name == "funopen" && nth_arg(t, p, 3) != "NULL") note("r22j", 1)
         t = substr(t, p + 1)
       }
       count_word(m, "ELOOP|EMLINK|EFTYPE|ENXIO|EOPNOTSUPP|ENOTSUP", "r22l")
@@ -303,7 +313,7 @@ scan() {
       count_call(m, "json_object_from_file|json_object_from_fd|gzopen|gzopen64|XrmGetFileDatabase", "r22e")
       count_call(m, "getline|getdelim", "r22f")
       count_word(m, "WPE_READ_KIND_PIPE", "r22h")
-      if (m ~ /(^|[^A-Za-z0-9_.>])fmemopen([^A-Za-z0-9_]|$)/) note("r22j", 1)
+      if (m ~ /(^|[^A-Za-z0-9_.>])(fmemopen|fopencookie|funopen|tmpfile)([^A-Za-z0-9_]|$)/) note("r22j", 1)
     }
     BEGIN { blank_incom = 0; fn = "-"; stmt = "" }
     {
@@ -438,6 +448,9 @@ int fake_h(void)
 int fake_j(char *buf, int n)
 {
  FILE *a = fmemopen(buf, n, "r");
+ FILE *b = fopencookie(buf, "r", calls);
+ FILE *c = funopen(buf, rd, 0, sk, cl);
+ FILE *d = tmpfile();
  return(0);
 }
 
@@ -478,6 +491,10 @@ int quiet_names(struct x *x)
  x.open(p);
  reopen(p);
  my_fopen(p);
+ my_fmemopen(p);
+ x->funopen(p);
+ my_tmpfile(p);
+ x->tmpfile(p);
  s_getline(p);
  wpe_read_stream_open(p, &ask, &o);
  WpeReadAsk ask = WPE_READ_ASK_CONFIG("file");
@@ -492,6 +509,15 @@ static int read_target_open_fd(const char *p, int d)
  return(openat(d, p, O_RDONLY));
 }
 
+static FILE *read_stream_of_hold(void *hold)
+{
+ cookie_io_functions_t calls;
+ FILE *a = fopencookie(hold, "r", calls);
+ FILE *b = funopen(hold, rd, NULL, sk, cl);
+ FILE *c = tmpfile();
+ return(a ? a : (b ? b : c));
+}
+
 static int read_other(const char *p, int d, int *e)
 {
  FILE *fp = fdopen(d, "r");
@@ -499,8 +525,10 @@ static int read_other(const char *p, int d, int *e)
  char *x = "it is a pipe";
  char *y = "File not found";
  char *z = "it is larger";
- FILE *m = fmemopen(buf, 8, "r");
- FILE *n = fmemopen(NULL, 8, "w+");
+ FILE *m = fmemopen(NULL, 8, "w+");
+ FILE *n = fopencookie(hold, "r+", calls);
+ FILE *o = funopen(hold, rd, wr, sk, cl);
+ FILE *q = tmpfile();
  if (*e == ELOOP || *e == EMLINK || *e == EFTYPE) return(1);
  if (*e == ENXIO || *e == EOPNOTSUPP || *e == ENOTSUP) return(2);
  open(p, 0);
@@ -526,10 +554,10 @@ EOF
     "r22f we_fake.c fake_f 2" \
     "r22g we_fake.c fake_g 6" \
     "r22h we_fake.c fake_h 1" \
-    "r22j we_fake.c fake_j 1" \
+    "r22j we_fake.c fake_j 4" \
     "r22z we_fake.c fake_z 3" \
     "r22i we_read.c read_other 4" \
-    "r22j we_read.c read_other 1" \
+    "r22j we_read.c read_other 4" \
     "r22l we_read.c read_other 6" \
     "r22m we_read.c read_other 3"; do
     if ! grep -qx "$want" "$WORK/fake.found"; then
@@ -539,14 +567,15 @@ EOF
     fi
   done
   # what is no offence: nothing in the quiet file, nothing but the owner's own
-  # clauses in we_read.c (read_target_open_fd and the macros of we_read.h)
+  # clauses in we_read.c (read_target_open_fd, the memory stream of
+  # read_stream_of_hold and the macros of we_read.h)
   if grep -E "^r22. we_quiet.c " "$WORK/fake.found" > /dev/null; then
     echo "check-read-owner: FAIL (selftest: a shape that is no offence was counted; it found:)"
     grep -E "^r22. we_quiet.c " "$WORK/fake.found"
     exit $BAD
   fi
-  if grep -E "^r22. we_read.h |^r22. we_read.c read_target_open_fd " "$WORK/fake.found" > /dev/null; then
-    echo "check-read-owner: FAIL (selftest: the owner's own open or the forms of its header were counted; it found:)"
+  if grep -E "^r22. we_read.h |^r22. we_read.c read_target_open_fd |^r22. we_read.c read_stream_of_hold " "$WORK/fake.found" > /dev/null; then
+    echo "check-read-owner: FAIL (selftest: the owner's own open, its own memory stream or the forms of its header were counted; it found:)"
     cat "$WORK/fake.found"
     exit $BAD
   fi
@@ -689,7 +718,7 @@ awk -F'|' -v kscan=$kscan -v nbobjs=" $(tr '\n' ' ' < "$WORK/notbuilt_objs")" '
       else if (rule == "r22i")
         print "offender: " $1 " " $2 ": a sentence word is spelt in we_read.c (Cannot, not found, it is, larger).  The words of a refusal are we_path.c'"'"'s: map the outcome onto them.  No allow line"
       else if (rule == "r22j")
-        print "offender: " $1 " " $2 ": fmemopen outside we_read.c, or in it with a buffer or a mode other than NULL and \"w+\".  The memory stream owns its bytes so fclose frees them.  No allow line"
+        print "offender: " $1 " " $2 ": a memory stream made outside read_stream_of_hold of we_read.c, or one a reader can write to or that leaves the bytes with the caller (fmemopen anywhere, fopencookie with a mode other than \"r\", funopen with a write callback, tmpfile anywhere else).  The stream owns its bytes, so fclose frees them and a reader is given no byte the file does not hold.  No allow line"
       else if (rule == "r22l")
         print "offender: " $1 " " $2 ": an errno that one system names for another kind of file (ELOOP, EMLINK, EFTYPE, ENXIO, EOPNOTSUPP, ENOTSUP) in we_read.c.  Decide it by looking at the name again (read_open_failure).  No allow line"
       else if (rule == "r22m")

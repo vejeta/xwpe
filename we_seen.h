@@ -98,6 +98,7 @@ nlink_t wpe_seen_nlink(const WpeSeen *s);
 off_t wpe_seen_size(const WpeSeen *s);
 
 WpeSeenIs wpe_seen_judge(const WpeSeen *then, const WpeSeen *now);
+WpeSeenIs wpe_seen_judge_proved(const WpeSeen *then, const WpeSeen *now);
 WpeSeenIs wpe_seen_judge_after_own_change(const WpeSeen *before, const WpeSeen *after);
 WpeSeenIs wpe_seen_name_judge(const WpeSeenName *then, const WpeSeenName *now);
 

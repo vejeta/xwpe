@@ -472,6 +472,35 @@ WpeSeenIs wpe_seen_judge(const WpeSeen *then, const WpeSeen *now)
 }
 
 /**
+ * wpe_seen_judge_proved - Is the object proven to be the one that was seen?
+ * @then: what the editor remembered.  @now: a look made just now.
+ *
+ * What the user gets: an answer a number the file system gave back cannot
+ * fake.  wpe_seen_judge also answers SAME when nothing it can see differs (one
+ * device, number and kind, one status-change time, and one owner, group, mode,
+ * size and modification time).  That is the right answer for a file nobody
+ * touched, and a guess where a removed object's number came straight back to a
+ * new one: a system that keeps no birth time gives both files the same stamp
+ * when it makes them close together (measured on OpenBSD 8.0, where one ffs
+ * timestamp covered a removal and the eleven files made after it).  Only a
+ * birth time both looks carry proves the object, so this answers UNSURE for
+ * that guess and leaves every other answer as the judge gave it.  A caller
+ * that acts on the object asks wpe_seen_judge; a caller that is about to say
+ * that a name the user knows is answered by another name asks this.
+ * Return: SAME only when the two looks are proven to be one object.
+ */
+WpeSeenIs wpe_seen_judge_proved(const WpeSeen *then, const WpeSeen *now)
+{
+ WpeSeenIs is = wpe_seen_judge(then, now);
+
+ if (is != WPE_SEEN_SAME)
+  return(is);
+ if (!seen_births_comparable(then, now))
+  return(WPE_SEEN_UNSURE);
+ return(WPE_SEEN_SAME);
+}
+
+/**
  * seen_after_own_change_agrees - Did only the editor's own chmod differ between two looks?
  *
  * A change of mode moves the status-change time forward and the mode, and

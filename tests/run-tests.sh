@@ -152,15 +152,19 @@ asan_run_unit() {
   ASAN_OPTIONS=detect_leaks=1 "$asan_src/$unit-asan"
 }
 
-# asan_units - the units of the owner of a formatted text and of the
-# assistant's HTTP header, under the sanitizers.
+# asan_units - the units of the owner of a formatted text, of the assistant's
+# HTTP header and of the read owner, under the sanitizers.
 asan_units() {
   mkdir -p "$asan_src"
-  echo "== formatted-text units under AddressSanitizer and UBSan =="
+  echo "== C units that need a sanitizer, under AddressSanitizer and UBSan =="
   asan_run_unit test_fmt -DWPE_FMT_HEAP_LIMIT=1000 "" tests/test_fmt.c we_fmt.c
   asan_run_unit test_numtext "" "" tests/test_numtext.c we_fmt.c
   asan_run_unit test_ai_http "" "-lssl -lcrypto" tests/test_ai_http.c \
      we_ai_http.c we_ai_http_sync.c we_fdloop.c we_fmt.c
+  # The read owner's bounded stream owns the bytes it hands a reader, and only
+  # the leak sanitizer sees a close callback that stops freeing them.
+  asan_run_unit test_read_owner "" "" tests/test_read_owner.c \
+     we_read.c we_seen.c we_path.c we_fmt.c
 }
 
 mode=functional
@@ -176,7 +180,7 @@ case "${1:-}" in
     echo "  (no arg)  C unit (make check) + pyte suite (./wpe) + X11 GUI (./xwpe)"
     echo "  --asan    build we-asan and run the pyte suite under AddressSanitizer"
     echo "  --asan-build  only build we-asan (in .asan-build, ./we untouched), for the harness"
-    echo "  --asan-units  ONLY the C units of the formatted-text owner under ASan+UBSan"
+    echo "  --asan-units  ONLY the C units that need a sanitizer under ASan+UBSan"
     echo "  --x11     ONLY the headless X11 GUI suite (./xwpe under Xvfb+matchbox)"
     echo "  --wayland ONLY the native Wayland GUI suite (./xwpe under Xvfb+weston)"
     echo "The pyte tests honour \$WPE_BIN (default ../wpe); X11/Wayland honour \$XWPE_BIN."

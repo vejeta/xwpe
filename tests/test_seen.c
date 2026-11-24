@@ -471,6 +471,38 @@ static void table_after_own_change(void)
  chk_is("own: equal births decide over the stamps", wpe_seen_judge_after_own_change(&then, &now), WPE_SEEN_SAME);
 }
 
+/** The judge that answers only what a birth time proves: a number the file
+    system gave back to a new object agrees with the old one on every field a
+    system without a birth time reports (measured on OpenBSD 8.0, where one ffs
+    timestamp covered a removal and the eleven files made after it). */
+static void table_judge_proved(void)
+{
+ WpeSeen then, now;
+
+ rec_base(&then);
+ rec_base(&now);
+ chk_is("proved: equal stamps, no birth on either side", wpe_seen_judge_proved(&then, &now), WPE_SEEN_UNSURE);
+ chk_is("proved: the plain judge still says same", wpe_seen_judge(&then, &now), WPE_SEEN_SAME);
+ rec_birth(&now, BIRTH_A, BIRTH_KERNEL_SET);
+ chk_is("proved: a birth on one side only", wpe_seen_judge_proved(&then, &now), WPE_SEEN_UNSURE);
+ rec_birth(&then, BIRTH_A, BIRTH_KERNEL_SET);
+ chk_is("proved: equal births", wpe_seen_judge_proved(&then, &now), WPE_SEEN_SAME);
+ rec_birth(&now, BIRTH_B, BIRTH_KERNEL_SET);
+ chk_is("proved: equal stamps, another birth", wpe_seen_judge_proved(&then, &now), WPE_SEEN_UNSURE);
+ rec_base(&then);
+ rec_base(&now);
+ rec_birth(&then, BIRTH_A, BIRTH_USER_SET);
+ rec_birth(&now, BIRTH_A, BIRTH_USER_SET);
+ rec_touch(&now);
+ chk_is("proved: touched, one equal birth its owner can set", wpe_seen_judge_proved(&then, &now), WPE_SEEN_SAME);
+ rec_base(&then);
+ rec_base(&now);
+ now.seen_ino = BASE_INO + 1;
+ chk_is("proved: another inode", wpe_seen_judge_proved(&then, &now), WPE_SEEN_OTHER);
+ wpe_seen_forget(&now);
+ chk_is("proved: an unknown look", wpe_seen_judge_proved(&then, &now), WPE_SEEN_UNSURE);
+}
+
 /** Row 1: every line of the judge, with no file system involved. */
 static void test_the_table(void)
 {
@@ -479,6 +511,7 @@ static void test_the_table(void)
  table_step_c();
  table_step_d();
  table_after_own_change();
+ table_judge_proved();
  table_unknown();
  table_from_stat_has_no_birth();
  table_names();

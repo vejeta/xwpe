@@ -163,9 +163,11 @@ WPE_READ_RESULT int wpe_read_name_ok(const char *path, const WpeReadAsk *ask, Wp
 
 /* The stream face, for the fgets and getline readers.  A bound that refuses
    gives a stream over the bytes already read whole into memory, so the reader
-   never sees more than the bound and never a file that grew.  UNBOUNDED gives
-   a stream on the descriptor.  Both are closed by fclose; the memory of the
-   first is the stream's own (fmemopen with no buffer of the caller's). */
+   never sees more than the bound, never a byte the file does not hold and
+   never a file that grew.  UNBOUNDED gives a stream on the descriptor.  Both
+   are closed by fclose, and the first owns what it reads from, so no caller
+   holds a second pointer to release: the bytes themselves, or on a system
+   with no memory stream call a temporary file that goes with the stream. */
 WPE_READ_RESULT FILE *wpe_read_stream_open(const char *path, const WpeReadAsk *ask, WpeReadOutcome *o);
 
 /* The text face: the whole file as malloc'd bytes, NUL-ended; @len is the

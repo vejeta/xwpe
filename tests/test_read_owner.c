@@ -38,6 +38,7 @@
 #include "test_watchdog.h"
 #include "interpose.h"
 #include "testdir.h"
+#include "../we_platform.h"
 #include "../we_read.h"
 
 #define BOUND          64        /* the bound the bounded cells use */
@@ -867,8 +868,11 @@ static void row_link_by_name_not_errno(void)
  * row_memory_stream - The stream over bytes behaves as a file does.
  *
  * fgets, getline, fseek and ftell over a text with NUL bytes and over an empty
- * text; the stream has no descriptor (fileno is -1) and fclose frees its
- * bytes.
+ * text; fclose frees the bytes.  A stream of either callback family has no
+ * descriptor of its own, so fileno is -1.  On a system with neither family the
+ * bytes live in a temporary file, which has one, so this row asks the platform
+ * which of the two it is looking at instead of naming a descriptor as the
+ * failure of a system that has no memory stream call.
  */
 static void row_memory_stream(void)
 {
@@ -884,7 +888,11 @@ static void row_memory_stream(void)
  chk_int("nul text opens", fp != NULL, 1);
  if (fp == NULL)
   return;
+#if WPE_PLATFORM_MEMORY_STREAM == WPE_PLATFORM_MEMORY_STREAM_NONE
+ chk_int("the temporary file's descriptor", fileno(fp) >= 0, 1);
+#else
  chk_int("no descriptor", fileno(fp), -1);
+#endif
  chk_str("first line", fgets(line, sizeof line, fp) ? line : "(none)", "a");
  chk_int("position after the first line", ftell(fp), 4);
  chk_int("seek", fseek(fp, 0, SEEK_SET), 0);

@@ -661,6 +661,49 @@ static void row_claimed_removal_under_a_cut(void)
 }
 
 /**
+ * row_folder_renamed_under_a_cut - A folder renamed, in a review the bound cut, with no birth time.
+ *
+ * What the user gets: an answer for every name the checkpoint listed, even when
+ * the name moved with its folder and the review stopped early.  Renaming a
+ * folder leaves the status-change time of the files inside it alone, so on a
+ * system that keeps no birth time the two looks of such a file agree on every
+ * field the judge reads and agreement alone says SAME.  That is not proof: a
+ * number the file system gave back to a file the run made agrees the same way,
+ * which is what the row above is about.  So the claim is not proven, a review
+ * the bound cut cannot tell this move from a removal, and the old name reads
+ * CANNOT_SAY with the bound's cause instead of going silent, while the new name
+ * still reads MOVED.  The row plays that system with the identity owner's own
+ * hook, so it runs on a file system that keeps a birth time too.
+ */
+static void row_folder_renamed_under_a_cut(void)
+{
+ char w[NAME_MAX_TEST], f[64];
+ WpeCkRecord *r = new_record(BOUND_BIG);
+ const char *row = "a renamed folder's child under a cut";
+ int i;
+ row_folder(w, sizeof w);
+ make_folder(w, "a");
+ put_file(w, "a/child", "CHILD\n");
+ setenv(WPE_SEEN_TEST_FAIL_ENV, WPE_SEEN_TEST_FAIL_NO_BIRTH, 1);
+ walk_side(r, WPE_CK_THEN, w);
+ rename_to(w, "a", "b");
+ /* the bound is spent below the renamed folder, so the folder and the child in
+    it are both listed before the walk stops */
+ make_folder(w, "b/deep");
+ for (i = 0; i < BOUND_BIG + 1; i++) {
+  snprintf(f, sizeof f, "b/deep/n%02d", i);
+  put_file(w, f, "n\n");
+ }
+ walk_side(r, WPE_CK_NOW, w);
+ clear_no_birth_hook();
+ expect_kind(row, r, w, "b", WPE_CK_MOVED);
+ expect_kind(row, r, w, "b/child", WPE_CK_MOVED);
+ expect_kind(row, r, w, "a/child", WPE_CK_CANNOT_SAY);
+ expect_why(row, r, w, "a/child", WPE_CK_WHY_BOUND);
+ wpe_ckrec_free(r);
+}
+
+/**
  * birth_time_here - Can a look in this row's folder prove an object is the one?
  * @w: the row's folder; @rel: a name in it to look at; @row: the name a skip carries.
  *
@@ -1180,6 +1223,7 @@ int main(void)
  row_no_look_is_no_identity();
  row_removed_beside_a_cut_place();
  row_claimed_removal_under_a_cut();
+ row_folder_renamed_under_a_cut();
  row_proven_rename_under_a_cut();
  row_proven_claim_survives_a_later_one();
  row_unread_folder_replaced();

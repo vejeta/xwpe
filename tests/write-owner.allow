@@ -103,7 +103,7 @@ we_fileop.c|r11:wpe_fileop_rename_noreplace|2|keep|a folder's rename the File Ma
 # writes something that is not the user's)
 we_debug.c|r9:e_lsp_read_file_text|1|keep|reads a file, copies nothing
 we_main.c|r9:e_read_whole|1|keep|reads the old option file whole, copies nothing
-we_read.c|r9:read_stream_of_bytes|1|keep|fills the memory stream with bytes it already read, copies no file
+we_read.c|r9:read_stream_of_hold|1|keep|fills the temporary file a system with no memory stream call reads from, copies no file
 we_term.c|r9:e_t_user_screen|1|keep|a screen dump
 we_wayland.c|r9:wpe_wl_dump_ppm|1|keep|a test screen dump
 we_xterm.c|r9:wpe_x_dump_ppm|1|keep|a test screen dump

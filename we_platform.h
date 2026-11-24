@@ -146,6 +146,54 @@ static inline struct timespec wpe_platform_whole_seconds(time_t seconds)
 #endif
 
 /**
+ * WPE_PLATFORM_MEMORY_STREAM - Which call makes a stream over bytes in memory.
+ *
+ * The read owner hands a read under a bound back as a stream that owns its
+ * bytes and frees them when the caller closes it, so a caller that only closes
+ * the stream leaks nothing and a reader is given no byte the file does not
+ * hold.  glibc and musl make such a stream with fopencookie, the BSDs and
+ * macOS with funopen; a library's own memory stream does neither (with a
+ * buffer of the caller's the close leaks it, with none of its own a read runs
+ * to the end of the buffer on some systems).
+ *
+ * FreeBSD has both calls and configure names fopencookie first, so FreeBSD
+ * takes the cookie branch.  That costs nothing: the two branches are one read,
+ * one seek and one release in the shape each library asks for, and the FreeBSD
+ * job of the CI builds the read owner and runs its rows, so a shape FreeBSD's
+ * prototype did not want would fail the build there.
+ *
+ * Always defined; NONE is a system with neither call (illumos, AIX).  There
+ * the read owner holds the bytes in a temporary file the stream owns, so the
+ * caller still closes it with fclose and still frees nothing itself.
+ */
+#define WPE_PLATFORM_MEMORY_STREAM_NONE      0
+#define WPE_PLATFORM_MEMORY_STREAM_COOKIE    1
+#define WPE_PLATFORM_MEMORY_STREAM_FUNOPEN   2
+#if defined(HAVE_FOPENCOOKIE)
+# define WPE_PLATFORM_MEMORY_STREAM WPE_PLATFORM_MEMORY_STREAM_COOKIE
+#elif defined(HAVE_FUNOPEN)
+# define WPE_PLATFORM_MEMORY_STREAM WPE_PLATFORM_MEMORY_STREAM_FUNOPEN
+#else
+# define WPE_PLATFORM_MEMORY_STREAM WPE_PLATFORM_MEMORY_STREAM_NONE
+#endif
+
+/**
+ * WpePlatformStreamOffset - The type a memory stream's seek takes its place by.
+ *
+ * glibc's fopencookie asks for an off64_t, musl's for an off_t: musl names
+ * off64_t only under _LARGEFILE64_SOURCE since 1.2.4, and this build asks for
+ * _GNU_SOURCE alone.  The funopen family takes an off_t on every system that
+ * has it, and so does the cookie family of every system but glibc, so only
+ * glibc needs the wider name.  Both hold a count of bytes from the start of
+ * the file, which is all a place here is.
+ */
+#if defined(__GLIBC__)
+typedef off64_t WpePlatformStreamOffset;
+#else
+typedef off_t WpePlatformStreamOffset;
+#endif
+
+/**
  * WPE_X11_DEFAULT_ALTMASK - The X modifier the editor takes as Alt when the
  * display's own modifier map says nothing.
  *

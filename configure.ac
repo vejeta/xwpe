@@ -273,6 +273,25 @@ AS_IF([test "x$ac_cv_member_struct_stat_st_mtim" = xyes],
   [xwpe_say_stat="st_mtimespec (nanoseconds)"],
   [xwpe_say_stat="whole seconds only (a build in the same second as an edit looks current)"])
 
+# A stream over bytes in memory that owns them: the read owner (we_read.c)
+# hands a read under a bound back as a stream whose fclose frees the bytes, so
+# a caller that only closes the stream leaks nothing and a reader is given no
+# byte the file does not hold.  glibc and musl give fopencookie, the BSDs and
+# macOS funopen; fmemopen does neither (with a buffer of the caller's the close
+# leaks it, with none of its own a read runs to the end of the buffer it was
+# given, which on NetBSD hands the reader a byte the file does not hold).
+# FreeBSD gives both and is asked for fopencookie first, so it takes the cookie
+# branch: the same read, seek and release in the shape its own prototype asks
+# for, and the FreeBSD job of the CI builds it and runs the read owner's rows.
+# A system with neither (illumos, AIX) holds the bytes in a temporary file the
+# stream owns, so "none" below is still a stream the caller only closes.
+AC_CHECK_FUNCS([fopencookie funopen])
+xwpe_say_memstream="none (a bounded read is a stream over a temporary file)"
+AS_IF([test "x$ac_cv_func_fopencookie" = xyes],
+  [xwpe_say_memstream="fopencookie (a bounded read is a stream the caller only closes)"],
+  [test "x$ac_cv_func_funopen" = xyes],
+  [xwpe_say_memstream="funopen (a bounded read is a stream the caller only closes)"])
+
 # Whether a regular expression understands \< \> and \b.  glibc does by
 # itself; macOS needs REG_ENHANCED and some others REG_GNU; FreeBSD's and
 # OpenBSD's engines have no such escapes.  WPE_REGEX_WORD_ESCAPES is the
@@ -1372,6 +1391,7 @@ AC_MSG_RESULT([
       backtrace:         $xwpe_say_backtrace
       stat times:        $xwpe_say_stat
       birth time:        $xwpe_say_birth
+      memory stream:     $xwpe_say_memstream
       regex word escapes: $xwpe_say_regex
       regex GNU escapes: $xwpe_say_regex_gnu_escapes
       regex reads UTF-8: $xwpe_say_regex_multibyte

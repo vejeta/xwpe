@@ -20,11 +20,10 @@
 #include <string.h>
 #include <unistd.h>
 
+#include "we_platform.h"
+
 #define READ_FLAGS_BASE (O_RDONLY | O_NONBLOCK | O_NOCTTY | O_CLOEXEC)
 #define READ_CHUNK      ((size_t)65536)   /* what one read asks for */
-#define READ_STREAM_PROBE_ROOM ((size_t)1) /* a memory stream of exactly one byte */
-#define READ_STREAM_PROBE_BYTE 'x'        /* the byte written into it and read back */
-#define READ_STREAM_LEAST_ROOM ((size_t)1) /* the least a memory stream may be asked for */
 
 /**
  * read_note_system - Record a refusal that came from the system.
@@ -416,76 +415,308 @@ char *wpe_read_text(const char *path, const WpeReadAsk *ask, size_t *len, WpeRea
 }
 
 /**
- * read_stream_needs_a_spare_byte - Does a memory stream here need a byte after the text?
- *
- * What the user gets: the last byte of the file a reader was given, and never
- * a byte the file does not hold.  The probe measures one rule and infers the
- * other.  It measures whether the library keeps the last byte written into a
- * buffer of exactly that byte, or loses it to the NUL terminator it writes
- * inside its own buffer.  From that it infers whether a read stops at the
- * bytes written or runs past them to the end of the buffer, which is the rule
- * that decides if a spare byte reaches the reader of a longer text.  The
- * inference holds for glibc, musl, FreeBSD and NetBSD, measured or emulated.
- * Where a read stops at the bytes written the terminator stays inside the
- * buffer and eats the text's last byte, so the text needs a byte more: glibc
- * does, and FreeBSD and macOS were shown to stop there.  Where a read runs to
- * the end of the buffer that spare byte would reach the reader, so the text
- * must not have one: NetBSD reads to the buffer's size.  Nothing is read from
- * the system's name and nothing is kept between calls: a fact of the library
- * is then never a shared one, and a stream is not opened often enough for the
- * measure to matter.
- * Return: 1 when the buffer needs a byte more than the text, 0 when it must not.
+ * ReadStreamHold - The bytes a memory stream gives a reader, and where it is.
+ * @bytes: the copy the stream owns, freed when the caller closes the stream.
+ * @len: how many bytes a reader may get.
+ * @at: where the next read starts.
  */
-static int read_stream_needs_a_spare_byte(void)
-{
- FILE *probe = fmemopen(NULL, READ_STREAM_PROBE_ROOM, "w+");
- int back;
+typedef struct {
+ char *bytes;
+ size_t len;
+ size_t at;
+} ReadStreamHold;
 
- if (probe == NULL)
-  return 1;                       /* nothing measured: the byte that keeps the text whole */
- if (fputc(READ_STREAM_PROBE_BYTE, probe) != READ_STREAM_PROBE_BYTE)
- {
-  fclose(probe);
-  return 1;
- }
- rewind(probe);
- back = getc(probe);
- fclose(probe);
- return back != READ_STREAM_PROBE_BYTE;
+/**
+ * read_stream_release - Free a hold's bytes, and the hold itself.
+ * @hold: the bytes the stream was given.
+ *
+ * Both callback families take this as the close of the stream, so fclose frees
+ * the bytes and no caller keeps a second pointer to release.  The temporary
+ * file a system with neither family falls back to calls it itself, once the
+ * file holds the bytes.
+ * Return: 0, the answer both families of a memory stream take.
+ */
+static int read_stream_release(void *hold)
+{
+ ReadStreamHold *h = hold;
+
+ free(h->bytes);
+ free(h);
+ return 0;
+}
+
+/* A callback family reads and seeks through functions of its own; a temporary
+   file needs neither, so the helpers both families share live under them. */
+#if WPE_PLATFORM_MEMORY_STREAM != WPE_PLATFORM_MEMORY_STREAM_NONE
+
+/**
+ * read_stream_slice - How many bytes a read of this much gives from where the stream is.
+ * @h: the stream's own bytes; @want: what the reader asked for.
+ * Return: the bytes to give, 0 at the end of them.
+ */
+static size_t read_stream_slice(const ReadStreamHold *h, size_t want)
+{
+ if (h->at >= h->len)
+  return 0;
+ if (want > h->len - h->at)
+  return h->len - h->at;
+ return want;
 }
 
 /**
- * read_stream_of_bytes - A stream over bytes held in memory.
- * @bytes/@len: the bytes.
+ * read_stream_take - Give a reader the bytes at the stream's place and move past them.
+ * @hold: the stream's own bytes; @buf/@want: the reader's buffer and how many
+ * bytes it asked for.
  *
- * What the user gets: a reader of a file under a bound reads that file's bytes
- * and then the end of the stream, so a line loop stops where the file does and
- * a reader that counts is given the count the file has.  The stream owns a
- * copy (fmemopen with no buffer of the caller's), so fclose frees it and no
- * caller keeps a second pointer to release.  How much room the copy needs is
- * measured on the library this build runs against, because a byte more is a
- * byte a reader of one family is given and a byte less costs a reader of the
- * other its last byte.  An empty text is a stream already at its end.
- * Return: the stream, or NULL when out of memory.
+ * A want larger than what is left gives what is left, so a reader is never
+ * given a byte the file does not hold.  The funopen family counts in an int and
+ * its wrapper refuses a negative count before it reaches here, so what comes in
+ * is always a count the reader asked for.
+ * Return: the bytes given, 0 at the end of them (which sets the stream's end).
  */
-static FILE *read_stream_of_bytes(const char *bytes, size_t len)
+static ssize_t read_stream_take(ReadStreamHold *hold, char *buf, size_t want)
 {
- size_t room = len + (size_t)read_stream_needs_a_spare_byte();
+ size_t take = read_stream_slice(hold, want);
+
+ memcpy(buf, hold->bytes + hold->at, take);
+ hold->at += take;
+ return (ssize_t)take;
+}
+
+/**
+ * read_stream_move_to - Land a seek of the stream, and say where it landed.
+ * @hold: the stream's own bytes; @by: the place asked for; @whence: what it
+ * counts from.
+ *
+ * What the user gets: a place inside the file's own bytes, so ftell never
+ * reports a stream longer than the file it came from.  A seek past the end is
+ * refused, where a file would allow it and leave the gap to read as the end of
+ * the file: this stream's length is the file's, and a place past it is a place
+ * no byte of the file answers to.
+ * Return: the place, or -1 with errno set.
+ */
+static long long read_stream_move_to(ReadStreamHold *hold, long long by, int whence)
+{
+ long long at = (long long)hold->at;
+
+ if (whence == SEEK_SET)
+  at = by;
+ else if (whence == SEEK_CUR)
+  at += by;
+ else if (whence == SEEK_END)
+  at = (long long)hold->len + by;
+ else
+ {
+  errno = EINVAL;
+  return -1;
+ }
+ if (at < 0 || (unsigned long long)at > (unsigned long long)hold->len)
+ {
+  errno = EINVAL;
+  return -1;
+ }
+ hold->at = (size_t)at;
+ return at;
+}
+
+#endif
+
+/* The three constructions of the stream, one per system, each named
+   read_stream_of_hold: the two callback families differ only in the shape the
+   library asks for, and the third holds the bytes in a temporary file.  All
+   three leave the hold to the caller when they fail and take it when they
+   succeed, and each says in @o the cause it alone knows. */
+#if WPE_PLATFORM_MEMORY_STREAM == WPE_PLATFORM_MEMORY_STREAM_COOKIE
+
+/**
+ * read_stream_cookie_read - The read the cookie family calls.
+ * @hold: the stream's own bytes; @buf/@want: the reader's buffer and how many
+ * bytes it asked for.
+ *
+ * What the user gets: the file's own bytes from where the reader is, and then
+ * the end of the stream, so a line loop stops where the file does and a reader
+ * that counts is given the count the file has.
+ * Return: the bytes given, 0 at the end of them.
+ */
+static ssize_t read_stream_cookie_read(void *hold, char *buf, size_t want)
+{
+ return read_stream_take(hold, buf, want);
+}
+
+/**
+ * read_stream_cookie_seek - The seek the cookie family calls.
+ * @hold: the stream's own bytes; @pos: the place asked for, which this lands;
+ * @whence: what the place counts from.
+ *
+ * What the user gets: an fseek that lands inside the file's own bytes and an
+ * ftell that never reports a longer file.  The place is the type this library's
+ * own prototype asks for, which is glibc's wider one and off_t elsewhere.
+ * Return: 0 when the place landed, -1 with errno set when it did not.
+ */
+static int read_stream_cookie_seek(void *hold, WpePlatformStreamOffset *pos, int whence)
+{
+ long long at = read_stream_move_to(hold, (long long)*pos, whence);
+
+ if (at < 0)
+  return -1;
+ *pos = (WpePlatformStreamOffset)at;
+ return 0;
+}
+
+/**
+ * read_stream_of_hold - A stream of the cookie family over bytes it owns.
+ * @hold: the bytes, which the stream frees when the caller closes it;
+ * @o: the outcome, which says why no stream could be had.
+ *
+ * What the user gets: a stream over the bytes the read owner took from the
+ * file, which the caller reads and closes and does nothing else for.
+ * Return: the stream, or NULL when the library could not make one.
+ */
+static FILE *read_stream_of_hold(ReadStreamHold *hold, WpeReadOutcome *o)
+{
+ cookie_io_functions_t calls;
  FILE *fp;
 
- if (room == 0)
-  room = READ_STREAM_LEAST_ROOM;  /* a stream of no bytes still needs a buffer */
- fp = fmemopen(NULL, room, "w+");
+ calls.read = read_stream_cookie_read;
+ calls.write = NULL;
+ calls.seek = read_stream_cookie_seek;
+ calls.close = read_stream_release;
+ fp = fopencookie(hold, "r", calls);
  if (fp == NULL)
-  return NULL;
- if (len > 0 && fwrite(bytes, 1, len, fp) != len)
+  o->why = WPE_READ_NO_MEMORY;   /* the one thing that stops this call */
+ return fp;
+}
+
+#elif WPE_PLATFORM_MEMORY_STREAM == WPE_PLATFORM_MEMORY_STREAM_FUNOPEN
+
+/**
+ * read_stream_fun_read - The read the funopen family calls.
+ * @hold: the stream's own bytes; @buf/@want: the reader's buffer and how many
+ * bytes it asked for, in the int this family counts in.
+ *
+ * What the user gets: the file's own bytes from where the reader is, and then
+ * the end of the stream.  A count the family cannot hold, an int that is
+ * negative, is answered as an error instead of read as a size, so no reader is
+ * given bytes from anywhere but the file.
+ * Return: the bytes given, 0 at the end of them, -1 with errno set on a count
+ * that is not one.
+ */
+static int read_stream_fun_read(void *hold, char *buf, int want)
+{
+ if (want < 0)
  {
+  errno = EINVAL;
+  return -1;
+ }
+ return (int)read_stream_take(hold, buf, (size_t)want);
+}
+
+/**
+ * read_stream_fun_seek - The seek the funopen family calls.
+ * @hold: the stream's own bytes; @pos: the place asked for; @whence: what it
+ * counts from.
+ *
+ * What the user gets: an fseek that lands inside the file's own bytes and an
+ * ftell that never reports a longer file.
+ * Return: the place it landed, or -1 with errno set when it did not.
+ */
+static off_t read_stream_fun_seek(void *hold, off_t pos, int whence)
+{
+ return (off_t)read_stream_move_to(hold, (long long)pos, whence);
+}
+
+/**
+ * read_stream_of_hold - A stream of the funopen family over bytes it owns.
+ * @hold: the bytes, which the stream frees when the caller closes it;
+ * @o: the outcome, which says why no stream could be had.
+ *
+ * What the user gets: a stream over the bytes the read owner took from the
+ * file, which the caller reads and closes and does nothing else for.
+ * Return: the stream, or NULL when the library could not make one.
+ */
+static FILE *read_stream_of_hold(ReadStreamHold *hold, WpeReadOutcome *o)
+{
+ FILE *fp = funopen(hold, read_stream_fun_read, NULL, read_stream_fun_seek,
+                    read_stream_release);
+
+ if (fp == NULL)
+  o->why = WPE_READ_NO_MEMORY;   /* the one thing that stops this call */
+ return fp;
+}
+
+#else
+
+/**
+ * read_stream_of_hold - A stream over a temporary file, where no family exists.
+ * @hold: the bytes, which the file takes a copy of and this then frees;
+ * @o: the outcome, which says why no stream could be had.
+ *
+ * What the user gets: the same stream the two families give, on a system that
+ * has neither (illumos, AIX).  A reader is given the file's own bytes and then
+ * the end of the stream, and fclose is the whole of the cleanup.  What it costs
+ * is a file in the temp folder for as long as the stream is open, a descriptor
+ * of its own, and a stream a caller could write to, where neither family gives
+ * one: the callers of this face read, and a write would change only the copy.
+ * Return: the stream, or NULL when no temporary file could be had or filled.
+ */
+static FILE *read_stream_of_hold(ReadStreamHold *hold, WpeReadOutcome *o)
+{
+ size_t len = hold->len;
+ size_t put;
+ FILE *fp = tmpfile();
+
+ if (fp == NULL)
+ {
+  read_note_system(o, errno);   /* a full descriptor table, a temp folder that refuses */
+  return NULL;
+ }
+ put = len == 0 ? 0 : fwrite(hold->bytes, 1, len, fp);
+ if (put != len)
+ {
+  read_note_system(o, errno);   /* the temp folder ran out of room, or the file failed */
   fclose(fp);
   return NULL;
  }
  rewind(fp);
- if (len == 0)
-  (void)getc(fp);     /* the end is reached, and feof says so */
+ read_stream_release(hold);   /* the file holds the bytes now */
+ return fp;
+}
+
+#endif
+
+/**
+ * read_stream_of_bytes - A stream over bytes the stream then owns.
+ * @bytes/@len: the bytes (malloc'd) and how many of them a reader may get;
+ * @o: the outcome, which says why no stream could be had.
+ *
+ * What the user gets: a reader of a file under a bound reads that file's bytes
+ * and then the end of the stream, so a line loop stops where the file does and
+ * a reader that counts is given the count the file has, on every system.  The
+ * stream owns the bytes and fclose frees them, so no caller keeps a second
+ * pointer to release.  A library's own memory stream does neither on every
+ * system: with a buffer of the caller's it leaks when the caller only closes
+ * the stream, and with none of its own it hands a reader a byte the file does
+ * not hold wherever its read runs to the end of the buffer it was given.  An
+ * empty text is a stream already at its end.
+ * Return: the stream, or NULL with the outcome set (the bytes are freed).
+ */
+static FILE *read_stream_of_bytes(char *bytes, size_t len, WpeReadOutcome *o)
+{
+ ReadStreamHold *hold = malloc(sizeof *hold);
+ FILE *fp;
+
+ if (hold == NULL)
+ {
+  free(bytes);
+  o->why = WPE_READ_NO_MEMORY;
+  return NULL;
+ }
+ hold->bytes = bytes;
+ hold->len = len;
+ hold->at = 0;
+ fp = read_stream_of_hold(hold, o);
+ if (fp == NULL)
+  read_stream_release(hold);
  return fp;
 }
 
@@ -519,7 +750,6 @@ static FILE *read_stream_of_descriptor(int fd, WpeReadOutcome *o)
  */
 FILE *wpe_read_stream_open(const char *path, const WpeReadAsk *ask, WpeReadOutcome *o)
 {
- FILE *fp;
  char *text;
  size_t len;
  int fd = read_begin(path, ask, 0, o);
@@ -532,11 +762,7 @@ FILE *wpe_read_stream_open(const char *path, const WpeReadAsk *ask, WpeReadOutco
  close(fd);
  if (text == NULL)
   return NULL;
- fp = read_stream_of_bytes(text, len);
- free(text);
- if (fp == NULL)
-  o->why = WPE_READ_NO_MEMORY;
- return fp;
+ return read_stream_of_bytes(text, len, o);   /* the stream owns the bytes now */
 }
 
 /**
