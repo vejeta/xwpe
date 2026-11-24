@@ -306,6 +306,22 @@ static int e_debug_console_input(int c, FENSTER *f)
    would otherwise look like an xwpe key code. */
 int e_input_was_char = 0;
 
+/**
+ * e_key_is_display_notice - Is this code a display's own notice, not a key?
+ * @c: what the key reader returned; @notice: the notice to compare with.
+ *
+ * The editor's own codes share their numeric range with Unicode: U+07D2 is
+ * WPE_RESIZE's 2002 and U+07D8 is WPE_TOP_CHANGED's 2008.  The reader that
+ * returned the code also says whether it decoded a typed character, so a
+ * letter the user typed is inserted and never swallowed as a notice he was
+ * never given.
+ * Return: non-zero when @c is that notice and not a character.
+ */
+static int e_key_is_display_notice(int c, int notice)
+{
+ return(c == notice && !e_input_was_char);
+}
+
 int e_del_a_ind();
 int e_tab_a_ind();
 static int e_window_auto_indents(FENSTER *f);
@@ -429,7 +445,9 @@ static void e_edit_drop_window(ECNT *cn, FENSTER *f)
  if (f->dirct != NULL)
   FREE(f->dirct);
  (cn->mxedt)--;
+ e_window_stack_changed();       /* another window is on top now */
  cn->curedt = cn->edt[cn->mxedt];
+ e_window_drop(f);
  FREE(f);
 }
 
@@ -581,6 +599,9 @@ static int e_edit_open(ECNT *cn, char *filename, int view, int *err)
  int ftype = 0, i, j, st = 0;
  int open_err = 0;
  struct stat buf[1];
+ BUFFER *new_text;               /* the text this window is given */
+ SCHIRM *new_screen;             /* its view state */
+ WpePane pane = WPE_PANE_FILE;   /* which pane, by the intent that opens it */
 
  if (err != NULL)
   *err = 0;
@@ -622,21 +643,27 @@ static int e_edit_open(ECNT *cn, char *filename, int view, int *err)
  cn->curedt=j;
  (cn->mxedt)++;
  cn->edt[cn->mxedt]=j;
-   
+ e_window_stack_changed();       /* a window came to the front */
+
  if ((f = (FENSTER *)MALLOC(sizeof(FENSTER))) == NULL)
   e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
  wpe_write_identity_forget(&f->file_id);
  wpe_write_copies_forget(&f->copies);
  f->no_file = 0;
+ e_window_held_forget(f);    /* the kind's owner makes its block on first hold */
  if (view)
   wpe_write_window_set_not_a_file(f);    /* its title is a label: no file behind it */
 
  f->fb = cn->fb;
  cn->f[cn->mxedt] = f;
 
- if ((f->b = (BUFFER *)MALLOC(sizeof(BUFFER))) == NULL)
+ new_text = (BUFFER *)MALLOC(sizeof(BUFFER));
+ if (new_text == NULL)
   e_error(e_msg[ERR_LOWMEM], 1, f->fb);
- if ((f->s = (SCHIRM*)MALLOC(sizeof(SCHIRM))) == NULL)
+ new_screen = (SCHIRM *)MALLOC(sizeof(SCHIRM));
+ if (new_screen == NULL)
+  e_error(e_msg[ERR_LOWMEM], 1, f->fb);
+ if (!e_window_hold_text(f, new_text, new_screen))
   e_error(e_msg[ERR_LOWMEM], 1, f->fb);
  f->s->block_open = 0;
 #ifdef DEBUGGER
@@ -748,7 +775,7 @@ static int e_edit_open(ECNT *cn, char *filename, int view, int *err)
  if (cn->mxedt == 0)    /*  Clipboard  */
  {
   cn->curedt=0;
-  cn->edt[cn->mxedt]=0;
+  cn->edt[cn->mxedt]=0;  /* the clipboard's slot, and mxedt is 0: not the stack top */
   WpeFree(file);
   file = f->datnam = WpeStrdup(BUFFER_NAME);
 #ifdef UNIX
@@ -756,6 +783,7 @@ static int e_edit_open(ECNT *cn, char *filename, int view, int *err)
 #endif
   e_buffer_mark_view(f->b);
   e_line_make_hard_empty(f->b, 0);
+  e_window_set_pane(f, WPE_PANE_CLIPBOARD);
   return(0);
  }
  if (strcmp(file,"") == 0)
@@ -776,6 +804,7 @@ static int e_edit_open(ECNT *cn, char *filename, int view, int *err)
   f->nblst = 7;
   f->blst = hblst;
   ftype = 1;
+  pane = WPE_PANE_HELP;
  }
  else
   complete_fname = e_mkfilename(f->dirct, f->datnam);
@@ -789,6 +818,7 @@ static int e_edit_open(ECNT *cn, char *filename, int view, int *err)
    f->nblst = 8;
    f->blst = mblst;
    ftype = 2;
+   pane = WPE_PANE_MESSAGES;
   }
   else if (!strcmp(filename, "Watches"))
   {
@@ -796,6 +826,7 @@ static int e_edit_open(ECNT *cn, char *filename, int view, int *err)
    f->hlp_str = e_hlp_str[1];
    f->blst = dblst;
    ftype = 3;
+   pane = WPE_PANE_WATCHES;
   }
   else if (!strcmp(filename, "Stack"))
   {
@@ -803,9 +834,14 @@ static int e_edit_open(ECNT *cn, char *filename, int view, int *err)
    f->hlp_str = e_hlp_str[2];
    f->blst = dblst;
    ftype = 4;
+   pane = WPE_PANE_STACK;
   }
  }
 #endif
+ /* The pane this window is, by the intent that opened it: the requested name
+    above decided it, never the title the window ends up carrying, so a file
+    the user named "Messages" stays the user's writable file. */
+ e_window_set_pane(f, pane);
 #ifdef DEBUGGER
  /* A plain editor window (not Help/Messages/Watches/Stack) holding a file a
     language server understands gets the LSP bottom bar -- the contextual "LSP
@@ -887,9 +923,12 @@ static int e_edit_open(ECNT *cn, char *filename, int view, int *err)
     /* the window's name is "Noname" or the file given: shorter than the word */
     WpeFree(f->datnam);
     f->datnam = WpeStrdup("Messages");
+    /* `-pm` asked for the build's own pane: that intent, and not the title
+       the window now carries, is what makes it one. */
+    e_window_set_pane(f, WPE_PANE_MESSAGES);
     e_we_sw &= ~E_EDIT_SW_PARSE_MESSAGES;
    }
-   if (!strcmp(f->datnam, "Messages"))
+   if (e_window_pane(f) == WPE_PANE_MESSAGES)
    {
     e_buffer_mark_view(f->b);    /* compiler lines appended later stay one row each */
     e_make_error_list(f);
@@ -909,14 +948,17 @@ static int e_edit_open(ECNT *cn, char *filename, int view, int *err)
  {
   if(e_p_m_buffer != NULL)
   {
-   e_close_buffer(f->b);
-   f->b = e_p_m_buffer;
-   f->b->f = f;
+   /* The pane's own buffer takes the place of the one just allocated, and the
+      reader keeps the view it was given: what the user sees is the build's
+      messages, not the stale file of the same name read above. */
+   e_close_buffer(e_window_text(f));
+   e_window_replace_text(f, e_p_m_buffer);
+   e_p_m_buffer->f = f;
   }
   else
   {
-   e_p_m_buffer = f->b;
-   e_buffer_clear(f->b);          /* a stale Messages file read above is not shown */
+   e_p_m_buffer = e_window_text(f);
+   e_buffer_clear(e_p_m_buffer);  /* a stale Messages file read above is not shown */
   }
  }
 #ifdef DEBUGGER
@@ -924,13 +966,13 @@ static int e_edit_open(ECNT *cn, char *filename, int view, int *err)
  {
   if (e_p_w_buffer != NULL)
   {
-   e_close_buffer(f->b);
-   f->b = e_p_w_buffer;
-   f->b->f = f;
+   e_close_buffer(e_window_text(f));
+   e_window_replace_text(f, e_p_w_buffer);
+   e_p_w_buffer->f = f;
   }
   else
   {
-   e_p_w_buffer = f->b;
+   e_p_w_buffer = e_window_text(f);
 /*  e_ins_nchar(f->b, f->s, "No Watches", 0, 0, 10);*/
   }
  }
@@ -1106,17 +1148,35 @@ static void e_paint_say_lost(const char *what)
 }
 
 /**
+ * e_paint_top_count - How often the window on top has changed.
+ *
+ * The screen's owner reads this around a box's key wait and writes the
+ * answer to the trace: while a box owns the screen a build's end is kept
+ * behind it, so the count stands still and a window the user is not looking
+ * at cannot take the keys from the box.
+ */
+static unsigned long e_paint_top_count(void)
+{
+ return(e_window_top_count());
+}
+
+/**
  * e_paint_desk_ready - Tell the screen's owner how to see the editor's
- * desk.  Called once, before anything is drawn.
+ * desk, and the window kind's owner how a refusal is said.  Called once,
+ * before anything is drawn.
  */
 void e_paint_desk_ready(void)
 {
  static const WpePaintDesk desk = {
   e_paint_text_on_top, e_paint_read_key, e_paint_box_opens, e_paint_say_lost,
-  e_paint_take_key
+  e_paint_take_key, e_paint_top_count
  };
 
  wpe_paint_desk_set(&desk);
+ /* One voice for every refusal of a command that needs text, so a prefix
+    letter, a function key and a menu row all say it the same way and only
+    once for the key the user pressed. */
+ e_window_refusal_voice_set(wpe_closed_say_needs_text);
 }
 
 /* The bytes Enter and Tab add to a window, as far as a size limit counts
@@ -1242,29 +1302,48 @@ int e_eingabe(ECNT *e)
  while (c != WPE_ESC)
  {
   e_auto_indent_key_close(e, &indent_step);   /* the last key never reached its end */
+  /* What came behind a box (a reply, a build's end, a stop, an answer,
+     program output) is shown before the next key is read, and before the
+     entry check below asks which window the user sees.  Showing it can close
+     the last window or put another one on top: a build that ended behind a
+     box gives the keys back to the window the user was in, and that window
+     can be the project list.  The screen's owner runs it only while a text
+     window is on top and no box owns the screen, so an empty desk or a list
+     in front leaves the loop where it was. */
+  wpe_paint_replay_if_idle();
+  if (e->mxedt >= 1)
+   f = e->f[e->mxedt];            /* the window on top now is the one asked about */
+  /* One check, asked of the window that is on top now, covers both the
+     window the replay left there and the one the last key left there, so the
+     lines below never read a list's rows as a file's text. */
   if (e->mxedt < 1) c = WpeHandleMainmenu(-1, f);
-  else if (!DTMD_ISTEXT(f->dtmd))
+  else if (!e_window_is_text(f))
   {
+   /* The window on top holds no text, so this is not the loop for it: the
+      dispatcher enters the one that belongs to the window the user sees. */
    e_auto_indent_key_close(e, &indent_step);
    return(0);
   }
   else
   {
-   /* What came behind a box (a reply, a build's end, a stop, an answer,
-      program output) is shown now, before the next key is read. */
-   wpe_paint_replay_if_idle();
-   if (e->mxedt < 1)
-    continue;                     /* what was shown closed the last window */
-   f = e->f[e->mxedt];            /* or put another one on top */
    if (f->save > f->ed->maxchg) e_autosave(f);
    e_buffer_depth_check(f->b);
    e_buffer_marks_inside(f->b);   /* no mark or Shift anchor past a row's end */
    e_find_resume_check(f->b);     /* a cursor that left a search hit no longer goes on from it */
    wpe_closed_key_wait();         /* a refusal said while waiting always says */
-   c = e_fold_key(e_getch());
-   /* A build ending while the editor waited for this key may have put
-      another window on top (the jump to its first error): the key belongs
-      to the window the user now sees. */
+   c = e_getch();
+   /* A build that ended while the editor waited for this key may have put
+      another window on top.  The display says so with a code of its own and
+      no physical key was consumed, so the loop simply goes round: its entry
+      check is then asked of the window the user now sees.  A typed U+07D8 is
+      that character and not this notice, so the reader's own answer decides. */
+   if (e_key_is_display_notice(c, WPE_TOP_CHANGED))
+   {
+    if (e->mxedt >= 1)
+     f = e->f[e->mxedt];
+    continue;
+   }
+   c = e_fold_key(c);
    f = e->f[e->mxedt];
    b = f->b;
    s = f->s;
@@ -1283,7 +1362,10 @@ int e_eingabe(ECNT *e)
 #ifdef WPE_AI
   wpe_ai_flash_clear(f);          /* any key clears a one-shot status-line flash */
 #endif
-  if (c == WPE_RESIZE)
+  /* A new size is the display's notice and not a key: the loop goes round and
+     lays the desk out again.  A typed U+07D2 is that character, so the
+     reader's own answer tells the two apart. */
+  if (e_key_is_display_notice(c, WPE_RESIZE))
    continue;
   if (c == WPE_SCROLL_UP || c == WPE_SCROLL_DOWN)
   {
@@ -4989,10 +5071,11 @@ int e_make_rudo(FENSTER *f, int sw)
  SCHIRM *s;
  int i, r;
 
- for (i = f->ed->mxedt; i > 0 && !DTMD_ISTEXT(f->ed->f[i]->dtmd); i--);
- if (i <= 0) return(0);
- e_switch_window(f->ed->edt[i], f);
- f = f->ed->f[f->ed->mxedt];
+ /* Undo and Redo act on the window the user is looking at, or say why not:
+    they used to reach down to the first text window and undo a change in a
+    file the user could not see. */
+ f = e_edit_window(f, sw ? "Redo" : "Undo");
+ if (f == NULL) return(0);
 #ifdef WPE_AI
  if (e_undo_waits_for_the_assistant(f))
   return(0);

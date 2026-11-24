@@ -161,6 +161,39 @@ void wpe_closed_say(FENSTER *f, WpeClosedWhy why)
 }
 
 /**
+ * wpe_closed_say_needs_text - Say that a command needs a window with text.
+ * @f: the window on top; @action: the command's own name as the key reference
+ * and the menus print it, or NULL for the generic word.
+ *
+ * What the user sees: one line on the status row naming the command and what
+ * it needs, kept until the next key and said at most once for this key, the
+ * same latch the refusals above use, so a prefix letter, a function key and a
+ * menu row all answer alike.  The window stays on top: no box to dismiss, no
+ * beep, and nothing behind it is changed.
+ */
+void wpe_closed_say_needs_text(FENSTER *f, const char *action)
+{
+ char line[E_SAY_NEEDS_TEXT_ROOM];
+
+ if (closed_in_event)
+ {
+  if (closed_said_for_this_key)
+   return;
+  closed_said_for_this_key = 1;
+ }
+ /* A command name too long for the row is left out whole rather than cut,
+    and the generic word takes its place: the user still learns that the
+    command needs a text window.  When even that does not fit, the row keeps
+    what it had. */
+ if (WPE_FMT_WHOLE(line, E_SAY_NEEDS_TEXT,
+                   action ? action : E_SAY_NEEDS_TEXT_DEFAULT) != WPE_FMT_OK &&
+     WPE_FMT_WHOLE(line, E_SAY_NEEDS_TEXT,
+                   E_SAY_NEEDS_TEXT_DEFAULT) != WPE_FMT_OK)
+  return;
+ e_status_say_until_key(f, line);
+}
+
+/**
  * wpe_window_refuses_edit - The ask of a command about to change a window.
  * @f: the window the command would change.
  * Return: 1 when @f is closed (the reason is said), 0 when the command may go on.
@@ -177,28 +210,27 @@ int wpe_window_refuses_edit(FENSTER *f)
 
 /**
  * e_edit_window - The window a user edit command acts on, if it may.
- * @f: the window the command came from.
+ * @f: the window the command came from; @action: the command's own name, as
+ * the key reference and the menus print it.
  *
- * The first line of every command that changes text: finds the text window
- * on top (a command from a list or a dialog acts on the text behind it),
- * brings it to the front, and refuses before anything else happens when it
- * is closed.
- * Return: the window, or NULL when no text window is open or when it
- * refuses the edit (said).
+ * The first line of every command that changes text.  What the user gets:
+ * the command acts on the window he is looking at, or says why not.  A window
+ * that holds no text (the File Manager, a list window, a dropdown) is refused
+ * with one line naming the command, and nothing behind it is changed: the old
+ * walk down to the first text window is gone, so a paste with the File
+ * Manager on top no longer edits a file the user cannot see.
+ * Return: the window, or NULL when it holds no text (said) or refuses the
+ * edit (said).
  */
-FENSTER *e_edit_window(FENSTER *f)
+FENSTER *e_edit_window(FENSTER *f, const char *action)
 {
- int i;
+ FENSTER *top = e_action_text_window(f, action);
 
- for (i = f->ed->mxedt; i > 0 && !DTMD_ISTEXT(f->ed->f[i]->dtmd); i--)
-  ;
- if (i <= 0)
+ if (top == NULL)
   return(NULL);
- e_switch_window(f->ed->edt[i], f);
- f = f->ed->f[f->ed->mxedt];
- if (wpe_window_refuses_edit(f))
+ if (wpe_window_refuses_edit(top))
   return(NULL);
- return(f);
+ return(top);
 }
 
 /**

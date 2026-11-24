@@ -172,6 +172,27 @@ Mark word is in the Block menu with the Modern keys and in the Selection
 block mode.  A block command with nothing marked says @samp{Nothing is marked}
 on the status row.
 
+@cindex text window, block commands
+A block command works on the text of a file, so it works on the window you
+are looking at.  With the File Manager, the project list or the window list on
+top there is no text to mark or to paste into, and the command says so on the
+status row: @samp{Copy block needs a text window}, naming the command you
+asked for.  Nothing opens, nothing beeps, and no file behind that window is
+changed.  Search commands (@samp{Find}, @samp{Replace}, @samp{Search again},
+@samp{Go to line}) and the paste of the clipboard answer the same way, because
+they too work on a file's text.
+
+A window that holds no text keeps most keys for itself, so no key reaches a
+block command from one: the File Manager reads @kbd{Ctrl-K} as its own copy
+command and the project list does nothing with it.  What you can see there is
+a language-server command's refusal.  With the File Manager or the project
+list on top, @kbd{Alt-Q U} says @samp{Highlight uses needs a text window},
+@kbd{Alt-Q N} says @samp{Rename needs a text window} and @kbd{Alt-Q ?} says
+@samp{Language server menu needs a text window}.  The Modern style binds the
+same commands to keys of their own, and from the project list @kbd{F2},
+@kbd{F12} and @kbd{Ctrl-Space} say it as well.  The window you were in stays
+as it was, and no file behind it changes.
+
 Indent and unindent move each line of the block half a Tabstop.  When
 the last thing an unindent takes is a tab worth more columns than that,
 the columns beyond come back as blanks, so the line moves exactly half a

@@ -1726,9 +1726,16 @@ static int buffer_shell_window(BUFFER *shell)
  }
  memset(fn, 0, sizeof(FENSTER));
  memset(sn, 0, sizeof(SCHIRM));
- fn->s = sn;
- fn->b = shell;
  fn->ed = NULL;
+ /* The shell's private window holds its text like any other window, so the
+    buffer's own readers can ask the kind's owner instead of trusting that a
+    window with a buffer pointer always has a screen beside it. */
+ if (!e_window_hold_text(fn, shell, sn))
+ {
+  free(sn);
+  free(fn);
+  return(E_BUFFER_NOMEM);
+ }
  shell->f = fn;
  return(E_BUFFER_OK);
 }
@@ -1829,6 +1836,7 @@ void e_buffer_shell_free(BUFFER *shell)
 #endif
    free(shell->f->s);
   }
+  e_window_drop(shell->f);
   free(shell->f);
  }
  if (shell->bf != NULL)

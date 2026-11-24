@@ -46,6 +46,7 @@ typedef struct
  void (*box_opens)(void);           /* a box takes the screen */
  void (*say_lost)(const char *what);   /* a refused paint, said on the status row */
  int  (*take_key)(int want);        /* the display's key taken without waiting */
+ unsigned long (*top_count)(void);  /* how often what is on top has changed */
 } WpePaintDesk;
 
 void wpe_paint_desk_set(const WpePaintDesk *desk);

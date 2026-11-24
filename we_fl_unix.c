@@ -149,6 +149,7 @@ int WpeCreateFileManager(int sw, ECNT *cn, char *dirct)
   cn->curedt = j;
   (cn->mxedt)++;
   cn->edt[cn->mxedt] = j;
+  e_window_stack_changed();      /* a window came to the front */
 
   /* allocate window structure */
   if((f = (FENSTER *)MALLOC(sizeof(FENSTER))) == NULL)
@@ -156,8 +157,10 @@ int WpeCreateFileManager(int sw, ECNT *cn, char *dirct)
   wpe_write_identity_forget(&f->file_id);
   wpe_write_copies_forget(&f->copies);
   f->no_file = 0;
+  e_window_held_forget(f);   /* the kind's owner makes its block on first hold */
 
-  /* allocate buffer related to the window (NOT proper type, later casted) */
+  /* allocate the File Manager's lists, which the window holds through the
+     kind's owner (e_window_hold_files) and never as a text buffer */
   if((b = (FLBFFR *) MALLOC(sizeof(FLBFFR))) == NULL)
     e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
 
@@ -249,7 +252,11 @@ int WpeCreateFileManager(int sw, ECNT *cn, char *dirct)
   f->fd.sn = 0;
   f->fd.rn = 0;
 
-  f->b = (BUFFER *)b;
+  /* The window holds the File Manager's own lists, recorded as such by the
+     kind's owner: from here on no command can read them as a file's text,
+     and the window has no view state to read either. */
+  if(!e_window_hold_files(f, b))
+    e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
   /* the find pattern can only be 79 see FIND structure */
   if((b->rdfile = MALLOC(80)) == NULL)
     e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
@@ -3439,11 +3446,13 @@ int WpePrintFile(FENSTER *f)
  size_t          size;
  int             c;
 
- for (c = f->ed->mxedt; c > 0 && !DTMD_ISTEXT(f->ed->f[c]->dtmd); c--)
-  ;
- if (c <= 0)
+ /* Print acts on the window the user is looking at, or says why not: it used
+    to reach down to the first text window and print a file the user could
+    not see, without even bringing it to the front.  Printing only reads the
+    text, so a window the user cannot change is still printable. */
+ f = e_action_text_window(f, "Print");
+ if (f == NULL)
    return(0);
- f = f->ed->f[c];
 
  if (strcmp(f->ed->print_cmd, "") == 0)
  {
@@ -4155,12 +4164,14 @@ int e_data_first(int sw, ECNT *cn, char *nstr)
   cn->curedt = j;
   (cn->mxedt)++;
   cn->edt[cn->mxedt] = j;
+  e_window_stack_changed();      /* a window came to the front */
 
   if((f = (FENSTER *) MALLOC(sizeof(FENSTER))) == NULL)
     e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
   wpe_write_identity_forget(&f->file_id);
   wpe_write_copies_forget(&f->copies);
   f->no_file = 0;
+  e_window_held_forget(f);   /* the kind's owner makes its block on first hold */
   if((fw = (FLWND *) MALLOC(sizeof(FLWND))) == NULL)
     e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
   f->fb = cn->fb;
@@ -4235,7 +4246,11 @@ int e_data_first(int sw, ECNT *cn, char *nstr)
     f->nblst = 5;
   }
   WpeMouseRestoreShape();
-  f->b = (BUFFER *) fw;
+  /* The window holds these rows, and says which list they are: the kind
+     travels with the payload instead of living in the insert mode, where a
+     text command's guard used to read it as "insert control characters". */
+  if(!e_window_hold_list(f, fw, (WpeListKind)sw))
+    e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
   fw->df = df;
 
   fw->mxa = f->a.x;
@@ -4427,14 +4442,14 @@ int e_data_eingabe(ECNT * cn)
            losing focus (the FM window is no longer active). */
         WpeCreateFileManager(5, f->ed, NULL);
         WpeHandleFileManager(f->ed);
-        e_p_df[f->ins - 4] = fw->df;
+        e_p_df[e_project_list_slot((WpeListKind)f->ins)] = fw->df;
         c = AltF;
         f->save = 1;
       }
       else if(f->ins > 4 && f->ins < 7)
       {
         e_p_add_df(fw, f->ins);
-        e_p_df[f->ins - 4] = fw->df;
+        e_p_df[e_project_list_slot((WpeListKind)f->ins)] = fw->df;
         c = AltF;
       }
 #endif

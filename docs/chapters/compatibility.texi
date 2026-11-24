@@ -1508,4 +1508,30 @@ file it opened, keeping the special bits it had, and never through a link that
 takes the name while the change is made, and not at all when another file
 has taken the script's name since the window read it, so Ctrl-F9 never makes
 someone else's file executable.
+
+@item A command that works on text, asked of a window that has none
+The original kept the kind of a window in the same field that held its
+payload, so a command could read a list's rows as a file's text.  Two keys
+reached that.  A language-server command with the File Manager or the project
+list on top took the editor down, and a key pressed after a build ended was
+read through the window the build had just replaced.  A third did neither and
+was simply wrong: with the File Manager on top, @kbd{Ctrl-V} pasted the
+clipboard into the text window behind it, so the paste landed in a file you
+could not see and not in the dialog you were working in.  xwpe keeps the kind
+and the payload in one owner, and a command that works on text now acts on the
+window you are looking at or says why not.  The status row reads
+@samp{Paste needs a text window}, or @samp{Rename needs a text window} for
+that command, naming the one you asked for, and nothing changes: no dialog to
+dismiss, no beep, and no file behind the window is edited.  The reason: a
+command must not edit a file you cannot see, and a refusal you can read beats
+a crash you cannot.
+
+@item A file you name after one of the editor's own windows
+The original recognised its own panes by their title.  So @command{wpe
+./Messages main.c} opened your file locked read-only and parsed the build's
+errors into it, and the next build closed it and put the pane in its place.
+xwpe marks a pane by the intent that opened it and never by the name it
+carries, so your file stays writable and keeps its own text.  The reason: a
+file's name is yours to choose, and only the editor opens the editor's own
+windows.
 @end table

@@ -20,6 +20,21 @@ Cannot reproduce:
      past the limit stays alive).
 
 Bugs fixed in 1.6.x:
+* Two keys could take the editor down by reading one kind of window as
+  another.  Alt-Q then U or N with the File Manager or the project list on top
+  read that window's payload as a file's text and crashed.  A key pressed just
+  after a build ended was read through the window the build had replaced, and
+  under a sanitizer build that wrote through a list's corner numbers.  A
+  window's kind and its payload now have one owner in we_winkind.c, the key
+  waits of all three displays report a window that changed under them, and a
+  command that works on text acts on the window you are looking at or says
+  "Rename needs a text window", naming the command, and changes nothing.  A
+  file you name after one of the editor's own panes stays yours, so `wpe
+  ./Messages main.c` no longer opens it read-only and parses the build's
+  errors into it.  The build no longer silences -Wincompatible-pointer-types,
+  so a payload of the wrong kind is a compile error again.  Rows:
+  tests/test_window_kind.py.  Rules held by tests/check-window-kind.sh, which
+  counts and carries its own selftest.
 * The assistant's changeset review knows what became of every file the
   checkpoint saw, not only which names it listed.  A file of yours that a run
   renamed (alone, with its folder, or in a git workspace an untracked or

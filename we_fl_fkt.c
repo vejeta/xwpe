@@ -770,14 +770,22 @@ int e_read_help(char *str, FENSTER *f, int sw)
  IFILE *fp;
  char *ptmp, tstr[WPE_HELP_LINE_SIZE];
  int i;
+ BUFFER *new_text;
 
  ptmp = e_lib_file(HELP_FILE);
  fp = e_i_fopen(ptmp, "rb");
  FREE(ptmp);
  if (!fp)
   return(1);
- e_close_buffer(f->b);
- if ((f->b = (BUFFER *) MALLOC(sizeof(BUFFER))) == NULL)
+ /* The help viewer takes a fresh buffer over the one it was opened with: the
+    kind's owner releases the old one and holds the new one, keeping the view
+    state the reader was given, so the window still holds text and nothing
+    else can read it as another kind's payload. */
+ e_close_buffer(e_window_text(f));
+ new_text = (BUFFER *) MALLOC(sizeof(BUFFER));
+ if (new_text == NULL)
+  e_error(e_msg[ERR_LOWMEM], 1, f->fb);
+ if (!e_window_replace_text(f, new_text))
   e_error(e_msg[ERR_LOWMEM], 1, f->fb);
  e_buffer_init(f->b, f->ed, f, f->ed->maxcol, E_BUFFER_HISTORY_FULL);
  e_buffer_mark_view(f->b);
@@ -1398,7 +1406,9 @@ static const char info_link_end[] = { ',', '\n', '\0' };
 char *e_mk_info_pt(char *str, char *node)
 {
  char *ptmp, *name;
- const char *from = str;
+ /* The search only moves this along, never writes through it, and keeping it
+    the caller's own type is what lets strstr's answer assign to ptmp. */
+ char *from = str;
 
  do
  {
@@ -1457,6 +1467,7 @@ int e_read_info(char *str, FENSTER *f, char *file)
    IFILE *fp = NULL;
    char *path = NULL, *ptmp, tstr[WPE_HELP_LINE_SIZE], *fstr;
    int i, sw = 0, bsw = 0;
+   BUFFER *new_text;
    if(!str) str = "Top";
    if(str[0] == HHD) str++;
    fstr = e_info_node_key(str);
@@ -1467,9 +1478,15 @@ int e_read_info(char *str, FENSTER *f, char *file)
       fp = e_i_fopen(path, "rb");
    } while(!fp && path && !e_unpack_stopped());
    if(!fp) {  FREE(fstr);  return(1);  }
-   e_close_buffer(f->b);
-   if( (f->b = (BUFFER *) MALLOC(sizeof(BUFFER))) == NULL)
-   e_error(e_msg[ERR_LOWMEM], 1, f->fb);
+   /* The info viewer takes a fresh buffer over the one it was opened with:
+      the kind's owner releases the old one and holds the new one, keeping
+      the view state the reader was given. */
+   e_close_buffer(e_window_text(f));
+   new_text = (BUFFER *) MALLOC(sizeof(BUFFER));
+   if(new_text == NULL)
+    e_error(e_msg[ERR_LOWMEM], 1, f->fb);
+   if(!e_window_replace_text(f, new_text))
+    e_error(e_msg[ERR_LOWMEM], 1, f->fb);
    e_buffer_init(f->b, f->ed, f, f->ed->maxcol, E_BUFFER_HISTORY_FULL);
    e_buffer_mark_view(f->b);
    if (f->b->mxlines != 1)

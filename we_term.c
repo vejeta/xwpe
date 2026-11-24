@@ -2156,6 +2156,7 @@ static int e_t_getch_poll(void)
  extern int e_d_async_pending;
  extern void e_d_place_cursor_in_messages(void);
  int c;
+ unsigned long top_before;        /* what was on top before the wait */
 #ifdef HAVE_LIBGPM
  /* GPM (bare Linux console) delivers mouse events on its own fd, not stdin.
     ncurses does not pump it here (we opened the gpm connection ourselves), so
@@ -2185,7 +2186,19 @@ static int e_t_getch_poll(void)
    e_t_input_ended();
   if (e_d_async_pending)
    e_d_place_cursor_in_messages();
+  top_before = e_window_top_count();
   e_fd_key_wait(stdin_registered);
+  /* A build that ended while the editor waited can put another window on
+     top.  No physical key was consumed, so the wait says so with a code of
+     its own: the key loop that was waiting leaves, and the dispatcher
+     enters the loop of the window the user now sees.  A box that owns the
+     screen keeps the build's end behind itself, so only the editor's own
+     loops, at depth 0, are told. */
+  if (e_window_top_count() != top_before && wpe_paint_modal_depth() == 0)
+  {
+   e_input_was_char = 0;          /* the editor's own code is never a typed character */
+   return(WPE_TOP_CHANGED);
+  }
 #ifdef HAVE_LIBGPM
   if (g_gpm_click_pending)
   {
@@ -2649,13 +2662,22 @@ static void e_t_take_resize(void)
  * sequences ncurses did not assemble (arrows in a dialog, the keyboard
  * protocols' reports) and ESC followed by a key (Alt) into the one code the
  * editor acts on; a mouse report or a resize is applied and reported as
- * the editor's sentinel.
+ * the editor's sentinel.  A code this file's own reader invented (a wheel
+ * step, the window on top changing) is already the editor's word for what
+ * happened and goes out as it came in.
  * Return: the key code, a sentinel, or 0 for a sequence that is no key.
  */
 static int e_t_decode_key(int c, int mode)
 {
  extern int g_mouse_buttons;
 
+ /* The reader above curses' range makes these itself: looking one up in the
+    key table finds no binding and would answer "no key at all", so a wait
+    that has something to say says nothing.  A character the user typed keeps
+    the flag the reader set for it, which is what tells U+07D2 and U+07D8
+    from the resize and the top-window notice that share their numbers. */
+ if (wpe_key_is_synthetic(c))
+  return(c);
  if (c > KEY_CODE_YES && !e_input_was_char)
  {
   switch (c)

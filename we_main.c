@@ -105,9 +105,9 @@ char *e_msg[] = {  "Not Enough Memory",
 
 void ECNT_Init(ECNT *cn)
 {
- cn->mxedt = -1;
+ cn->mxedt = -1;         /* the desktop's start value: not the stack top */
  cn->curedt = 0;
- cn->edt[0] = 0;
+ cn->edt[0] = 0;         /* the clipboard's slot: not the stack top */
  cn->fb = NULL;
  cn->print_cmd = WpeStrdup(PRNTCMD);
 

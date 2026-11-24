@@ -144,21 +144,26 @@ void e_block_record_keep(Undo *rec, BUFFER *b, int x, int y)
 }
 
 /**
- * e_blk_text_window - The text window on top, brought to the front: the
- * window a block command acts on.
- * @f: the window the command came from.
- * Return: the window, or NULL when no text window is open.
+ * e_blk_text_window - The window a block command acts on, if it holds text.
+ * @f: the window the command came from; @action: the command's own name, as
+ * the key reference and the menus print it, or NULL for the generic word.
+ *
+ * What the user gets: a block command acts on the window he is looking at,
+ * or says why not.  It used to walk down the stack to the first text window
+ * and bring it to the front, so Ctrl-K C with the File Manager on top cut a
+ * block out of a file the user could not see and could not undo from where
+ * he was.  Now the status row names the command and says it needs a text
+ * window, and nothing changes.
+ *
+ * This asks the kind only.  Whether the window also refuses an edit is the
+ * closed owner's question, and each command asks it where it matters: a
+ * command that only reads the text (Copy block, Write block) must not be
+ * refused for a window the user cannot change.
+ * Return: the window, or NULL when it holds no text (said).
  */
-static FENSTER *e_blk_text_window(FENSTER *f)
+static FENSTER *e_blk_text_window(FENSTER *f, const char *action)
 {
- int i;
-
- for (i = f->ed->mxedt; i > 0 && !DTMD_ISTEXT(f->ed->f[i]->dtmd); i--)
-  ;
- if (i <= 0)
-  return(NULL);
- e_switch_window(f->ed->edt[i], f);
- return(f->ed->f[f->ed->mxedt]);
+ return(e_action_text_window(f, action));
 }
 
 /**
@@ -358,7 +363,8 @@ int e_block_delete_marked(FENSTER *f)
 /*	delete block */
 int e_blck_del(FENSTER *f)
 {
- if ((f = e_blk_text_window(f)) == NULL || e_blk_refuse_unmarked(f, 1))
+ if ((f = e_blk_text_window(f, wpe_action_name(WPE_ACT_BLOCK_DELETE))) == NULL ||
+     e_blk_refuse_unmarked(f, 1))
   return(0);
  if (wpe_window_locked_for_now(f))
   return(WPE_ESC);
@@ -374,12 +380,9 @@ int e_blck_dup(char *dup, FENSTER *f)
  SCHIRM *s;
  int i;
 
- for (i = f->ed->mxedt; i > 0 && !DTMD_ISTEXT(f->ed->f[i]->dtmd); i--)
-  ;
- if (i <= 0)
+ f = e_blk_text_window(f, wpe_action_name(WPE_ACT_EDIT_COPY));
+ if (f == NULL)
   return(0);
- e_switch_window(f->ed->edt[i], f);
- f = f->ed->f[f->ed->mxedt];
  if (wpe_window_locked_for_now(f))
   return(0);
  b = f->b;  s = f->s;
@@ -423,6 +426,7 @@ int e_show_clipboard(FENSTER *f)
  cn->curedt=j;
  (cn->mxedt)++;
  cn->edt[cn->mxedt]=j;
+ e_window_stack_changed();       /* the clipboard's viewer came to the front */
 
  f = cn->f[cn->mxedt] = cn->f[0];
  f->ins = WPE_INS_READONLY;   /* the Show Buffer is a read-only viewer: no typing/paste/copy,
@@ -605,12 +609,9 @@ int e_edt_copy_block(FENSTER *f)
  BUFFER *b0 = f->ed->f[0]->b;
  int i, save;
 
- for (i = f->ed->mxedt; i > 0 && !DTMD_ISTEXT(f->ed->f[i]->dtmd); i--)
-  ;
- if (i <= 0)
+ f = e_blk_text_window(f, wpe_action_name(WPE_ACT_BLOCK_COPY));
+ if (f == NULL)
   return(E_COPY_NOT_DONE);
- e_switch_window(f->ed->edt[i], f);
- f = f->ed->f[f->ed->mxedt];
  b = f->b;  save = f->save;
  /* The only window that must NOT be a copy source is the clipboard viewer
     itself (window 0): the code below frees window 0's lines and then copies
@@ -718,12 +719,9 @@ int e_edt_einf(FENSTER *f)
 
  e_clip_pull_os_into_buffer(f->ed->f[0]);   /* merge: ^V from the OS clipboard */
 
- for (i = f->ed->mxedt; i > 0 && !DTMD_ISTEXT(f->ed->f[i]->dtmd); i--)
-  ;
- if (i <= 0)
+ f = e_blk_text_window(f, wpe_action_name(WPE_ACT_EDIT_PASTE));
+ if (f == NULL)
   return(0);
- e_switch_window(f->ed->edt[i], f);
- f = f->ed->f[f->ed->mxedt];
  b = f->b;
  if (wpe_window_locked_for_now(f))
   return(0);
@@ -811,7 +809,8 @@ int e_block_move_marked(FENSTER *f)
 /*   move block within window */
 int e_blck_move(FENSTER *f)
 {
- if ((f = e_blk_text_window(f)) == NULL || e_blk_refuse_unmarked(f, 1))
+ if ((f = e_blk_text_window(f, wpe_action_name(WPE_ACT_BLOCK_MOVE))) == NULL ||
+     e_blk_refuse_unmarked(f, 1))
   return(0);
  if (e_block_move_marked(f) == E_BLOCK_NOMEM)
   wpe_buffer_say_nomem(f->b, "the block move");
@@ -1744,12 +1743,9 @@ int e_blck_copy(FENSTER *f)
  Undo *rec = NULL;
  int i;
 
- for (i = f->ed->mxedt; i > 0 && !DTMD_ISTEXT(f->ed->f[i]->dtmd); i--)
-  ;
- if (i <= 0)
+ f = e_blk_text_window(f, wpe_action_name(WPE_ACT_BLOCK_COPY));
+ if (f == NULL)
   return(0);
- e_switch_window(f->ed->edt[i], f);
- f = f->ed->f[f->ed->mxedt];
  b = f->b;
  if (e_blk_refuse_unmarked(f, 0))
   return(0);
@@ -2034,12 +2030,9 @@ int e_blck_hide(FENSTER *f)
  POINT origin = e_set_pnt(0, 0);
  int i;
 
- for (i = f->ed->mxedt; i > 0 && !DTMD_ISTEXT(f->ed->f[i]->dtmd); i--)
-  ;
- if (i <= 0)
+ f = e_blk_text_window(f, wpe_action_name(WPE_ACT_BLOCK_HIDE));
+ if (f == NULL)
   return(0);
- e_switch_window(f->ed->edt[i], f);
- f = f->ed->f[f->ed->mxedt];
  e_buffer_block_set(f->b, &origin, &origin);
  e_schirm(f, 1);
  return(0);
@@ -2050,11 +2043,8 @@ int e_blck_begin(FENSTER *f)
 {
  int i;
 
- for (i = f->ed->mxedt; i > 0 && !DTMD_ISTEXT(f->ed->f[i]->dtmd); i--)
-  ;
- if (i <= 0) return(0);
- e_switch_window(f->ed->edt[i], f);
- f = f->ed->f[f->ed->mxedt];
+ f = e_blk_text_window(f, wpe_action_name(WPE_ACT_BLOCK_BEGIN));
+ if (f == NULL) return(0);
  /* Modern (default): Begin Mark starts a FRESH, empty block at the cursor,
     so re-marking clears any stale end left over from a previous block (e.g.
     the destination marks of a just-completed Copy/Move) -- End Mark (^K K)
@@ -2074,12 +2064,9 @@ int e_blck_end(FENSTER *f)
 {
  int i;
 
- for (i = f->ed->mxedt; i > 0 && !DTMD_ISTEXT(f->ed->f[i]->dtmd); i--)
-  ;
- if (i <= 0)
+ f = e_blk_text_window(f, wpe_action_name(WPE_ACT_BLOCK_END));
+ if (f == NULL)
   return(0);
- e_switch_window(f->ed->edt[i], f);
- f = f->ed->f[f->ed->mxedt];
  e_buffer_mark_from(f->b, E_BUFFER_MARK_END, E_BUFFER_POS_CURSOR);
  e_schirm(f, 1);
  return(0);
@@ -2090,12 +2077,9 @@ int e_blck_gt_beg(FENSTER *f)
 {
  int i;
 
- for (i = f->ed->mxedt; i > 0 && !DTMD_ISTEXT(f->ed->f[i]->dtmd); i--)
-  ;
- if (i <= 0)
+ f = e_blk_text_window(f, wpe_action_name(WPE_ACT_BLOCK_GOTO_BEGIN));
+ if (f == NULL)
   return(0);
- e_switch_window(f->ed->edt[i], f);
- f = f->ed->f[f->ed->mxedt];
  e_buffer_cursor_from(f->b, E_BUFFER_MARK_BEGIN);
  e_schirm(f, 1);
  return(0);
@@ -2106,12 +2090,9 @@ int e_blck_gt_end(FENSTER *f)
 {
  int i;
 
- for (i = f->ed->mxedt; i > 0 && !DTMD_ISTEXT(f->ed->f[i]->dtmd); i--)
-  ;
- if (i <= 0)
+ f = e_blk_text_window(f, wpe_action_name(WPE_ACT_BLOCK_GOTO_END));
+ if (f == NULL)
   return(0);
- e_switch_window(f->ed->edt[i], f);
- f = f->ed->f[f->ed->mxedt];
  e_buffer_cursor_from(f->b, E_BUFFER_MARK_END);
  e_schirm(f, 1);
  return(0);
@@ -2122,12 +2103,9 @@ int e_blck_mrk_all(FENSTER *f)
 {
  int i;
 
- for (i = f->ed->mxedt; i > 0 && !DTMD_ISTEXT(f->ed->f[i]->dtmd); i--)
-  ;
- if (i <= 0)
+ f = e_blk_text_window(f, wpe_action_name(WPE_ACT_BLOCK_ALL));
+ if (f == NULL)
   return(0);
- e_switch_window(f->ed->edt[i], f);
- f = f->ed->f[f->ed->mxedt];
  e_buffer_block_all(f->b);
  e_schirm(f, 1);
  return(0);
@@ -2138,12 +2116,9 @@ int e_blck_mrk_line(FENSTER *f)
 {
  int i;
 
- for (i = f->ed->mxedt; i > 0 && !DTMD_ISTEXT(f->ed->f[i]->dtmd); i--)
-  ;
- if (i <= 0)
+ f = e_blk_text_window(f, wpe_action_name(WPE_ACT_BLOCK_LINE));
+ if (f == NULL)
   return(0);
- e_switch_window(f->ed->edt[i], f);
- f = f->ed->f[f->ed->mxedt];
  e_buffer_block_line(f->b);
  e_schirm(f, 1);
  return(0);
@@ -2162,12 +2137,9 @@ int e_blck_mrk_word(FENSTER *f)
 {
  int i;
 
- for (i = f->ed->mxedt; i > 0 && !DTMD_ISTEXT(f->ed->f[i]->dtmd); i--)
-  ;
- if (i <= 0)
+ f = e_blk_text_window(f, wpe_action_name(WPE_ACT_SELECT_WORD));
+ if (f == NULL)
   return(0);
- e_switch_window(f->ed->edt[i], f);
- f = f->ed->f[f->ed->mxedt];
  e_select_word_at_cursor(f->b);
  e_schirm(f, 1);
  return(0);
@@ -2250,11 +2222,8 @@ int e_blck_changecase(FENSTER *f, int mode)
  STRING *lines;
  int i, n, r;
 
- for (i = f->ed->mxedt; i > 0 && !DTMD_ISTEXT(f->ed->f[i]->dtmd); i--)
-  ;
- if (i <= 0) return(0);
- e_switch_window(f->ed->edt[i], f);
- f = f->ed->f[f->ed->mxedt];
+ f = e_blk_text_window(f, wpe_action_name(WPE_ACT_BLOCK_CASE));
+ if (f == NULL) return(0);
  b = f->b;
  screen = f->s;
  n = screen->mark_end.y - screen->mark_begin.y + 1;
@@ -2282,7 +2251,7 @@ int e_changecase_dialog(FENSTER *f)
 {
  static int b_sw = 0;
  int ret;
- FENSTER *text = e_blk_text_window(f);
+ FENSTER *text = e_blk_text_window(f, wpe_action_name(WPE_ACT_BLOCK_CASE));
  W_OPTSTR *o;
 
  if (text == NULL || e_blk_refuse_unmarked(text, 1))
@@ -2445,10 +2414,8 @@ int e_blck_to_left(FENSTER *f)
  char *tstr;
  EShift shift;
 
- for(i = f->ed->mxedt; i > 0 && !DTMD_ISTEXT(f->ed->f[i]->dtmd); i--);
- if(i <= 0) return(0);
- e_switch_window(f->ed->edt[i], f);
- f = f->ed->f[f->ed->mxedt];
+ f = e_blk_text_window(f, wpe_action_name(WPE_ACT_BLOCK_UNINDENT));
+ if(f == NULL) return(0);
  b = f->b;
  s = f->s;
  if (e_blk_refuse_unmarked(f, 1))
@@ -2487,12 +2454,9 @@ int e_blck_to_right(FENSTER *f)
  char *tstr;
  EShift shift;
 
- for (i = f->ed->mxedt; i > 0 && !DTMD_ISTEXT(f->ed->f[i]->dtmd); i--)
-  ;
- if (i <= 0)
+ f = e_blk_text_window(f, wpe_action_name(WPE_ACT_BLOCK_INDENT));
+ if (f == NULL)
   return(0);
- e_switch_window(f->ed->edt[i], f);
- f = f->ed->f[f->ed->mxedt];
  b = f->b;
  s = f->s;
  if (e_blk_refuse_unmarked(f, 1))
@@ -2524,7 +2488,7 @@ int e_blck_read(FENSTER *f)
 /*   write block to file   */
 int e_blck_write(FENSTER *f)
 {
- FENSTER *text = e_blk_text_window(f);
+ FENSTER *text = e_blk_text_window(f, wpe_action_name(WPE_ACT_BLOCK_WRITE));
 
  if (text == NULL || e_blk_refuse_unmarked(text, 0))
   return(0);
@@ -2557,12 +2521,9 @@ int e_rep_search(FENSTER *f)
  FIND *fd = &(f->ed->fd);
  int i, row;
 
- for (i = f->ed->mxedt; i > 0 && !DTMD_ISTEXT(f->ed->f[i]->dtmd); i--)
-  ;
- if (i <= 0)
+ f = e_blk_text_window(f, wpe_action_name(WPE_ACT_SEARCH_AGAIN));
+ if (f == NULL)
   return(0);
- e_switch_window(f->ed->edt[i], f);
- f = f->ed->f[f->ed->mxedt];
  b = f->b;  s = f->s;
  if (e_find_next(b, s, fd))
  {
@@ -2790,12 +2751,9 @@ int e_goto_line(FENSTER *f)
  SCHIRM *s;
  BUFFER *b;
 
- for (i = f->ed->mxedt; i > 0 && !DTMD_ISTEXT(f->ed->f[i]->dtmd); i--)
-  ;
- if (i <= 0)
+ f = e_blk_text_window(f, wpe_action_name(WPE_ACT_GOTO_LINE));
+ if (f == NULL)
   return(0);
- e_switch_window(f->ed->edt[i], f);
- f = f->ed->f[f->ed->mxedt];
  b = f->b;  s = f->s;
  if ((num = e_num_kst("Goto Line Number", b->b.y+1, WPE_NUM(WPE_NUM_LINE), f, 0, AltG)) > 0)
   e_buffer_cursor_set_col(b, num - 1, b->clsv);
@@ -2839,12 +2797,9 @@ int e_find(FENSTER *f)
 
  if (!o)
   return(-1);
- for (i = f->ed->mxedt; i > 0 && !DTMD_ISTEXT(f->ed->f[i]->dtmd); i--)
-  ;
- if (i <= 0)
+ f = e_blk_text_window(f, wpe_action_name(WPE_ACT_FIND));
+ if (f == NULL)
   return(0);
- e_switch_window(f->ed->edt[i], f);
- f = f->ed->f[f->ed->mxedt];
  b = f->b;  s = f->s;
  if (e_blck_dup(strTemp, f))
   strcpy(fd->search, strTemp);
@@ -3208,12 +3163,9 @@ int e_replace(FENSTER *f)
 
  if (!o)
   return(-1);
- for (i = f->ed->mxedt; i > 0 && !DTMD_ISTEXT(f->ed->f[i]->dtmd); i--)
-  ;
- if (i <= 0)
+ f = e_blk_text_window(f, wpe_action_name(WPE_ACT_REPLACE));
+ if (f == NULL)
   return(0);
- e_switch_window(f->ed->edt[i], f);
- f = f->ed->f[f->ed->mxedt];
  b = f->b;  s = f->s;
  if (e_blck_dup(strTemp, f))
   strcpy(fd->search, strTemp);

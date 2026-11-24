@@ -138,7 +138,7 @@ int e_puts(char *s, int xa, int ya, int frb)
    - one character after the text is space with color 'col'
    - color 'col3' is used in old style
 */
-void e_pr_str(int x, int y, char *str, int col, int b2, int n2, int col2,
+void e_pr_str(int x, int y, const char *str, int col, int b2, int n2, int col2,
   int col3)
 {
  int i, sw = 0;

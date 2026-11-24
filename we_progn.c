@@ -1507,9 +1507,10 @@ int e_mk_beauty(int sw, int ndif, FENSTER *f)
  int *vkcb = MALLOC(sizeof(int));
  POINT sa, se, sb;
 
- for (i = f->ed->mxedt; i > 0 && !DTMD_ISTEXT(f->ed->f[i]->dtmd); i--)
-  ;
- if (i <= 0)
+ /* Beautify acts on the window the user is looking at, or says why not and
+    gives back what it allocated before it asked. */
+ f = e_edit_window(f, "Beautify block");
+ if (f == NULL)
  {
   FREE(tstr);  FREE(bstr);  FREE(nvek);  FREE(ifvekb);
   FREE(ifvekr);  FREE(vkcs);  FREE(vkcb);
@@ -1519,9 +1520,7 @@ int e_mk_beauty(int sw, int ndif, FENSTER *f)
  *ifvekr = 0;
  *vkcs = 0;
  *vkcb = 0;
- e_switch_window(f->ed->edt[i], f);
  WpeMouseChangeShape(WpeWorkingShape);
- f = f->ed->f[f->ed->mxedt];
  b = f->b;
  s = f->s;
  sa = s->mark_begin;  se = s->mark_end;  sb = b->b;

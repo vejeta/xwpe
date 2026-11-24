@@ -225,6 +225,12 @@
 /* Shift-Tab, moving focus back in dialogs and the file manager.  It lives
    above 255 so no control byte (Ctrl-\ is 28) can be taken for it. */
 #define WPE_BTAB        2007
+/* What a display's key wait returns when the window on top changed while it
+   waited: a build ended and put the window the user was in back on top.  No
+   physical key is consumed, so the loop that waited simply leaves and the
+   dispatcher enters the loop of the window that is on top now -- the same
+   way WPE_RESIZE above is reported from the same waits. */
+#define WPE_TOP_CHANGED 2008
 /* Synthetic action code: open the language-server (LSP) action menu.  Carried by
    the "LSP" entry on the editor's bottom shortcut bar (mouse-clickable), handled
    in e_prog_switch.  Not a keyboard key -- the Alt-Q prefix is the keyboard path. */
@@ -234,3 +240,26 @@
    handled in e_prog_switch.  Not a keyboard key -- the Alt-G prefix is the
    keyboard path. */
 #define WPE_AI_MENU     2004
+
+/* The first and the last of the editor's own codes above.  Every one of them
+   is a word the editor invented for something that happened -- a wheel step,
+   a new size, the window on top changing -- and not a key any terminal sends,
+   so a key reader hands one on exactly as it made it and never looks it up in
+   a key table (where it is unbound and would come out as "no key at all").
+   They share their numeric range with Unicode (U+07D2 is WPE_RESIZE, U+07D8
+   is WPE_TOP_CHANGED), which is why a reader also says whether what it
+   returned was a typed character. */
+#define WPE_SYNTHETIC_FIRST WPE_SCROLL_UP
+#define WPE_SYNTHETIC_LAST  WPE_TOP_CHANGED
+
+/**
+ * wpe_key_is_synthetic - Is this code one of the editor's own, not a key?
+ * @c: what a key reader returned.
+ *
+ * What the user gains: a notice the editor invented reaches the loop that
+ * acts on it instead of being dropped as an unbound key, and a character he
+ * typed is never mistaken for one of them.
+ * Return: non-zero for one of the editor's own codes.
+ */
+#define wpe_key_is_synthetic(c) \
+ ((c) >= WPE_SYNTHETIC_FIRST && (c) <= WPE_SYNTHETIC_LAST)

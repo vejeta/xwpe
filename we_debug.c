@@ -8403,7 +8403,7 @@ static int e_d_debugger_launch(FENSTER *f, WpeStartPlan *plan)
  * he chose his own debugger over the folder's, E_D_EXEC_NOT_FOUND when the
  * debugger is not on PATH (said in a box).
  */
-int e_exec_deb(FENSTER *f, char *prog)
+int e_exec_deb(FENSTER *f, const char *prog)
 {
  WpeStartPlan *plan;
  int ret, use_own_debugger;
@@ -28494,7 +28494,7 @@ int e_deb_options(FENSTER *f)
  * the system cannot hold instead of running past a buffer or cutting it.
  * Return: 0 when it is, -1 when it is not, -2 when there is no PATH.
  */
-int e_test_command(char *str)
+int e_test_command(const char *str)
 {
  char found[WPE_PATH_SIZE];
 
@@ -33247,54 +33247,84 @@ extern OPTK WpeFillSubmenuItem(char *t, int x, char o, int (*fkt)());
    a pointer, so the strings must outlive the call). */
 static char g_lsp_menu_label[26][48];
 
+/* One row of the language server's command table: the action, the label the
+   menu prints, the letter after Alt-Q that runs it, and the command itself.
+   The menu and the Alt-Q prefix read this one table, so a letter and its menu
+   row run the same function and cannot drift apart, and the runner can ask
+   the kind's owner before it calls the row: a window that holds no text then
+   gets one sentence from every way in, instead of the command reading a
+   list's corner numbers as a row pointer. */
+struct WpeLspRow {
+ int action;                 /* WPE_ACT_LSP_*: the action's own id */
+ const char *label;          /* what the menu prints for it */
+ char key;                   /* the letter after Alt-Q */
+ int (*run)(FENSTER *);      /* the command */
+};
+
+static const struct WpeLspRow lsp_rows[] = {
+ { WPE_ACT_LSP_DIAGNOSTICS,        "Diagnostics",          'E', e_lsp_ui_diagnostics       },
+ { WPE_ACT_LSP_DEFINITION,         "Go to Definition",     'D', e_lsp_ui_definition        },
+ { WPE_ACT_LSP_IMPLEMENTATION,     "Go to Implementation", 'I', e_lsp_ui_implementation    },
+ { WPE_ACT_LSP_TYPE_DEFINITION,    "Go to Type",           'T', e_lsp_ui_type_definition   },
+ { WPE_ACT_LSP_HOVER,              "Hover (type/docs)",    'H', e_lsp_ui_hover             },
+ { WPE_ACT_LSP_COMPLETE,           "Complete",             'C', e_lsp_ui_complete          },
+ { WPE_ACT_LSP_REFERENCES,         "References",           'R', e_lsp_ui_references        },
+ { WPE_ACT_LSP_CALLERS,            "Incoming calls",       'B', e_lsp_ui_callers           },
+ { WPE_ACT_LSP_CALLEES,            "Outgoing calls",       'G', e_lsp_ui_callees           },
+ { WPE_ACT_LSP_SUPERTYPES,         "Supertypes",           'K', e_lsp_ui_supertypes        },
+ { WPE_ACT_LSP_SUBTYPES,           "Subtypes",             'J', e_lsp_ui_subtypes          },
+ { WPE_ACT_LSP_EXPAND_SELECTION,   "Expand selection",     'V', e_lsp_ui_expand_selection  },
+ { WPE_ACT_LSP_HIGHLIGHT,          "Highlight uses",       'U', e_lsp_ui_highlight         },
+ { WPE_ACT_LSP_INLAY,              "Inlay hints (toggle)", 'Y', e_lsp_ui_inlay             },
+ { WPE_ACT_LSP_SEMANTIC,           "Semantic colours",     'M', e_lsp_ui_semantic          },
+ { WPE_ACT_LSP_OUTLINE,            "Outline",              'O', e_lsp_ui_outline           },
+ { WPE_ACT_LSP_CODELENS,           "Code lenses",          'L', e_lsp_ui_codelens          },
+ { WPE_ACT_LSP_WORKSPACE_SYMBOLS,  "Workspace symbols",    'W', e_lsp_ui_workspace_symbols },
+ { WPE_ACT_LSP_CODE_ACTIONS,       "Code actions",         'A', e_lsp_ui_code_actions      },
+ { WPE_ACT_LSP_SIGNATURE,          "Signature help",       'S', e_lsp_ui_signature         },
+ { WPE_ACT_LSP_RENAME,             "Rename",               'N', e_lsp_ui_rename            },
+ { WPE_ACT_LSP_FORMAT,             "Format",               'F', e_lsp_ui_format            },
+ { WPE_ACT_LSP_NEXT_PROBLEM,       "Next problem",         '.', e_lsp_ui_next_problem      },
+ { WPE_ACT_LSP_PREV_PROBLEM,       "Prev problem",         ',', e_lsp_ui_prev_problem      }
+};
+
+#define LSP_ROW_COUNT ((int)(sizeof(lsp_rows) / sizeof(lsp_rows[0])))
+
+/* The table's row for an action, or NULL for one the table does not hold
+   (cancel, the menu itself, a key that stands for no action). */
+static const struct WpeLspRow *lsp_row_of(int action)
+{
+ int i;
+
+ for (i = 0; i < LSP_ROW_COUNT; i++)
+  if (lsp_rows[i].action == action)
+   return(&lsp_rows[i]);
+ return(NULL);
+}
+
 /* Build the language-server actions as top-menu-style dropdown rows: the action
    name on the left, its "Alt-Q X" shortcut right-aligned, and X (the key you
    press to run it -- in the menu or via the Alt-Q prefix) highlighted.  Reads
    and behaves exactly like a File/Edit submenu.  Returns the item count. */
 static int e_lsp_menu_items(OPTK *it)
 {
- static const struct { const char *name; char key; int (*fkt)(FENSTER *); } a[] = {
-  { "Diagnostics",          'E', e_lsp_ui_diagnostics       },
-  { "Go to Definition",     'D', e_lsp_ui_definition        },
-  { "Go to Implementation", 'I', e_lsp_ui_implementation    },
-  { "Go to Type",           'T', e_lsp_ui_type_definition   },
-  { "Hover (type/docs)",    'H', e_lsp_ui_hover             },
-  { "Complete",             'C', e_lsp_ui_complete          },
-  { "References",           'R', e_lsp_ui_references        },
-  { "Incoming calls",       'B', e_lsp_ui_callers           },
-  { "Outgoing calls",       'G', e_lsp_ui_callees           },
-  { "Supertypes",           'K', e_lsp_ui_supertypes        },
-  { "Subtypes",             'J', e_lsp_ui_subtypes          },
-  { "Expand selection",     'V', e_lsp_ui_expand_selection  },
-  { "Highlight uses",       'U', e_lsp_ui_highlight         },
-  { "Inlay hints (toggle)", 'Y', e_lsp_ui_inlay             },
-  { "Semantic colours",     'M', e_lsp_ui_semantic          },
-  { "Outline",              'O', e_lsp_ui_outline           },
-  { "Code lenses",          'L', e_lsp_ui_codelens          },
-  { "Workspace symbols",    'W', e_lsp_ui_workspace_symbols },
-  { "Code actions",         'A', e_lsp_ui_code_actions      },
-  { "Signature help",       'S', e_lsp_ui_signature         },
-  { "Rename",               'N', e_lsp_ui_rename            },
-  { "Format",               'F', e_lsp_ui_format            },
-  { "Next problem",         '.', e_lsp_ui_next_problem      },
-  { "Prev problem",         ',', e_lsp_ui_prev_problem      }
- };
- int i, n = (int)(sizeof(a) / sizeof(a[0]));
+ int i;
 
- for (i = 0; i < n; i++)
+ for (i = 0; i < LSP_ROW_COUNT; i++)
  {
   char code[12];
   int pad, hl;
-  snprintf(code, sizeof(code), "Alt-Q %c", a[i].key);          /* 7 chars */
-  pad = LSP_MENU_TEXTW - (int)strlen(a[i].name) - (int)strlen(code);
+  snprintf(code, sizeof(code), "Alt-Q %c", lsp_rows[i].key);   /* 7 chars */
+  pad = LSP_MENU_TEXTW - (int)strlen(lsp_rows[i].label) - (int)strlen(code);
   if (pad < 1)
    pad = 1;
   snprintf(g_lsp_menu_label[i], sizeof(g_lsp_menu_label[i]),
-           "%s%*s%s", a[i].name, pad, "", code);
+           "%s%*s%s", lsp_rows[i].label, pad, "", code);
   hl = (int)strlen(g_lsp_menu_label[i]) - 1;     /* the X in the right "Alt-Q X" */
-  it[i] = WpeFillSubmenuItem(g_lsp_menu_label[i], hl, a[i].key, a[i].fkt);
+  it[i] = WpeFillSubmenuItem(g_lsp_menu_label[i], hl, lsp_rows[i].key,
+                             lsp_rows[i].run);
  }
- return(n);
+ return(LSP_ROW_COUNT);
 }
 
 /* Column of the active window's bottom-bar "Metals" entry, so the dropdown opens
@@ -33324,6 +33354,12 @@ int e_lsp_ui_menu(FENSTER *f)
  OPTK items[26];
  int n, xa, xe, ya, ye, w, mx, verdict;
 
+ /* A window that holds no text gets the one sentence and no menu at all:
+    what the window holds is asked here, before the file's language is
+    guessed from its name, so the answer is about the window the user is
+    looking at and not about a title. */
+ if (!e_action_text_window(f, wpe_action_name(WPE_ACT_LSP_MENU)))
+  return(0);
  if (!e_lsp_server_label(f))
  {  e_error("Language server: unsupported file type.", 0, f->fb);  return(0);  }
  n = e_lsp_menu_items(items);
@@ -33381,61 +33417,23 @@ int e_lsp_ui_direct(FENSTER *f, int action)
 
 static int e_lsp_ui_run(FENSTER *f, int action)
 {
- switch (action)
- {
-  case WPE_ACT_LSP_DEFINITION:
-   return(e_lsp_ui_definition(f));
-  case WPE_ACT_LSP_IMPLEMENTATION:
-   return(e_lsp_ui_implementation(f));
-  case WPE_ACT_LSP_TYPE_DEFINITION:
-   return(e_lsp_ui_type_definition(f));
-  case WPE_ACT_LSP_HOVER:
-   return(e_lsp_ui_hover(f));
-  case WPE_ACT_LSP_COMPLETE:
-   return(e_lsp_ui_complete(f));
-  case WPE_ACT_LSP_REFERENCES:
-   return(e_lsp_ui_references(f));
-  case WPE_ACT_LSP_CALLERS:
-   return(e_lsp_ui_callers(f));        /* B = called By (incoming) */
-  case WPE_ACT_LSP_CALLEES:
-   return(e_lsp_ui_callees(f));        /* G = Goes to (outgoing)   */
-  case WPE_ACT_LSP_SUPERTYPES:
-   return(e_lsp_ui_supertypes(f));     /* K = up (vim) = supertypes */
-  case WPE_ACT_LSP_SUBTYPES:
-   return(e_lsp_ui_subtypes(f));       /* J = down (vim) = subtypes */
-  case WPE_ACT_LSP_EXPAND_SELECTION:
-   return(e_lsp_ui_expand_selection(f)); /* V = expand (Visual) selection */
-  case WPE_ACT_LSP_HIGHLIGHT:
-   return(e_lsp_ui_highlight(f));      /* U = Uses */
-  case WPE_ACT_LSP_INLAY:
-   return(e_lsp_ui_inlay(f));          /* Y = inlaY hints */
-  case WPE_ACT_LSP_SEMANTIC:
-   return(e_lsp_ui_semantic(f));       /* M = se(M)antic colours */
-  case WPE_ACT_LSP_CODELENS:
-   return(e_lsp_ui_codelens(f));       /* L = Lens */
-  case WPE_ACT_LSP_SIGNATURE:
-   return(e_lsp_ui_signature(f));
-  case WPE_ACT_LSP_WORKSPACE_SYMBOLS:
-   return(e_lsp_ui_workspace_symbols(f));
-  case WPE_ACT_LSP_CODE_ACTIONS:
-   return(e_lsp_ui_code_actions(f));
-  case WPE_ACT_LSP_FORMAT:
-   return(e_lsp_ui_format(f));
-  case WPE_ACT_LSP_RENAME:
-   return(e_lsp_ui_rename(f));
-  case WPE_ACT_LSP_OUTLINE:
-   return(e_lsp_ui_outline(f));
-  case WPE_ACT_LSP_DIAGNOSTICS:
-   return(e_lsp_ui_diagnostics(f));
-  case WPE_ACT_LSP_NEXT_PROBLEM:
-   return(e_lsp_ui_next_problem(f)); /* . = next problem (like F8)          */
-  case WPE_ACT_LSP_PREV_PROBLEM:
-   return(e_lsp_ui_prev_problem(f)); /* , = previous problem                */
-  case WPE_ACT_LSP_CANCEL:
-   return(0);                        /* cancel -- no action, no menu        */
-  default:
-   return(e_lsp_ui_menu(f));         /* '?', F1, anything else -> the menu  */
- }
+ const struct WpeLspRow *row;
+
+ if (action == WPE_ACT_LSP_CANCEL)
+  return(0);                        /* cancel -- no action, no menu        */
+ if (action == WPE_ACT_LSP_MENU)
+  return(e_lsp_ui_menu(f));         /* the menu asks the owner for itself  */
+ row = lsp_row_of(action);
+ if (row == NULL)
+  return(e_lsp_ui_menu(f));         /* '?', F1, anything else -> the menu  */
+ /* The letter was read before the command was chosen, so the refusal can
+    name it.  What the user gets: a language-server command asked of a window
+    that holds no text (the File Manager, the project list) says one line and
+    does nothing at all, instead of reading that window's payload as a file's
+    text -- which used to take the editor down outright for two letters. */
+ if (!e_action_text_window(f, wpe_action_name(action)))
+  return(0);
+ return(row->run(f));
 }
 
 /* Alt-Q: the language-server command prefix, in the Borland spirit of Ctrl-K for

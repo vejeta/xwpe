@@ -60,6 +60,16 @@ upward from the bar, listing every action with its letter.  Arrow keys move, the
 letter or a click picks, @key{ESC} closes.  @kbd{Alt-Q} then @key{ESC} cancels.
 @end itemize
 
+@cindex text window, language server commands
+@noindent
+@strong{The window an action acts on.}  Every action here works on the text of
+a file, so it acts on the window you are looking at.  With the File Manager,
+the project list or the window list on top there is no text to work on, and the
+command says so on the status row instead: @samp{Highlight uses needs a text
+window}, naming the action you asked for.  Nothing opens, nothing beeps, and no
+file behind that window is changed.  The Modern style's own keys for these
+actions reach the same place and answer the same way.
+
 @cindex columns, language server
 @cindex UTF-16, language server
 @noindent

@@ -2658,7 +2658,7 @@ int e_close_window(FENSTER *f)
  f = cn->f[cn->mxedt];
  if (f->dtmd == DTMD_FILEMANAGER)
  {
-  FLBFFR *b = (FLBFFR *)f->b;
+  FLBFFR *b = e_window_release_files(f);
 
   FREE(f->dirct);
   FREE(b->rdfile);
@@ -2668,11 +2668,13 @@ int e_close_window(FENSTER *f)
   FREE(b->dw);
   FREE(b);
   (cn->mxedt)--;
+  e_window_stack_changed();      /* another window is on top now */
   cn->curedt = cn->edt[cn->mxedt];
   e_close_view(f->pic, 1);
   if (f != f0 && f != NULL)
   {
    e_free_find(&f->fd);
+   e_window_drop(f);
    FREE(f);
   }
   if (cn->mxedt > 0)
@@ -2685,7 +2687,10 @@ int e_close_window(FENSTER *f)
  }
  if (f->dtmd == DTMD_DATA)
  {
-  FLWND *fw = (FLWND *)f->b;
+  /* Read the rows without taking them yet: a project list whose file refuses
+     to save stays open, and a window left holding nothing would paint and
+     take keys through a payload it no longer has. */
+  FLWND *fw = e_window_list(f);
   int swt = f->ins;
 
 #ifdef PROG
@@ -2693,17 +2698,20 @@ int e_close_window(FENSTER *f)
   if (swt == 4 && e_prj_save_before_close(f) != 0)
    return(WPE_ESC);
 #endif
+  (void)e_window_release_list(f);   /* the close is certain now */
   if (f->dirct)
    FREE(f->dirct);
   if (swt == 7)
    freedf(fw->df);
   FREE(fw);
   (cn->mxedt)--;
+  e_window_stack_changed();      /* another window is on top now */
   cn->curedt = cn->edt[cn->mxedt];
   e_close_view(f->pic, 1);
   if (f != f0 && f != NULL)
   {
    e_free_find(&f->fd);
+   e_window_drop(f);
    FREE(f);
   }
   if (cn->mxedt > 0 && (swt < 5 || swt == 7))
@@ -2739,10 +2747,16 @@ int e_close_window(FENSTER *f)
   e_lsp_window_closing(f);
 #endif
   e_close_remove_copies(f);
-  if (strcmp(f->datnam, "Messages") && strcmp(f->datnam, "Watches"))
-   e_close_buffer(f->b);
+  /* The build's and the debugger's own panes keep their buffer for the next
+     window that opens them; a file's text goes with the window.  Which of
+     the two this window is, is the pane the editor opened and never the
+     title it carries, so a file the user named "Messages" is closed like
+     any other file and the pane's buffer is not freed under it. */
+  if (e_window_pane(f) == WPE_PANE_MESSAGES ||
+      e_window_pane(f) == WPE_PANE_WATCHES)
+   e_window_text(f)->f = NULL;   /* kept for the next window: no window to keep in step */
   else
-   f->b->f = NULL;              /* kept for the next window: no window to keep in step */
+   e_close_buffer(e_window_text(f));
   if (f->dtmd == DTMD_HELP && f->ins == 8)
    e_help_free(f);
   if (f->datnam != NULL)
@@ -2770,11 +2784,13 @@ int e_close_window(FENSTER *f)
   }
  }
  (cn->mxedt)--;
+ e_window_stack_changed();       /* another window is on top now */
  cn->curedt = cn->edt[cn->mxedt];
  e_close_view(f->pic, 1);
  if (f != f0 && f != NULL)
  {
   e_free_find(&f->fd);
+  e_window_drop(f);
   FREE(f);
  }
  if (cn->mxedt > 0)
@@ -2828,6 +2844,11 @@ void e_switch_window(int num, FENSTER *f)
  cn->f[i] = ft;
  cn->edt[i] = te;
  cn->curedt = num;
+ /* A raise changes what is on top without changing how many windows there
+    are, so it is counted too: a key loop that compared pointers would miss
+    it, and go on with the payload it fetched for the window that was there
+    before. */
+ e_window_stack_changed();
  e_rep_win_tree(cn);
 }
 
@@ -3605,6 +3626,7 @@ int e_sv_window(int xa, int ya, int *n, struct dirfile *df, FENSTER *f)
  wpe_write_identity_forget(&f->file_id);
  wpe_write_copies_forget(&f->copies);
  f->no_file = 0;
+ e_window_held_forget(f);    /* the kind's owner makes its block on first hold */
  if (xe > MAXSCOL-3) {  xe = MAXSCOL - 3;  xa = xe - 21;  }
  if (ye > MAXSLNS-3) {  ye = MAXSLNS - 3;  ya = ye - 6;  }
  f->fb = cn->fb;
@@ -3620,7 +3642,10 @@ int e_sv_window(int xa, int ya, int *n, struct dirfile *df, FENSTER *f)
  f->datnam = "";
  if (!(f->pic = e_ed_kst(f, NULL, 1)))
  {  e_error(e_msg[ERR_LOWMEM], 0, f->fb);  return(0);  }
- f->b = (BUFFER *)fw;
+ /* The dropdown holds its rows and belongs to this box: it is never pushed
+    on the window stack, so no key loop is ever chosen for it. */
+ if (!e_window_hold_dropdown(f, fw))
+  e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
  fw->mxa = xa; fw->mxe = xe; fw->mya = ya; fw->mye = ye;
  fw->xa = xa+1; fw->xe = xe; fw->ya = ya+1; fw->ye = ye;
  fw->df = df; fw->srcha = 0; fw->f = f;
@@ -3637,7 +3662,9 @@ int e_sv_window(int xa, int ya, int *n, struct dirfile *df, FENSTER *f)
  } while(ret != WPE_CR && ret != WPE_ESC);
  *n = fw->nf;
  e_close_view(f->pic, 1);
+ (void)e_window_release_list(f);   /* the window holds nothing while it goes */
  FREE(fw);
+ e_window_drop(f);
  FREE(f);
  return(ret);
 }

@@ -173,7 +173,9 @@ int WpeDllInit(int *argc, char **argv)
  e_u_screen_reset = e_x_screen_reset;
  e_u_setlastpic = e_setlastpic;
  WpeMouseChangeShape = (void (*)(WpeMouseShape))WpeNullFunction;
- WpeMouseRestoreShape = (void (*)(WpeMouseShape))WpeNullFunction;
+ /* The restore hook takes nothing, as WpeNullFunction does: the cast that
+    used to stand here hid that mismatch from the compiler. */
+ WpeMouseRestoreShape = WpeNullFunction;
 /* WpeMouseChangeShape = WpeXMouseChangeShape;
  WpeMouseRestoreShape = WpeXMouseRestoreShape;*/
  WpeDisplayEnd = e_x_display_end;
@@ -2086,6 +2088,7 @@ int e_x_getch()
  unsigned int key_b;
  XSizeHints size_hints;
  int keyboard_watched;
+ unsigned long top_before;        /* what was on top before the wait */
 
  if (e_x_apply_pending_resize())
   return WPE_RESIZE;
@@ -2125,7 +2128,20 @@ int e_x_getch()
    if (e_d_async_pending)
     e_d_place_cursor_in_messages();
    XFlush(WpeXInfo.display);
+   top_before = e_window_top_count();
    e_fd_key_wait(keyboard_watched);
+   /* A build that ended while the editor waited can put another window on
+      top.  No physical key was consumed, so the wait says so with a code of
+      its own and the key loop leaves; a resize that arrived at the same time
+      is still pending and is laid out at the top of the next turn, exactly
+      as WPE_RESIZE above is.  A box that owns the screen keeps the build's
+      end behind itself, so only the editor's own loops, at depth 0, are
+      told. */
+   if (e_window_top_count() != top_before && wpe_paint_modal_depth() == 0)
+   {
+    e_input_was_char = 0;          /* the editor's own code is never a typed character */
+    return WPE_TOP_CHANGED;
+   }
   }
   if (!XPending(WpeXInfo.display))
    continue;

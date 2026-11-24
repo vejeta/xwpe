@@ -396,23 +396,22 @@ static void e_build_chain_end(FENSTER *f, int result, void *data);
 
 /**
  * e_p_source_window - The window a build is about: the topmost one that is
- * not Messages.
+ * not the Messages pane.
  * @cn: the desktop.
  *
  * A build step ends with Messages on top, and the user may have moved
  * between windows while it ran, so each step finds the source again rather
- * than keeping a window that may have been closed meanwhile.
+ * than keeping a window that may have been closed meanwhile.  The pane is
+ * stepped over by what it is and not by the title it carries, so a file the
+ * user named "Messages" is the source window the build returns to.
  * Return: the window.
  */
 static FENSTER *e_p_source_window(ECNT *cn)
 {
- int i;
+ FENSTER *f = e_window_top_except_pane(cn, WPE_PANE_MESSAGES);
 
- for (i = cn->mxedt; i > 0; i--)
-  if (strcmp(cn->f[i]->datnam, "Messages"))
-   break;
- if (i > 0)
-  return(cn->f[i]);
+ if (f != NULL)
+  return(f);
  return(cn->f[cn->mxedt-1]);
 }
 
@@ -3500,19 +3499,14 @@ void e_status_say_until_key(FENSTER *f, const char *text)
  * @cn: the desktop.
  *
  * Looked up afresh on every use: the user may close Messages while the
- * build runs, and its output is then kept until the window is back.
+ * build runs, and its output is then kept until the window is back.  Found
+ * by the pane the editor opened and never by the title, so a file the user
+ * named "Messages" is never taken for the build's own output.
  * Return: the window, or NULL.
  */
 FENSTER *e_build_messages(ECNT *cn)
 {
- int i;
-
- if (!cn)
-  return(NULL);
- for (i = cn->mxedt; i > 0; i--)
-  if (cn->f[i] && cn->f[i]->datnam && !strcmp(cn->f[i]->datnam, "Messages"))
-   return(cn->f[i]);
- return(NULL);
+ return(e_window_pane_find(cn, WPE_PANE_MESSAGES));
 }
 
 /**
@@ -4112,8 +4106,13 @@ static int e_build_step_verdict(FENSTER *mf, int ret)
 
 /**
  * e_build_continue - Run what follows a step: the next step, or the end.
- * @cont: the continuation (may be NULL); @f: the top window;
+ * @cont: the continuation (may be NULL); @f: the window the build is about;
  * @result: the step's result; @data: the continuation's own data.
+ *
+ * The window is the build's own, asked of the kind's owner, and not simply
+ * whatever is on top: a build that succeeded gives the keys back to the
+ * window the user was in, and that window can be the project list, which
+ * has no text for a continuation to read.
  */
 static void e_build_continue(e_build_cont cont, FENSTER *f, int result, void *data)
 {
@@ -4148,7 +4147,7 @@ static void e_build_step_end(void)
  result = e_build_step_verdict(mf, e_build_exit_code());
  e_buffer_cursor_set(mf->b, mf->b->mxlines - 1, mf->b->b.x);
  g_build.active = 0;
- e_build_continue(cont, cn->f[cn->mxedt], result, data);
+ e_build_continue(cont, e_p_source_window(cn), result, data);
  if (cwd_chg)
   e_build_popd(cwd_saved);
 }
@@ -4407,18 +4406,23 @@ static void e_build_tally(FENSTER *mf, int result)
 /**
  * e_build_return_to_source - After a build that succeeded, give the keys
  * back to the window the user was in instead of leaving them in Messages.
- * @cn: the desktop, Messages on top.
+ * @cn: the desktop, the Messages pane on top.
+ *
+ * The window the user was in gets the keys back whatever its kind, so a
+ * build started from the project list returns to the project list.  That is
+ * safe because the text loop notices the change at its own wait and leaves:
+ * the dispatcher then enters the loop that belongs to the window on top.
  */
 static void e_build_return_to_source(ECNT *cn)
 {
  FENSTER *mf = cn->f[cn->mxedt];
+ FENSTER *src = e_window_top_except_pane(cn, WPE_PANE_MESSAGES);
  int i;
 
- for (i = cn->mxedt; i > 0; i--)
-  if (strcmp(cn->f[i]->datnam, "Messages"))
-   break;
- if (i > 0 && i != cn->mxedt)
+ if (src != NULL && src != mf)
  {
+  for (i = cn->mxedt; i > 0 && cn->f[i] != src; i--)
+   ;
   e_switch_window(cn->edt[i], mf);
   return;
  }
@@ -4433,14 +4437,19 @@ static void e_build_return_to_source(ECNT *cn)
  *
  * A build ends from the fd loop, not from a key, so the key loop's own
  * repaint of the status row does not follow it: without this the window
- * the jump landed in still showed the old line and column.
+ * the jump landed in still showed the old line and column.  A window that
+ * holds no text has no line and column row, so only the screen is refreshed
+ * for it.
  */
 static void e_build_settle_top(ECNT *cn)
 {
  FENSTER *top = cn->f[cn->mxedt];
 
- e_cursor(top, 1);
- e_zlsplt(top);
+ if (e_window_is_text(top))
+ {
+  e_cursor(top, 1);
+  e_zlsplt(top);
+ }
  e_refresh();
 }
 
@@ -4553,7 +4562,7 @@ static void e_build_chain_end(FENSTER *f, int result, void *data)
  g_build_final = NULL;
  g_build_final_data = NULL;
  e_build_chain_report(cn, result);
- e_build_continue(done, cn->f[cn->mxedt], result, done_data);
+ e_build_continue(done, e_p_source_window(cn), result, done_data);
 }
 
 /**
@@ -4995,8 +5004,11 @@ static int e_p_scan_messages(FENSTER *f, BUFFER *b, struct e_p_run *run)
 
 int e_make_error_list(FENSTER *f)
 {
- ECNT *cn = f->ed;
- BUFFER *b = cn->f[cn->mxedt]->b;
+ /* The list is read from the window the caller handed over, which is the
+    pane the build wrote into, and not from whatever is on top: a build that
+    ends while the user is in another window used to parse that window's text
+    as the compiler's output. */
+ BUFFER *b = e_window_text(f);
  struct e_p_run run;
  int i, ret;
 
@@ -6026,7 +6038,9 @@ int e_prj_ob_btt(FENSTER *f, int sw)
 {
  FLWND *fw;
 
- e_data_first(sw+4, f->ed, f->ed->dirct);
+ /* The three project lists are asked by name: e_project_list_slot is the
+    inverse of this, so a new list kind cannot index outside the table. */
+ e_data_first(WPE_LISTKIND_PROJECT_FIRST + sw, f->ed, f->ed->dirct);
  if (sw == 0)
  {
   FENSTER *pf = f->ed->f[f->ed->mxedt];
@@ -10286,23 +10300,26 @@ int e_p_mess_win(char *header, int argc, char **argv, PIC **pic, FENSTER *f)
  * The old Messages window is closed and a new one opened.  The desktop is
  * taken before the close: when @f is the Messages window, closing it frees
  * @f, and reading the desktop through it afterwards was a use after free.
+ * The old pane is found by what the editor opened and never by the title it
+ * carries, so a file the user named "Messages" survives a build with its own
+ * text in it.
  * Return: 0, or WPE_ESC when the new window could not be opened.
  */
 int e_new_message(FENSTER *f)
 {
  ECNT *cn = f->ed;
+ FENSTER *old = e_window_pane_find(cn, WPE_PANE_MESSAGES);
  int i;
 
  if (e_p_m_buffer && e_buffer_clear(e_p_m_buffer) != E_BUFFER_OK)
   wpe_buffer_say_nomem(e_p_m_buffer, "the new build's messages");
- for (i = cn->mxedt; i > 0; i--)
-  if (cn->f[i] && cn->f[i]->datnam &&
-      !strcmp(cn->f[i]->datnam, "Messages"))
-  {
-   e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
-   e_close_window(cn->f[cn->mxedt]);
-   break;
-  }
+ if (old != NULL)
+ {
+  for (i = cn->mxedt; i > 0 && cn->f[i] != old; i--)
+   ;
+  e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
+  e_close_window(cn->f[cn->mxedt]);
+ }
  if (e_edit(cn, "Messages"))
   return(WPE_ESC);
  return(0);

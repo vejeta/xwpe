@@ -73,6 +73,7 @@ we_SOURCES = \
   we_edit.c \
   we_buffer.c \
   we_closed.c \
+  we_winkind.c \
   we_lineend.c \
   we_write.c \
   we_fileop.c \
@@ -419,7 +420,7 @@ metainfodir = $(datadir)/metainfo
 metainfo_DATA = io.codeberg.mendezr.xwpe.metainfo.xml
 
 # --- Unit tests ---
-check_PROGRAMS = test_brkmatch test_shtok test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease test_child test_childsig test_childfds test_childfds_loop test_childsafe test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner test_fileop edit_driver test_startcmd test_startplan test_path test_path_say test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_nocontext test_rowfind_macsim test_rowfind_reject test_rowfind_illseq test_rowfind_badengine test_rowfind_badengine_copy test_rowfind_boundary test_rowfind_boundary_copy test_rowfind_nolocale test_rowfind_illseq_copy test_listsel test_helpbuf test_number_parse test_errpat test_optval test_fmt test_numtext
+check_PROGRAMS = test_brkmatch test_shtok test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease test_child test_childsig test_childfds test_childfds_loop test_childsafe test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner test_fileop edit_driver test_startcmd test_startplan test_path test_path_say test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_nocontext test_rowfind_macsim test_rowfind_reject test_rowfind_illseq test_rowfind_badengine test_rowfind_badengine_copy test_rowfind_boundary test_rowfind_boundary_copy test_rowfind_nolocale test_rowfind_illseq_copy test_listsel test_helpbuf test_number_parse test_errpat test_optval test_fmt test_numtext test_winkind
 
 # The owner of a formatted text written into storage (we_fmt.c): a number is
 # shown in full or refused, a command or a path is never written cut, a
@@ -442,6 +443,14 @@ test_numtext_CFLAGS = $(TEST_CFLAGS)
 # names no subdirectory for an ancestor row.
 test_listsel_SOURCES = tests/test_listsel.c we_listsel.c
 test_listsel_CFLAGS = $(TEST_CFLAGS)
+
+# The owner of "which kind of window is this, and what does it hold"
+# (we_winkind.c): each kind answers only for its own payload, a window the
+# editor opened itself is known by the intent that opened it and not by its
+# title, a command asked of a window without text is refused naming the
+# command, and a close leaves nothing behind.
+test_winkind_SOURCES = tests/test_winkind.c we_winkind.c
+test_winkind_CFLAGS = $(TEST_CFLAGS)
 
 # The owner of a help or Info token taken into storage (we_helpbuf.c): a
 # token is written whole or cut at a character, never past its buffer, and
@@ -555,13 +564,13 @@ test_startcmd_CFLAGS = $(TEST_CFLAGS)
 # stubbed by the test).  Marks and breakpoints move with their lines, Undo
 # and Redo give back exactly the text in one key per action, a refused
 # allocation changes nothing, a view keeps no undo.
-test_splice_SOURCES = tests/test_splice.c we_buffer.c
+test_splice_SOURCES = tests/test_splice.c we_buffer.c we_winkind.c
 test_splice_CFLAGS = $(TEST_CFLAGS)
 
 # The owner of a file's line endings: we_lineend.c on the buffer's owner.
 # A file's bytes become rows and rows become bytes, in both styles, and
 # what the buffer made goes back into it as it was.
-test_lineend_SOURCES = tests/test_lineend.c we_buffer.c we_lineend.c
+test_lineend_SOURCES = tests/test_lineend.c we_buffer.c we_lineend.c we_winkind.c
 test_lineend_CFLAGS = $(TEST_CFLAGS)
 
 # The owner of writing the user's text (we_write.c), the editor's side
@@ -630,7 +639,7 @@ test_read_owner_LDFLAGS = $(TEST_EXPORT_DYNAMIC)
 
 # The same owner behind a line protocol, for the edit model's walks
 # (tests/edit_model/cdriver.py).  Built by `make check`, not run by it.
-edit_driver_SOURCES = tests/edit_driver.c we_buffer.c
+edit_driver_SOURCES = tests/edit_driver.c we_buffer.c we_winkind.c
 edit_driver_CFLAGS = $(TEST_CFLAGS)
 
 # The screen's owner: we_paint.c with the fd loop only (the desk is given
@@ -1028,10 +1037,14 @@ test_lsp_rust_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 # What this build contains: tests/check-build-config.sh is first, so a run's
 # log opens with the line `we --version` prints, and fails when configure, the
 # binary and the feature lists above do not say the same thing.
-TESTS = tests/check-build-config.sh test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv \
+#
+# tests/check-window-kind.sh follows it: a window's payload is asked through
+# we_winkind.c, the compiler still refuses a payload of the wrong kind, and
+# every write to the window stack is counted by the owner.
+TESTS = tests/check-build-config.sh tests/check-window-kind.sh test_lsp_positions test_checkheader test_fl_sel_len test_syntax_def test_fdloop test_clipboard test_lsp_buffer test_lsp_doctor test_lsp_semantic test_lsp_truecolor test_dap test_dap_dlv \
   test_dap_gdb test_dap_lldb test_dap_scala test_bsp_close test_lsp_requests \
   test_lsp_scala test_lsp_clangd test_lsp_python test_lsp_gopls test_lsp_rust test_debprompt test_debpath test_debsess test_debreq test_gdbmi test_menurows test_mousedrain test_termrelease \
-  test_brkmatch test_shtok test_child test_childsig test_childfds test_childfds_loop test_childsafe test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner test_fileop test_startcmd test_startplan test_path test_path_say test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_nocontext test_rowfind_macsim test_rowfind_reject test_rowfind_illseq test_rowfind_badengine test_rowfind_badengine_copy test_rowfind_boundary test_rowfind_boundary_copy test_rowfind_nolocale test_rowfind_illseq_copy test_listsel test_helpbuf test_number_parse test_errpat test_optval test_fmt test_numtext
+  test_brkmatch test_shtok test_child test_childsig test_childfds test_childfds_loop test_childsafe test_keymap test_bindings test_menus test_paint test_splice test_lineend test_write_owner test_fileop test_startcmd test_startplan test_path test_path_say test_progname test_fieldtake test_layout test_rowfind test_rowfind_copy test_rowfind_nocontext test_rowfind_macsim test_rowfind_reject test_rowfind_illseq test_rowfind_badengine test_rowfind_badengine_copy test_rowfind_boundary test_rowfind_boundary_copy test_rowfind_nolocale test_rowfind_illseq_copy test_listsel test_helpbuf test_number_parse test_errpat test_optval test_fmt test_numtext test_winkind
 
 # One owner of input and of waiting: tests/check-one-owner.sh reads the
 # undefined symbols of the editor's own objects (the list below) with $(NM)
@@ -1587,6 +1600,7 @@ EXTRA_DIST = \
   tests/nm-undefined.sh \
   tests/build-config.sh \
   tests/check-build-config.sh \
+  tests/check-window-kind.sh \
   we_ai_agent.c \
   tests/check-write-owner.sh \
   tests/check-read-owner.sh \
@@ -1635,6 +1649,7 @@ EXTRA_DIST = \
   tests/check-list-entry.sh \
   tests/list-entry.allow \
   tests/test_listsel.c \
+  tests/test_winkind.c \
   tests/test_helpbuf.c \
   tests/test_fmt.c \
   tests/test_fmt_sites.py \

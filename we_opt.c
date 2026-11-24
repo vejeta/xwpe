@@ -348,6 +348,7 @@ int e_clear_desk(FENSTER *f)
    return(WPE_ESC);
  }
  cn->mxedt = 0;
+ e_window_stack_changed();       /* every window but the clipboard is gone */
 #if  MOUSE
  fk_mouse(g);
 #endif

@@ -17,6 +17,7 @@
 
 #include "../we_paint.h"
 #include "../we_fdloop.h"
+#include "../keys.h"
 
 #define TRACE_FILE    "test_paint.trace"
 #define LOG_MAX       256
@@ -47,14 +48,25 @@ static int depth_seen_by_read = -1;
 static int boxes_opened = 0;
 static char lost_said[LOG_MAX];
 static int lost_times = 0;
+/* The key the display hands a box, and how often what is on top has changed.
+   A box's read is the one place both are under the test's own control: the
+   editor never lets a display report a top-window change while a box owns
+   the screen, and the rows below prove the owner would notice if it did. */
+static int key_on_the_box = KEY_ON_THE_BOX;
+static unsigned long top_changes = 0;
+static int top_moves_in_the_read = 0;
 
 static int desk_text_on_top(void) { return text_on_top; }
 
 static int desk_read_key(void)
 {
 	depth_seen_by_read = wpe_paint_modal_depth();
-	return KEY_ON_THE_BOX;
+	if (top_moves_in_the_read)
+		top_changes++;       /* the top changed while the box waited */
+	return key_on_the_box;
 }
+
+static unsigned long desk_top_count(void) { return top_changes; }
 
 static void desk_box_opens(void) { boxes_opened++; }
 
@@ -82,7 +94,7 @@ static int desk_take_key(int want)
 
 static const WpePaintDesk desk = {
 	desk_text_on_top, desk_read_key, desk_box_opens, desk_say_lost,
-	desk_take_key
+	desk_take_key, desk_top_count
 };
 
 /* ---- the paints: each appends its letter to the log ---- */
@@ -136,6 +148,9 @@ static void paint_asks_for_itself(void *data)
 static void reset(void)
 {
 	text_on_top = 1;
+	key_on_the_box = KEY_ON_THE_BOX;
+	top_changes = 0;
+	top_moves_in_the_read = 0;
 	while (wpe_paint_modal_depth() > 0)
 		wpe_paint_modal_leave();
 	wpe_paint_replay_if_idle();
@@ -325,6 +340,42 @@ static void test_a_box_reads_its_key_owning_the_screen(void)
 	chk("read with the box owning the screen", depth_seen_by_read, 1);
 	chk("the owner gives the screen back", wpe_paint_modal_depth(), 0);
 	chk("reading the next key is not a box opening", boxes_opened, 0);
+}
+
+/* A box owns the screen, so the owner keeps a build's end behind it and no
+   display reports the window on top changing: across a box's key read the
+   count stands still.  What the user would see if it did not is the crash
+   this owner exists for -- the key he pressed handled by a window that is
+   not the one he is looking at. */
+static void test_a_boxs_key_read_sees_the_top_window_stand_still(void)
+{
+	reset();
+	unlink(TRACE_FILE);
+	setenv("XWPE_UI_TRACE", TRACE_FILE, 1);
+	chk("the box reads its key", wpe_paint_modal_getch(), KEY_ON_THE_BOX);
+	chk("nothing said of a top-window change",
+	    trace_has("saw the window on top change"), 0);
+	unsetenv("XWPE_UI_TRACE");
+	unlink(TRACE_FILE);
+}
+
+/* Were a display to report one anyway, the box throws the code away: it has
+   no loop to leave and no window of its own to hand the key to. */
+static void test_a_box_throws_the_top_window_notice_away(void)
+{
+	reset();
+	unlink(TRACE_FILE);
+	setenv("XWPE_UI_TRACE", TRACE_FILE, 1);
+	key_on_the_box = WPE_TOP_CHANGED;
+	top_moves_in_the_read = 1;
+	chk("the notice reaches no box", wpe_paint_modal_getch(), 0);
+	chk("the throw is traced",
+	    trace_has("threw away the top-window notice"), 1);
+	chk("the change it noticed is traced too",
+	    trace_has("saw the window on top change"), 1);
+	chk("the box gives the screen back", wpe_paint_modal_depth(), 0);
+	unsetenv("XWPE_UI_TRACE");
+	unlink(TRACE_FILE);
 }
 
 /* A status line kept until the next key is the desk's to drop when a box
@@ -572,6 +623,8 @@ int main(void)
 	test_a_non_text_window_on_top_is_not_idle();
 	test_a_nested_wait_is_not_idle();
 	test_a_box_reads_its_key_owning_the_screen();
+	test_a_boxs_key_read_sees_the_top_window_stand_still();
+	test_a_box_throws_the_top_window_notice_away();
 	test_depth_past_the_bound_is_traced_and_stays_balanced();
 	test_the_trace_shows_deferred_then_replay();
 	test_the_overlay_switch();

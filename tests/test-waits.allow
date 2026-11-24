@@ -242,5 +242,6 @@ tests/x11/test_startplan_run.py WS=2
 tests/x11/test_syntax_algol68.py WS=1
 tests/x11/test_terminal_owner.py WE=1 WS=1
 tests/x11/test_user_screen.py WS=8
+tests/x11/test_window_kind.py WS=4
 tests/x11/test_window_zoom_redraw.py WS=13
 tests/x11/test_write_owner.py WS=1

@@ -87,14 +87,21 @@ AS_IF([test -z "$XWPE_STDFLAG"], [AC_MSG_RESULT([none])],
   [AC_MSG_RESULT([$XWPE_STDFLAG])])
 AC_SUBST([XWPE_STDFLAG])
 
-# Warning flags.  The 1993 code needs three -Wno- flags.  A compiler that
+# Warning flags.  The 1993 code needs two -Wno- flags.  A compiler that
 # does not know a -Wno- flag accepts it silently (gcc) or warns on every
 # compile (clang: "unknown warning option"), so each one is probed in its
 # positive form with -Werror and the -Wno- form is kept only when the
 # compiler knows the warning (the idiom of meson's get_supported_arguments).
+#
+# -Wno-incompatible-pointer-types is deliberately NOT here.  A window's
+# payload is asked through the typed accessors of we_winkind.h, so a pointer
+# of the wrong kind reaching one of them is exactly the bug the editor used
+# to crash on, and the compiler must refuse it rather than let the build
+# silence it.  tests/check-window-kind.sh keeps the word out of this file and
+# XWPE_WARNFLAGS out of the generated Makefile.
 AC_MSG_CHECKING([which warning flags the compiler knows])
 XWPE_WARNFLAGS=
-for ace_w in incompatible-pointer-types int-conversion old-style-declaration; do
+for ace_w in int-conversion old-style-declaration; do
   ace_save_CFLAGS="$CFLAGS"
   CFLAGS="$CFLAGS -Werror -W$ace_w"
   AC_COMPILE_IFELSE([AC_LANG_PROGRAM([], [])],

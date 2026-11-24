@@ -14,6 +14,7 @@
 
 #include "we_paint.h"
 #include "we_fdloop.h"
+#include "keys.h"          /* WPE_TOP_CHANGED: the one code a box throws away */
 
 typedef struct
 {
@@ -118,6 +119,24 @@ static int wpe_paint_text_on_top(void)
 }
 
 /**
+ * wpe_paint_top_count - How often what is on top has changed.
+ *
+ * The window kind's owner counts every push, pop, raise and reorder.  The
+ * screen's owner reads the count around a box's key wait only to put the
+ * answer in the trace: while a box owns the screen a build's end is kept
+ * behind it, so nothing puts another window on top and the two counts are
+ * the same.  A row holds that, and the trace names the run where it stops
+ * being true.
+ * Return: the count, or 0 when the editor has not given the hook.
+ */
+static unsigned long wpe_paint_top_count(void)
+{
+ if (!paint_desk_known || !paint_desk.top_count)
+  return 0;
+ return paint_desk.top_count();
+}
+
+/**
  * wpe_paint_idle - May content be drawn now?
  *
  * True when no box, menu or prefix owns the screen, no command has the
@@ -201,16 +220,30 @@ int wpe_paint_modal_depth(void)
  * is not a new box opening, so a status line kept for the user to read
  * stays until that key is pressed, however many keys the menu bar or the
  * Size/Move loop reads.
- * Return: the key.
+ *
+ * A box owns the screen, so the owner keeps a build's end behind it and no
+ * display reports the window on top changing here: the count is read before
+ * and after the wait to say so in the trace, where a row holds it.  A notice
+ * that reaches a box anyway is thrown away, because a box has no loop to
+ * leave and no window of its own to hand the key to; the box reads on.
+ * Return: the key, or 0 for a notice that was thrown away.
  */
 int wpe_paint_modal_getch(void)
 {
+ unsigned long top_before = wpe_paint_top_count();
  int c = 0;
 
  wpe_paint_depth_up("a key read by a box");
  if (paint_desk_known && paint_desk.read_key)
   c = paint_desk.read_key();
  wpe_paint_modal_leave();
+ if (wpe_paint_top_count() != top_before)
+  wpe_paint_trace("a box's key read saw the window on top change");
+ if (c == WPE_TOP_CHANGED)
+ {
+  wpe_paint_trace("a box threw away the top-window notice");
+  return 0;
+ }
  return c;
 }
 

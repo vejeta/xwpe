@@ -350,6 +350,11 @@ typedef struct FNST {
  struct CNT *ed;  /* parent control structure ??? */
  struct BFF *b;
  struct SCHRM *s;
+ /* What this window holds, as the kind's owner records it (we_winkind.h).
+    The block is opaque here on purpose: the three payloads are separate
+    typed members of a struct only we_winkind.c may name, so no other file
+    can read a list's rows as a file's text. */
+ struct wpe_window_held *held_;
  FIND fd;
 } FENSTER;
 
@@ -372,6 +377,12 @@ typedef struct CNT {
  char dtmd, autosv;
  int eol_default;     /* line-ending style of a new file (E_EOL_*): xwperc's Data key */
 } ECNT;
+
+/* The owner of "which kind of window is this, and what does it hold".  It is
+   included here, beside the two structures it asks about, because every file
+   that touches a window's payload needs it and the header names no member of
+   either: the payload's own block stays private to we_winkind.c. */
+#include "we_winkind.h"
 
 
 /* structure for the windows in the file manager ??? */
@@ -603,6 +614,17 @@ void e_cursor(FENSTER *f, int sw);
 #define E_SAY_READ_ONLY "Read-only window: the text is unchanged"
 /* What the user is told when a window waits for an assistant reply. */
 #define E_SAY_ASSISTANT_BUSY "The assistant is working on this window (Esc cancels)"
+/* What the user is told when a command that works on text is asked of a
+   window that holds none (the File Manager, a list window, a dropdown).
+   The command's own name fills the line, so the answer says which command
+   was refused and never changes a file the user is not looking at. */
+#define E_SAY_NEEDS_TEXT "%s needs a text window"
+/* The word a command without a name of its own is refused with. */
+#define E_SAY_NEEDS_TEXT_DEFAULT "This command"
+/* The longest action name the line is built for; a longer one is cut. */
+#define E_SAY_NEEDS_TEXT_ACTION_MAX 40
+#define E_SAY_NEEDS_TEXT_ROOM \
+ (sizeof E_SAY_NEEDS_TEXT + E_SAY_NEEDS_TEXT_ACTION_MAX)
 /* What the user is told when a command finds nothing to act on.  One line on
    the bottom row, the same from a key, a menu or the palette, never a box. */
 #define E_SAY_NOTHING_MARKED "Nothing is marked: the text is unchanged"
@@ -654,7 +676,7 @@ char *e_copy_path(FENSTER *f, const char *suffix);
 /*   we_e_aus.c   */
 void e_cls(int frb, int chr);
 int e_puts(char *s, int xa, int ya, int frb);
-void e_pr_str(int x, int y, char *str, int col, int b2, int n2, int col2,
+void e_pr_str(int x, int y, const char *str, int col, int b2, int n2, int col2,
   int col3);
 int e_pr_zstring(char *s, int x, int y, int n, int fb);
 int e_schr_nchar(char *s, int x, int y, int n, int max, int frb);
@@ -1258,7 +1280,7 @@ int e_remove_breakpoints(FENSTER *f);
 int e_make_breakpoint(FENSTER *f, int sw);
 int e_mk_brk_main(FENSTER *f, int sw);
 int e_codepoint_to_utf8(int cp, unsigned char *out);
-int e_exec_deb(FENSTER *f, char *prog);
+int e_exec_deb(FENSTER *f, const char *prog);
 int e_start_debug(FENSTER *f);
 int e_run_debug(FENSTER *f);
 int e_d_start_busy(void);
@@ -1295,7 +1317,7 @@ int e_d_brk_drawn_hollow(const char *file, int line);
 int e_bar_offers_goto_cursor(FENSTER *f);
 int e_debug_switch(FENSTER *f, int c);
 int e_d_putchar(int c);
-int e_test_command(char *str);
+int e_test_command(const char *str);
 
 /**** functions for breakpoints resyncing, reloading etc ****/
 int e_brk_schirm(FENSTER *f);

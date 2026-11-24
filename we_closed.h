@@ -39,6 +39,13 @@ int wpe_window_read_only(struct FNST *f);
    most once per key (and once per bracketed paste). */
 void wpe_closed_say(struct FNST *f, WpeClosedWhy why);
 
+/* Say that a command was not run because the window on top holds no text:
+   "<action> needs a text window", on the status row, kept until the next key
+   and at most once per key exactly as the reasons above are, so a prefix
+   letter, a function key and a menu row all say it the same way.  A NULL
+   @action names no command of its own and gets the generic word. */
+void wpe_closed_say_needs_text(struct FNST *f, const char *action);
+
 /* The key loop has read the next key: the next refusal may say its line
    again.  Holds while a bracketed paste streams. */
 int wpe_closed_key_read(void);
@@ -55,9 +62,10 @@ void wpe_closed_reason_over(WpeClosedWhy why);
    and return 1; else 0. */
 int wpe_window_refuses_edit(struct FNST *f);
 
-/* The text window on top, brought to the front, or NULL when there is none
-   or when it refuses the edit (said). */
-struct FNST *e_edit_window(struct FNST *f);
+/* The window a user edit command acts on: the window on top when it holds
+   text and is not closed, else NULL with the reason said.  @action is the
+   command's own name, which the refusal line carries. */
+struct FNST *e_edit_window(struct FNST *f, const char *action);
 
 /* Transitional: what the old e_window_text_locked did at every call site that
    has not moved to the owner's ask yet.  A read-only window answers 1 in
