@@ -1141,7 +1141,11 @@ if [ -z "$SELFTEST_ONLY" ]; then
   cat "$WORK/real.out" >> "$WORK/problems"
   test_cc_require
   canaries_run=$((canaries_run + 1))
-  if ! test_cc -std=gnu17 -D_DEFAULT_SOURCE -D_XOPEN_SOURCE=600 -Wswitch-enum -Werror=switch-enum \
+  # The file is compiled as the build compiles it, through the config.h that
+  # configure wrote for this system (Makefile.am: AM_CPPFLAGS), never with
+  # feature macros named here: _XOPEN_SOURCE=600 hides AT_FDCWD on FreeBSD
+  # and OpenBSD, so the check failed there on a declaration the build has.
+  if ! test_cc -std=gnu17 -I. -include ./config.h -Wswitch-enum -Werror=switch-enum \
         -fsyntax-only -I"$SRCDIR" "$SRCDIR/we_ai_ckrec.c" > "$WORK/swenum.out" 2>&1; then
     problem "H: we_ai_ckrec.c does not compile with -Wswitch-enum:"
     cat "$WORK/swenum.out" >> "$WORK/problems"

@@ -292,7 +292,7 @@ BEGIN {
   for (k in W0) WS[k] = 1
   for (k in H0) HS[k] = 1
   for (k in P0) PS[k] = 1
-  n = split(extra, e, "\n")
+  n = split(ENVIRON["GRID_SIZE_EXTRA"], e, "\n")
   for (k = 1; k <= n; k++) {
     split(e[k], p, " ")
     if (p[1] == "W") { WS[p[2]] = 1 } else if (p[1] == "H") { HS[p[2]] = 1 }
@@ -355,10 +355,13 @@ files() {
 }
 
 # run_scan LIST: the alias pass, then the scan, over the files of LIST (one
-# per line): one "FILE:LINE: rule: statement" per offence.
+# per line): one "FILE:LINE: rule: statement" per offence.  The alias pass's
+# names reach the scan through the environment, not -v: they are one per
+# line, and the BSDs' awk refuses a -v value with a newline in it ("newline
+# in string"), so the scan there named nothing and the selftest failed.
 run_scan() {
-  ex=$(awk -v mode=alias -v extra="" "$BLANK_C$PROGRAM" $1 | sort -u)
-  awk -v mode=scan -v extra="$ex" "$BLANK_C$PROGRAM" $1
+  ex=$(GRID_SIZE_EXTRA="" awk -v mode=alias "$BLANK_C$PROGRAM" $1 | sort -u)
+  GRID_SIZE_EXTRA="$ex" awk -v mode=scan "$BLANK_C$PROGRAM" $1
 }
 
 # plant FOLDER: a copy of the sources with one offence of each kind, and the
