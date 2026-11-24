@@ -1151,7 +1151,11 @@ static char *engine_path_of(const char *path, const char *ws)
 /* @scenario SC-ai-contain-38 */
 static void test_an_allowed_folder_of_any_length_is_kept_whole(void)
 {
-	char ws[PATH_MAX], d300[PATH_MAX], d3000[PATH_MAX], allow[3 * PATH_MAX], path[3 * PATH_MAX];
+	/* allow holds the huge word and two folders: sized from HUGE_ENTRY, not
+	   from PATH_MAX alone, which on the BSDs (1024) left 3072 bytes for 6325
+	   and cut the list before the long folder. */
+	char ws[PATH_MAX], d300[PATH_MAX], d3000[PATH_MAX];
+	char allow[HUGE_ENTRY + 2 * PATH_MAX + 3], path[3 * PATH_MAX];
 	char huge[HUGE_ENTRY + 1];
 	char *got;
 

@@ -75,6 +75,10 @@ BAD=1
 SKIP=77
 ALLOW=
 NMTOOL=${NM:-nm}
+# A switch that misses an enumerator must not compile, with or without a
+# default: gcc names both cases -Wswitch-enum, clang names the one with no
+# default -Wswitch.
+SWITCH_FLAGS="-Wswitch -Wswitch-enum -Werror=switch -Werror=switch-enum"
 OBJECTS=
 SELFTEST_ONLY=
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -587,7 +591,14 @@ enum_scan() {
 
 # ---- the object half ---------------------------------------------------------
 
-object_imports() { "$NMTOOL" -u "$1" 2>/dev/null | nm_undefined_source_names; }
+# object_imports OBJECT - the calls OBJECT imports, as the C source names them:
+# NetBSD's versioned spelling (__readdir30) also reads as the call it stands
+# for (readdir), through the one table in tests/objsyms.sh, so the canary and
+# the names this check refuses are seen on every system.
+object_imports() {
+  "$NMTOOL" -u "$1" 2>/dev/null | nm_undefined_source_names |
+    awk "$OBJSYMS_AWK_LIB"'{ print; s = objsyms_source_name($0); if (s != $0) print s }'
+}
 
 # a_object_scan OBJECT... - who imports a removing or renaming call, read from
 # the objects.  The owner's own canaries are seen or reported, never passed over.
@@ -1032,7 +1043,10 @@ int f(A a)
 }
 EOF
   canaries_run=$((canaries_run + 1))
-  if test_cc -Wswitch-enum -Werror=switch-enum -fsyntax-only -c "$WORK/fxc/miss.c" > /dev/null 2>&1; then
+  # SWITCH_FLAGS, not -Wswitch-enum alone: clang reports a missed enumerator
+  # in a switch with no default: under -Wswitch, so with only
+  # -Werror=switch-enum the canary compiled on FreeBSD and OpenBSD.
+  if test_cc $SWITCH_FLAGS -fsyntax-only -c "$WORK/fxc/miss.c" > /dev/null 2>&1; then
     problem "canary h-switch-enum: a switch that misses an enumerator compiles (the flag is not in force)"
   fi
 }
@@ -1145,7 +1159,7 @@ if [ -z "$SELFTEST_ONLY" ]; then
   # configure wrote for this system (Makefile.am: AM_CPPFLAGS), never with
   # feature macros named here: _XOPEN_SOURCE=600 hides AT_FDCWD on FreeBSD
   # and OpenBSD, so the check failed there on a declaration the build has.
-  if ! test_cc -std=gnu17 -I. -include ./config.h -Wswitch-enum -Werror=switch-enum \
+  if ! test_cc -std=gnu17 -I. -include ./config.h $SWITCH_FLAGS \
         -fsyntax-only -I"$SRCDIR" "$SRCDIR/we_ai_ckrec.c" > "$WORK/swenum.out" 2>&1; then
     problem "H: we_ai_ckrec.c does not compile with -Wswitch-enum:"
     cat "$WORK/swenum.out" >> "$WORK/problems"
