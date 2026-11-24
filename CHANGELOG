@@ -505,6 +505,22 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* The X11 editor no longer crashes when the X server ends during a drag.  The
+  end of a scrollbar drag let go of the pointer and repainted the window, and
+  both calls went to a server that was already gone.  On an X stack that keeps
+  sending after its I/O error handler has returned, the first of them that
+  reached libXrender killed the editor with SIGSEGV, so the emergency save
+  never ran and the text typed since the last save was lost.  One owner of the
+  connection now answers every call that can put a request on the wire or wait
+  for a reply: the editor refuses the call, writes the .ESV file, prints
+  "xwpe: connection to the X server lost: connection broken" on the terminal it
+  was started from and exits 1, which is how it already ended on a key press.
+  What it refused is named in $XWPE_UI_TRACE, one line a call.  The loops that
+  paint a cell, a window or a rectangle at a time, and the stages of a back
+  buffer remake, stop at the step that found the loss instead of sending the
+  rest, and the two waits that read events go to the editor's own wait once the
+  connection is gone, so they serve the end and touch no Xlib call.
+
 * A screen the machine will not hold no longer costs you the editor.  The
   size of the screen and the memory behind it are now one thing that changes
   in one step or not at all.  A grow needs four planes of one entry per cell;

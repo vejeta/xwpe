@@ -9,7 +9,8 @@
  * not repainted after another window uncovered it.
  *
  * The log letters: R a release hook ran, P XCreatePixmap, C XCopyArea,
- * B a back hook ran, F XFreePixmap, A e_refresh_area, W e_refresh.
+ * B a back hook ran, F XFreePixmap, A e_refresh_area, W e_refresh,
+ * L XClearArea.
  *
  * The cases:
  *   absent         no X call from present, scroll or restore; restore asks
@@ -21,6 +22,11 @@
  *   present        a buffer copies; restore_done does not refresh
  *   clip           a copy never runs past the buffer
  *   drop           a wrapper that was dropped is not called
+ *   lost           a server that is gone gets no request from present,
+ *                  remake, scroll, clear_outside or restore
+ *   lost mid-remake a loss found by the carry ends the remake there: no
+ *                  wrapper is asked to wrap the new buffer and the old
+ *                  pixmap is not freed
  */
 #include <stdio.h>
 #include "linebuf.h"
@@ -58,6 +64,22 @@ static char xlog[LOG_MAX];
 static int nlog;
 static int last_copy[8];          /* src x y w h, of the last XCopyArea */
 static int last_back_w, last_back_h;
+/* Armed by a case: the next XCopyArea is the call inside which Xlib finds the
+   connection broken, so it sets the flag the owner of the connection reads. */
+static int copy_ends_the_server;
+
+/* The owner of the X11 connection lives in WeXterm.c, which this test does
+   not link: it is the flag the owner reads, and the test is the server. */
+int e_x_conn_usable(const char *what)
+{
+	(void)what;
+	return !WpeXInfo.lost;
+}
+
+int e_x_conn_step_usable(void)
+{
+	return !WpeXInfo.lost;
+}
 
 static void rec(char c)
 {
@@ -98,6 +120,10 @@ int XCopyArea(Display *d, Drawable src, Drawable dst, GC gc, int sx, int sy,
 	last_copy[1] = sy;
 	last_copy[2] = (int)w;
 	last_copy[3] = (int)h;
+	if (copy_ends_the_server) {
+		copy_ends_the_server = 0;
+		WpeXInfo.lost = 1;
+	}
 	return 0;
 }
 
@@ -119,6 +145,7 @@ int XClearArea(Display *d, Window w, int x, int y, unsigned int width,
 {
 	(void)d; (void)w; (void)x; (void)y; (void)width; (void)height;
 	(void)exposures;
+	rec('L');
 	return 0;
 }
 
@@ -222,6 +249,39 @@ static void case_drop(void)
 	chk_str("a dropped wrapper is not called", xlog, "RPBF");
 }
 
+/* The buffer is 720x520 here and one wrapper is left (release_two was
+   dropped), so a remake that carries the picture logs R P C B F. */
+static void case_lost(void)
+{
+	WpeXInfo.lost = 1;
+	reset_log();
+	e_x_backbuf_present(0, 0, 10, 10);
+	e_x_backbuf_remake(600, 400, 1, 0);
+	e_x_backbuf_scroll(0, 0, 5, 5, 10, 10);
+	e_x_backbuf_clear_outside(700, 500, 640, 480);
+	e_x_backbuf_restore(0, 0, 10, 10);
+	chk_str("lost: present, remake, scroll, clear and restore send nothing",
+		xlog, "");
+	WpeXInfo.lost = 0;
+	reset_log();
+	e_x_backbuf_remake(720, 520, 1, 0);
+	chk_str("lost: the refused remake left the buffer's size alone", xlog, "");
+}
+
+static void case_lost_mid_remake(void)
+{
+	reset_log();
+	e_x_backbuf_remake(620, 420, 1, 0);
+	chk_str("a remake that carries the picture", xlog, "RPCBF");
+	copy_ends_the_server = 1;
+	reset_log();
+	e_x_backbuf_remake(640, 440, 1, 0);
+	chk_str("a loss the carry found ends the remake there: no wrapper is"
+		" asked back and the old pixmap is not freed", xlog, "RPC");
+	chk("the carry was the call that found the loss", WpeXInfo.lost, 1);
+	WpeXInfo.lost = 0;
+}
+
 int main(void)
 {
 	wpe_grid_take(80, 30);
@@ -236,6 +296,8 @@ int main(void)
 	case_present();
 	case_clip();
 	case_drop();
+	case_lost();
+	case_lost_mid_remake();
 	if (fails) {
 		printf("test_xbackbuf: %d failure(s)\n", fails);
 		return 1;

@@ -1,0 +1,126 @@
+# The counted exceptions of tests/check-x11-lost-owner.sh:
+#   file|function|count|state|reason
+#
+# "count" is the number of calls in the function that can reach the X server,
+# a call through the renderer table (WpeRender.draw_rect) among them: on X11
+# it draws on the window surface, so it is judged at the caller and not where
+# the address was taken.  The count may only fall (the script fails when it is
+# wrong in either direction, and when a line matches nothing any more).
+# "state" says why the function needs
+# no guard of its own: startup (it runs before a display can be lost), local
+# (it reaches no server, and the reason says which client-side call it is),
+# dead (nothing calls it in any build) or below (every reference to it lies in
+# a function that is an owner, guarded, or itself below; a function registered
+# in a table names its dispatcher as "via NAME").  Each pass deletes the lines
+# it clears; the last pass deletes the file.
+#
+# The guarded callers these lines hang from are the six exported functions of
+# the back buffer, e_x_refresh, fk_show_cursor's caller, wpe_render_chrome, the
+# renderer's present and blit, e_x_display_end, e_x_refit_font_for_dpi,
+# e_x_resize_frame, e_XLookupString and wpe_x_dump_ppm.
+
+# --- WeXterm.c: the start-up path, which runs before a display can be lost ---
+WeXterm.c|WpeXInit|34|startup|opens the display, installs both handlers, maps the window
+WeXterm.c|WpeXFontGet|6|startup|the core and Xft fonts are loaded once, before the window is mapped
+WeXterm.c|WpeXGeometryGet|1|startup|the requested geometry is computed once from the font
+WeXterm.c|WpeXDefaults|1|startup|reads the resource database of the display just opened
+WeXterm.c|WpeXGCSetup|5|startup|the graphic context is made once, with the window
+WeXterm.c|x_palette_alloc_exact|1|startup|the 16 colours are allocated once, by WpeXColorGet
+WeXterm.c|x_palette_share_cell|2|startup|a colour cell is shared once, by WpeXColorGet
+WeXterm.c|x_palette_parse|2|startup|a colour name is parsed once, by WpeXColorGet
+WeXterm.c|x_palette_read_cells|1|startup|the colormap cells are read once, by WpeXColorGet
+WeXterm.c|x_palette_choose_colormap|2|startup|the colormap is chosen once, for the pcmap resource
+WeXterm.c|x_palette_go_private|2|startup|the private colormap is installed once, for the pcmap resource
+
+# --- WeXterm.c: the cursor shapes, which we_xterm.c replaces with no-ops ---
+WeXterm.c|WpeXMouseChangeShape|2|dead|WpeMouseChangeShape is installed as WpeNullFunction
+WeXterm.c|WpeXMouseRestoreShape|1|dead|WpeMouseRestoreShape is installed as WpeNullFunction
+
+# --- WeXterm.c: run-time helpers behind a guarded caller ---
+WeXterm.c|e_x_read_hidpi_scale|2|below|the backing scale on the root window, read by the font loader and by the guarded DPI refit
+WeXterm.c|e_x_xftdraw_release|1|below|the glyph surface the buffer owner gives back before every new buffer
+WeXterm.c|e_x_xftdraw_create|1|below|the glyph surface the buffer owner wraps around every new buffer
+
+# --- we_xbackbuf.c: the pixmap calls behind the six guarded owners ---
+we_xbackbuf.c|bb_new_pixmap|3|below|the new pixmap of a guarded remake
+we_xbackbuf.c|bb_carry_picture|1|below|the carry of a guarded remake, which the remake also stops mid-way
+we_xbackbuf.c|bb_copy_to_window|1|below|the copy of a guarded present or restore
+
+# --- we_xterm.c: the glyph and box primitives behind e_x_refresh ---
+we_xterm.c|e_x_key_press_code|0|below|decodes one key through the guarded e_XLookupString; read by the key reader and the guarded e_x_kbhit
+we_xterm.c|fk_show_cursor|6|below|the cursor cell of a guarded refresh, which the refresh also skips mid-way
+we_xterm.c|e_x_render_cell|9|below|one cell of the guarded refresh, whose cell loop stops at a loss
+we_xterm.c|e_xft_draw_hline|1|below|a box glyph of one cell
+we_xterm.c|e_xft_draw_vline|1|below|a box glyph of one cell
+we_xterm.c|e_xft_draw_corner|2|below|a box glyph of one cell
+we_xterm.c|e_xft_draw_scrollbar_track|1|below|a scrollbar glyph of one cell
+we_xterm.c|e_xft_draw_scrollbar_thumb|1|below|a scrollbar glyph of one cell
+we_xterm.c|e_xft_fallback_font|2|below|the font of a glyph the main font has no character for
+we_xterm.c|e_flush_xrect|2|below|the cached box segments of a guarded refresh
+we_xterm.c|e_print_xrect|6|below|the box segments, counted on the NOXCACHE macro; the function of the same name caches and makes no call
+we_xterm.c|e_x_refresh_cairo_full|0|dead|a full cairo repaint nothing calls; when it gets a caller it takes the guard too
+we_xterm.c|wpe_x_dump_read_colormap|1|below|the colormap of a guarded frame dump
+
+# --- we_render_cairo.c: the drawing primitives behind the guarded renderer ---
+we_render_cairo.c|cr_draw_rect|2|below|one cell of the guarded refresh, through WpeRender.draw_rect
+we_render_cairo.c|cr_draw_line|3|below|one cell of the guarded refresh, through WpeRender.draw_line
+we_render_cairo.c|cr_draw_text_ft|3|below|one glyph of the guarded refresh, through WpeRender.draw_text
+we_render_cairo.c|cr_draw_text_pango|2|below|one glyph of the guarded refresh, the call the crash was in
+we_render_cairo.c|cr_touch_glyph_ink|1|below|measures a glyph in the client, for the ink of a drag
+we_render_cairo.c|cr_clip_to_region|2|below|the clip of the guarded scrollbar overlay
+we_render_cairo.c|cr_chrome_arrow_up|5|below|an arrow of the guarded scrollbar overlay
+we_render_cairo.c|cr_chrome_arrow_down|5|below|an arrow of the guarded scrollbar overlay
+we_render_cairo.c|cr_chrome_arrow_left|5|below|an arrow of the guarded scrollbar overlay
+we_render_cairo.c|cr_chrome_arrow_right|5|below|an arrow of the guarded scrollbar overlay
+we_render_cairo.c|cr_chrome_track|2|below|the track of the guarded scrollbar overlay
+we_render_cairo.c|cr_chrome_thumb|2|below|the thumb of the guarded scrollbar overlay
+we_render_cairo.c|cr_cleanup|2|below|the font stack the guarded display end gives back, through WpeRender.cleanup
+we_render_cairo.c|cr_apply_antialias|1|below|the smoothing of a context the guarded sinks make
+we_render_cairo.c|cr_ix_surface_ok|1|below|cairo_surface_status reads the status the surface already has
+we_render_cairo.c|cr_init_pango_font|1|below|the layout the renderer is initialised with
+we_render_cairo.c|cr_init_ft_font|7|below|the FreeType face the renderer is initialised with
+
+# --- we_render_cairo.c: the two sinks, registered in a table at file level ---
+# The dispatcher of each table is named once, on the line of one of its
+# entries: cr_cleanup for the direct sink, cr_resize for the indexed one.
+we_render_cairo.c|cr_direct_cleanup|0|below|via cr_cleanup: the direct sink's entry, which the display end reaches through WpeRender.cleanup
+we_render_cairo.c|cr_direct_wrap|2|below|the xlib surface the buffer owner wraps around every new buffer
+we_render_cairo.c|cr_direct_release|2|below|the direct sink's release, which frees the xlib surface; called by cr_direct_cleanup and by the buffer owner's hook
+we_render_cairo.c|cr_ix_make_surface|2|below|the image surface the indexed sink paints on, in memory
+we_render_cairo.c|cr_ix_resize|3|below|via cr_resize: the indexed sink's resize, which remakes the image
+we_render_cairo.c|cr_ix_put_rect|1|below|one rectangle the guarded indexed present sends
+
+# --- we_render_glyphs.h: the glyph shapes the cairo renderer shares with the
+# --- Wayland one; a static function of a header is compiled into the object
+# --- that includes it, so its calls are the including file's.
+we_render_glyphs.h|wpe_glyph_acs|26|below|a box glyph of one cell, drawn by cr_draw_acs
+we_render_glyphs.h|wpe_glyph_lock|19|below|the padlock of one cell, drawn by cr_draw_lock
+
+# --- we_render_cairo.c: start-up with no caller in these four files ---
+we_render_cairo.c|wpe_render_cairo_start_threads|1|startup|pango's font map, made once by we_unix.c before the display opens
+
+# --- The steps between a guarded owner and the helper below it.  None makes
+# --- a call of its own (the count is 0); each is named so the chain from a
+# --- guard down to a wire call has no unnamed link, and so a guard removed
+# --- halfway up the chain is a failure of the link below it.
+we_xterm.c|e_x_refresh_xft|0|below|the Xft branch of the guarded refresh
+we_xterm.c|e_x_refresh_cairo|0|below|the cairo branch of the guarded refresh
+we_xterm.c|e_x_render_dirty_cells|0|below|the cell walk of a refresh, which stops a row at a loss
+we_xterm.c|e_xft_paint_cursor_cell|0|below|the cursor cell of the guarded cursor paint
+we_xterm.c|e_xft_draw_acs|0|below|the box glyph of one cell, chosen by its index
+WeXterm.c|e_x_xftdraw_rewrap|0|below|the buffer owner's hook, which remakes the glyph surface
+we_render_cairo.c|cr_set_render_backend|0|below|fills the WpeRender table the guarded cell paint reads
+we_render_cairo.c|cr_resize|0|below|the resize dispatcher the WpeRender table reads, and the indexed sink names
+we_render_cairo.c|wpe_render_cairo_init|0|below|the renderer's start-up, called by WpeXInit
+we_render_cairo.c|cr_draw_text|0|below|chooses the glyph route of one cell
+we_render_cairo.c|cr_clear_rect|0|below|clears one cell through the rectangle primitive
+we_render_cairo.c|cr_draw_acs|0|below|draws one box glyph of the shared header
+we_render_cairo.c|cr_draw_lock|0|below|draws one padlock of the shared header
+we_render_cairo.c|cr_ix_send|0|below|sends the changed rectangles, and stops at a loss between them
+we_render_cairo.c|cr_ix_ready|0|below|asks whether the indexed route can present
+we_render_cairo.c|cr_ix_init|0|below|the indexed sink's start-up entry
+we_render_cairo.c|cr_ix_cleanup|0|below|the indexed sink's cleanup entry
+we_render_cairo.c|cr_direct_init|0|below|the direct sink's start-up entry
+we_render_cairo.c|e_chrome_paint_window_scrollbars|0|below|the two scrollbars of one window of the guarded overlay
+we_render_cairo.c|cr_chrome_vscrollbar|0|below|the vertical scrollbar of one window of the guarded overlay
+we_render_cairo.c|cr_chrome_hscrollbar|0|below|the horizontal scrollbar of one window of the guarded overlay

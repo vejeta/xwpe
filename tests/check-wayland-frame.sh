@@ -37,7 +37,7 @@
 #  5. The lost display has one owner: XSetIOErrorHandler occurs once, in
 #     WpeXInit of WeXterm.c, and e_display_lost is defined once (we_unix.c),
 #     declared once (edit.h) and called from exactly two functions
-#     (wl_conn_lost, e_x_io_error).  The counted places are lines of the
+#     (wl_conn_lost, e_x_conn_lost).  The counted places are lines of the
 #     allow file, so a third caller, or a second handler, is named.
 #  6. The listeners xdg_surface_configure and xdg_toplevel_configure call
 #     nothing but wpe_wlframe_note_configure and wpe_wlframe_note_toplevel.

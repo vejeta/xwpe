@@ -1238,14 +1238,36 @@ TESTS += tests/check-wayland-frame.sh
 # is a member of anything, or when Expose is handled outside
 # e_x_answer_expose.  It scans sources, so it runs on every build.
 TESTS += tests/check-x11-backbuf.sh
+# One owner of the X11 connection after the server is gone (WeXterm.c, beside
+# its I/O error handler): tests/check-x11-lost-owner.sh fails when a call that
+# can put a request on the wire, or wait for a reply, is added outside that
+# owner's guard, in a function, in a macro or behind a wrapper.  It scans the
+# sources and the objects' undefined symbols, so a build without X skips it.
+# The functions that need no guard of their own, and why, are counted in
+# tests/x11-lost-owner.allow.
+TESTS += tests/check-x11-lost-owner.sh
 # test_xbackbuf runs the owner's sequencing with Xlib replaced by a recorder
 # (no display): every release, the new buffer, the carry, every back, the old
-# buffer freed; nothing copied while there is no buffer.
+# buffer freed; nothing copied while there is no buffer, and nothing copied
+# once the connection is gone, including by a remake the loss interrupts.
 if HAVE_X11
 check_PROGRAMS += test_xbackbuf
 TESTS += test_xbackbuf
 test_xbackbuf_SOURCES = tests/test_xbackbuf.c we_xbackbuf.c we_grid.c
 test_xbackbuf_CFLAGS = $(TEST_CFLAGS) $(X_CFLAGS) $(XFT_CFLAGS) $(NCURSESW_CFLAGS)
+endif
+
+# test_xcells runs the refresh's cell walk with the renderer, the back buffer
+# and Xlib replaced by a recorder (no display): a loss found inside the request
+# of one cell ends the row there, on both routes of a refresh, and no request
+# follows it.  A check once a row would leave a row of requests on a server
+# that is gone, which is the crash tests/x11/test_display_lost.py ends on.
+if HAVE_X11
+check_PROGRAMS += test_xcells
+TESTS += test_xcells
+test_xcells_SOURCES = tests/test_xcells.c we_xterm.c we_grid.c we_path.c we_fmt.c
+test_xcells_CFLAGS = $(AM_CFLAGS)
+test_xcells_LDADD = $(X_LIBS) $(XFT_LIBS) $(LIBM)
 endif
 
 # Build configurations the default build does not make (an X11 build without
@@ -1638,7 +1660,10 @@ EXTRA_DIST = \
   tests/check-wayland-frame.sh \
   tests/wayland-frame.allow \
   tests/check-x11-backbuf.sh \
+  tests/check-x11-lost-owner.sh \
+  tests/x11-lost-owner.allow \
   tests/test_xbackbuf.c \
+  tests/test_xcells.c \
   tests/test_grid.c \
   tests/check-grid-size.sh \
   tests/grid-size.allow \

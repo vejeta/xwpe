@@ -26,6 +26,13 @@ test_x_server_end_ends_the_debugger_and_saves
     at a breakpoint: the editor's end still tells the debugger to quit, the
     debugger goes, and the .ESV file is written.  The Wayland twin is in
     tests/wayland/test_display_lost.py.
+
+test_x_server_end_inside_a_scrollbar_drag_refuses_the_repaint
+    The server ends while a scrollbar drag holds the screen, and the drag then
+    ends: from the editor's own trace, the pointer grab, both repaints, the
+    pointer poll and the display teardown are refused in that order.  Red
+    before the owner of the X11 connection: the drag's end let go of the
+    pointer and repainted on a server that was gone.
 """
 import os
 import signal
@@ -62,6 +69,20 @@ LOST_STUB_ENV = dict(DBX_STUB_ENV, XWPE_STUB_NOTE_SIGNALS="1",
 # The stand-in answers "quit" with output for longer than the end waits.
 SLOW_QUIT_NAP_S = "120"
 SLOW_QUIT_ENV = dict(LOST_STUB_ENV, XWPE_STUB_QUIT_NAP_S=SLOW_QUIT_NAP_S)
+TRACE_NAME = "ui.trace"           # relative: the editor's folder is the row's own
+TRACED = {"XWPE_UI_TRACE": TRACE_NAME}
+# What the editor's own trace says when a scrollbar drag takes the screen
+# (e_scroll_drag_begin) and when it gives it back (e_scroll_drag_end, after the
+# repaint its end asks for).
+DRAG_HELD_LINE = "a scrollbar drag"
+DRAG_LEFT_LINE = "modal leave"
+# What the owner of the X11 connection says about a call it refused because
+# the server is gone: one line per call, naming what it refused.
+REFUSED_AFTER_LOSS = "after the loss"
+REFUSED_REFRESH = "refused the refresh after the loss"
+REFUSED_GRAB = "refused the pointer grab after the loss"
+REFUSED_POINTER = "refused the pointer state after the loss"
+REFUSED_TEARDOWN = "refused the display teardown after the loss"
 
 @pytest.fixture
 def xserver(gui_owner, tmp_path, request):
@@ -127,6 +148,39 @@ def _lost_line(editor):
     return None
 
 
+def _trace_lines(editor):
+    """The editor's own trace lines so far, from the row's folder."""
+    try:
+        with open(os.path.join(os.path.dirname(editor.srcfile),
+                               TRACE_NAME)) as fh:
+            return fh.read().splitlines()
+    except OSError:
+        return []
+
+
+def _fill_and_drag_the_thumb(xwpe):
+    """Type DRAG_LINES numbered lines, put the scrollbar's thumb at the top,
+    take it and drag it down.
+
+    The editor is then inside the drag loop, which it leaves only for the
+    button's release or for a display that is gone, and no release is sent
+    here: what ends the drag is the row's next step."""
+    for i in range(DRAG_LINES):
+        _xdo("type", "--window", xwpe.win, "L%02dxxxx" % i)
+        _xdo("key", "--window", xwpe.win, "Return")
+    _wait_screen_quiet(xwpe)
+    for _ in range(DRAG_LINES + 20):        # the thumb is at the top
+        xwpe.key("Up", delay=0.0)
+    _wait_screen_quiet(xwpe)
+    _xdo("mousemove", "--window", xwpe.win, str(THUMB_X), str(THUMB_Y))
+    time.sleep(0.2)
+    _xdo("mousedown", "1")
+    time.sleep(0.1)
+    for y in range(THUMB_Y + 10, THUMB_Y + 230, 20):
+        _xdo("mousemove", "--window", xwpe.win, str(THUMB_X), str(y))
+        time.sleep(0.03)
+
+
 def test_x_server_end_saves_and_exits(xserver, xwpe):
     """End the X server under an editor with typed, unsaved text: it exits 1
     within the deadline, says the X server is gone, and t.c.ESV holds the text."""
@@ -187,20 +241,7 @@ def test_x_server_end_during_a_scrollbar_drag_saves_and_exits(xserver, xwpe):
     and no line."""
     xwpe.owned.expect_display_loss()
     xwpe.owned.expect_exit(code=1)
-    for i in range(DRAG_LINES):
-        _xdo("type", "--window", xwpe.win, "L%02dxxxx" % i)
-        _xdo("key", "--window", xwpe.win, "Return")
-    _wait_screen_quiet(xwpe)
-    for _ in range(DRAG_LINES + 20):        # the thumb is at the top
-        xwpe.key("Up", delay=0.0)
-    _wait_screen_quiet(xwpe)
-    _xdo("mousemove", "--window", xwpe.win, str(THUMB_X), str(THUMB_Y))
-    time.sleep(0.2)
-    _xdo("mousedown", "1")
-    time.sleep(0.1)
-    for y in range(THUMB_Y + 10, THUMB_Y + 230, 20):
-        _xdo("mousemove", "--window", xwpe.win, str(THUMB_X), str(y))
-        time.sleep(0.03)
+    _fill_and_drag_the_thumb(xwpe)
     time.sleep(0.3)
     xserver.server.end()
     code = _wait_exit(xwpe)
@@ -256,4 +297,79 @@ def test_x_server_end_ends_the_debugger_and_saves(xserver, dbx_stub, xwpe, slow)
     finally:
         if not _gone(pid):
             os.kill(pid, signal.SIGKILL)
+
+
+def _at(lines, text, start=0):
+    """The index of the first line at or after `start` that holds `text`, or
+    None.  The refusals are asserted in the order the trace holds them, so a
+    site that only refuses part of the work cannot pass the row."""
+    for i in range(start, len(lines)):
+        if text in lines[i]:
+            return i
+    return None
+
+
+@pytest.mark.parametrize("xwpe", [TRACED], indirect=["xwpe"])
+def test_x_server_end_inside_a_scrollbar_drag_refuses_the_repaint(xserver, xwpe):
+    """The X server ends while the editor is inside the scrollbar drag, and the
+    drag then ends: no call of the four paths that follow may reach the server
+    that is gone.
+
+    The row proves the order from the editor's own trace.  When the server
+    ends, the drag's line is there and its leave is not, so the editor is
+    inside the drag loop, which it leaves only for the button's release or the
+    loss; no release is sent, so what ends the drag is the loss, and the leave
+    that then appears in the trace comes after it.  Four paths in three files
+    then run against a display that is gone, and only an owner of the X11
+    connection refuses all four:
+
+    1. the drag's end (we_mouse.c): it lets go of the pointer and repaints, so
+       "the pointer grab" and "the refresh" are refused before "modal leave";
+    2. the key reader's entry (we_xterm.c e_x_getch): one more "the refresh"
+       after "modal leave";
+    3. its pointer poll: "the pointer state";
+    4. the end itself (we_xterm.c e_x_display_end, reached from the exit
+       teardown): "the display teardown", the last refusal of the run.
+
+    Without the owner these reach libXrender, and on an X stack that does not
+    drop requests after the I/O error handler returned (the CI runner's) the
+    editor dies of SIGSEGV in XRenderCompositeText8 with no .ESV file and no
+    line.
+    """
+    xwpe.owned.expect_display_loss()
+    xwpe.owned.expect_exit(code=1)
+    _fill_and_drag_the_thumb(xwpe)
+    _wait_screen_quiet(xwpe)                # the drag painted the last motion
+    held = _trace_lines(xwpe)
+    assert any(DRAG_HELD_LINE in line for line in held), held[-3:]
+    assert not any(DRAG_LEFT_LINE in line for line in held), held[-3:]
+    xserver.server.end()
+    code = _wait_exit(xwpe)
+    assert code == 1, "exit code %r, wanted 1 (a crash is %r)" % (code, code)
+    left = _trace_lines(xwpe)
+    leave = _at(left, DRAG_LEFT_LINE)
+    assert leave is not None, \
+        "the drag never ended after the loss: %r" % left[-3:]
+    grab = _at(left, REFUSED_GRAB)
+    assert grab is not None and grab < leave, \
+        "the drag's end still let go of the pointer on a server that is gone: %r" % left[-3:]
+    first_paint = _at(left, REFUSED_REFRESH)
+    assert first_paint is not None and first_paint < leave, \
+        "the drag's end still repainted on a server that is gone: %r" % left[-3:]
+    second_paint = _at(left, REFUSED_REFRESH, leave + 1)
+    assert second_paint is not None, \
+        "the key reader still repainted after the drag gave the screen back: %r" % left[-3:]
+    pointer = _at(left, REFUSED_POINTER, second_paint + 1)
+    assert pointer is not None, \
+        "the key reader still asked the server for the pointer: %r" % left[-3:]
+    teardown = _at(left, REFUSED_TEARDOWN, pointer + 1)
+    assert teardown is not None, \
+        "the end still tore the display down on a server that is gone: %r" % left[-3:]
+    refusals = [i for i, line in enumerate(left) if REFUSED_AFTER_LOSS in line]
+    assert teardown == refusals[-1], \
+        "something still reached the server after the teardown: %r" % left[teardown + 1:]
+    line = _lost_line(xwpe)
+    assert line is not None and line.startswith(LOST_LINE), xwpe.owned.log_text()
+    with open(xwpe.srcfile + ".ESV") as fh:
+        assert "L%02dxxxx" % (DRAG_LINES - 1) in fh.read()
 

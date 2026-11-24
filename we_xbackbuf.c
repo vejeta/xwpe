@@ -155,6 +155,7 @@ static void bb_carry_picture(Pixmap old, int old_w, int old_h)
  * wrapped again after; the old buffer is freed last.  Starting from no buffer
  * makes one.  At the size the buffer already has this does nothing and the
  * picture stays: the editor asks twice per resize (the size, then the grid).
+ * A server that is gone gets no request: the buffer keeps the size it has.
  */
 void e_x_backbuf_remake(int pixel_w, int pixel_h, int keep_picture,
                         unsigned long fill_pixel)
@@ -162,6 +163,9 @@ void e_x_backbuf_remake(int pixel_w, int pixel_h, int keep_picture,
  Pixmap old = bb_pixmap;
  int old_w = bb_width;
  int old_h = bb_height;
+
+ if (!e_x_conn_usable("the picture copy"))
+  return;
 
  if (pixel_w < 1)
   pixel_w = 1;
@@ -174,8 +178,16 @@ void e_x_backbuf_remake(int pixel_w, int pixel_h, int keep_picture,
  bb_pixmap = bb_new_pixmap(pixel_w, pixel_h, fill_pixel);
  bb_width = pixel_w;
  bb_height = pixel_h;
+ /* Xlib reports a broken connection from inside whichever call flushed or
+    waited, so the stages after it are asked one by one: a loss found while
+    the new buffer was made leaves the wrappers on the old one and the old
+    pixmap unfreed, which the process exit takes back. */
+ if (!e_x_conn_step_usable())
+  return;
  if (keep_picture && old != None)
   bb_carry_picture(old, old_w, old_h);
+ if (!e_x_conn_step_usable())
+  return;
  bb_run_back(pixel_w, pixel_h);
  if (old != None)
   XFreePixmap(WpeXInfo.display, old);
@@ -246,10 +258,13 @@ static void bb_copy_to_window(int x, int y, int w, int h)
  * What the user sees after a refresh: the finished frame goes onto the window
  * in one copy, so it never shows half drawn.  With no buffer the painting
  * went to the window and nothing is copied; after a resize the layout walk
- * repaints, and painting the old screen cells before it would be wrong.
+ * repaints, and painting the old screen cells before it would be wrong.  A
+ * server that is gone gets no copy: the window it had is gone too.
  */
 void e_x_backbuf_present(int x, int y, int w, int h)
 {
+ if (!e_x_conn_usable("the picture copy"))
+  return;
  if (bb_pixmap == None)
   return;
  bb_copy_to_window(x, y, w, h);
@@ -269,10 +284,13 @@ void e_x_backbuf_present(int x, int y, int w, int h)
  *
  * Whoever covered the window and moved away gets the editor's picture back
  * from the buffer, or, with no buffer, from the screen cells (marked for
- * repaint here, painted by e_x_backbuf_restore_done).
+ * repaint here, painted by e_x_backbuf_restore_done).  An Expose that was
+ * queued before the server went away is answered with no request at all.
  */
 void e_x_backbuf_restore(int x, int y, int w, int h)
 {
+ if (!e_x_conn_usable("the picture copy"))
+  return;
  if (bb_pixmap != None)
  {
   bb_copy_to_window(x, y, w, h);
@@ -287,10 +305,13 @@ void e_x_backbuf_restore(int x, int y, int w, int h)
  * e_x_backbuf_restore_done - The run of lost areas is complete.
  *
  * With no buffer the marked cells are painted now, once for the whole run
- * (the buffer's copies are already on the window).
+ * (the buffer's copies are already on the window).  The refresh it asks for
+ * is the display's, which would repaint a window that is gone.
  */
 void e_x_backbuf_restore_done(void)
 {
+ if (!e_x_conn_usable("the picture copy"))
+  return;
  if (bb_pixmap == None)
   e_refresh();
 }
@@ -305,11 +326,16 @@ void e_x_backbuf_restore_done(void)
  * @h: height, in pixels
  *
  * Lets a scroll move the text already painted instead of painting it again.
+ * A scroll asked for after the server went away moves nothing.
  */
 void e_x_backbuf_scroll(int sx, int sy, int dx, int dy, int w, int h)
 {
- int far_x = sx > dx ? sx : dx;
- int far_y = sy > dy ? sy : dy;
+ int far_x, far_y;
+
+ if (!e_x_conn_usable("the picture copy"))
+  return;
+ far_x = sx > dx ? sx : dx;
+ far_y = sy > dy ? sy : dy;
 
  if (bb_pixmap == None || sx < 0 || sy < 0 || dx < 0 || dy < 0)
   return;
@@ -338,10 +364,15 @@ void e_x_backbuf_scroll(int sx, int sy, int dx, int dy, int w, int h)
  */
 void e_x_backbuf_clear_outside(int win_w, int win_h, int grid_w, int grid_h)
 {
+ if (!e_x_conn_usable("the picture copy"))
+  return;
  if (win_w > grid_w)
   XClearArea(WpeXInfo.display, WpeXInfo.window, grid_w, 0,
     win_w - grid_w, win_h, False);
- if (win_h > grid_h)
+ /* The first clear is a request, and Xlib reports a broken connection from
+    inside the call that sent it: the second band is then left to the process
+    exit rather than sent to a server that is gone. */
+ if (win_h > grid_h && e_x_conn_step_usable())
   XClearArea(WpeXInfo.display, WpeXInfo.window, 0, grid_h,
     win_w, win_h - grid_h, False);
 }

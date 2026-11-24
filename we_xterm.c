@@ -113,13 +113,16 @@ extern struct mouse e_mouse;
    surface wraps the back buffer. */
 static void e_x_display_end(void)
 {
- if (!WpeXInfo.display)
-  return;
  /* Platform-forced divergence from the Wayland display's end: Xlib forbids
     calling it from inside its I/O error handler, and XCloseDisplay on a
     connection that broke is undefined, so a lost server's resources are left
-    to the process exit. */
- if (WpeXInfo.lost)
+    to the process exit.  On a libX11 whose exit handler may not return
+    (before 1.7) the end runs inside the handler, where the owner has already
+    marked the connection gone, so this refusal is what keeps that end off the
+    wire too. */
+ if (!e_x_conn_usable("the display teardown"))
+  return;
+ if (!WpeXInfo.display)
   return;
 
  if (WpeRender.cleanup)
@@ -241,6 +244,24 @@ int nseg[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
 XSegment seg[8][WPE_MAXSEG];
 int scol[8] = { 0, 0, 15, 15, 15, 15, 0, 0 };
 
+/**
+ * e_x_no_key - The answer for a key that cannot be decoded.
+ * @keysym_return: receives NoSymbol, so no dead key is left waiting for the
+ * letter that was to follow it.
+ *
+ * What the user gets: a key the editor cannot turn into a character (one that
+ * arrived after the X server went away, a modifier pressed on its own) types
+ * nothing and leaves nothing half typed, so the next key pressed is the
+ * user's own and not the tail of a compose sequence.
+ * Return: 0, no character.
+ */
+static int e_x_no_key(KeySym *keysym_return)
+{
+    if (keysym_return)
+	*keysym_return = NoSymbol;
+    return (0);
+}
+
 int e_XLookupString(XKeyEvent *event, char *buffer_return, int buffer_size,
 		    KeySym *keysym_return, XComposeStatus *status)
 {
@@ -248,6 +269,12 @@ int e_XLookupString(XKeyEvent *event, char *buffer_return, int buffer_size,
     static XIC xic;
     static XIM xim;
     Status xim_status;
+
+    /* The first key opens the input method, and every key with an IM server
+       goes through XFilterEvent: both are traffic to a server that may be
+       gone. */
+    if (!e_x_conn_usable("the event queue"))
+	return e_x_no_key(keysym_return);
 
     if (first) {
 	first = 0;
@@ -513,10 +540,14 @@ static int e_x_frame_w, e_x_frame_h;
  * lays the screen out again.  The renderer (Cairo) remakes the back buffer
  * itself when there is one; otherwise the buffer's owner does, starting
  * black.  Either way the glyph surface follows through the owner, so no
- * caller rewraps it.
+ * caller rewraps it.  A server that is gone gets no frame: the screen reset
+ * that asks for one is a step on the way to the end, and the frame it would
+ * remake is the picture of a window that no longer exists.
  */
 static void e_x_resize_frame(int pixel_w, int pixel_h)
 {
+ if (!e_x_conn_usable("the painted frame"))
+  return;
  if (WpeRender.resize)
   WpeRender.resize(pixel_w, pixel_h);
  else
@@ -853,8 +884,13 @@ static int e_x_render_dirty_cells(int force, int *x1, int *y1, int *x2, int *y2)
  int i, j;
  int have_dirty = 0;
  int dx1 = MAXSCOL, dy1 = MAXSLNS, dx2 = 0, dy2 = 0;
- for (i = 0; i < MAXSLNS; i++)
- for (j = 0; j < MAXSCOL; j++)
+ /* Every cell of the direct route is a request of its own, and Xlib reports a
+    broken connection from inside the one that flushed: one request into
+    libXrender on a display that is gone is what ended the editor with
+    SIGSEGV, so the cells after it are left alone, silently, and a paint storm
+    writes no trace line a cell. */
+ for (i = 0; i < MAXSLNS && e_x_conn_step_usable(); i++)
+ for (j = 0; j < MAXSCOL && e_x_conn_step_usable(); j++)
  {
   int _n = i * MAXSCOL + j;
   int sc, sa;
@@ -1132,6 +1168,8 @@ static int wpe_x_dump_ppm(const char *path)
  int x, y;
  unsigned char (*cmap_rgb)[3] = NULL;
 
+ if (!e_x_conn_usable("the frame dump"))
+  return -1;
  if (!WpeXInfo.window
      || !XGetWindowAttributes(WpeXInfo.display, WpeXInfo.window, &wa)
      || wa.map_state != IsViewable)
@@ -1190,9 +1228,22 @@ static int wpe_x_dump_ppm(const char *path)
 }
 #endif /* NO_XWINDOWS */
 
+/**
+ * e_x_refresh - Paint what changed and put it on the window.
+ *
+ * What the user gets: the screen follows the edit at once, and a server that
+ * is gone gets no request at all.  Every path that asks for a refresh (a key,
+ * a drag that ends, an Expose, the emergency save's own boxes) is then the
+ * way the editor reaches its end instead of reaching libXrender with a window
+ * that no longer exists.
+ * Return: 0.
+ */
 int e_x_refresh()
 {
    int i, j, cur_tmp = cur_on;
+
+   if (!e_x_conn_usable("the refresh"))
+    return(0);
 #ifdef NEWSTYLE
    /* Clear extbyte for window interiors (shadow fix) */
    { int _w;
@@ -1226,8 +1277,11 @@ int e_x_refresh()
     static char stringbuf[STRBUFSIZE];
     int stringcount = 0, oldI = 0, oldX = 0, oldY = 0, oldJ = 0;
 #endif
-    for (i = 0; i < MAXSLNS; i++)
-    for (j = 0; j < MAXSCOL; j++)
+    /* A cell that differs sends a request of its own here too, so the
+       connection is asked a cell and not a row: a loss found inside one of
+       them leaves the cells after it alone (e_x_render_dirty_cells). */
+    for (i = 0; i < MAXSLNS && e_x_conn_step_usable(); i++)
+    for (j = 0; j < MAXSCOL && e_x_conn_step_usable(); j++)
     {
      int sc = e_gt_char(j, i);
      int sa = e_gt_col(j, i);
@@ -1277,19 +1331,27 @@ int e_x_refresh()
      }
     } } /* _n block */
 #ifndef NOXCACHE
+   if (e_x_conn_step_usable())
     XDrawImageString(WpeXInfo.display, e_x_backbuf_target(), WpeXInfo.gc,
         oldX, oldY, stringbuf, stringcount);
 #ifdef NEWSTYLE
+   if (e_x_conn_step_usable())
     e_flush_xrect();
 #endif
 #endif
    } /* end of non-Xft path */
 
    fk_cursor(cur_tmp);
-   fk_show_cursor();
-   if (WpeRender.flush_all)
+   /* The cell loop is where Xlib reports a broken connection, from inside the
+      one call that flushed or waited for a reply: the cursor, the present and
+      the flush after it are then left alone.  Silently, because this
+      refresh's own refusal is already in the trace. */
+   if (e_x_conn_step_usable())
+    fk_show_cursor();
+   if (e_x_conn_step_usable() && WpeRender.flush_all)
     WpeRender.flush_all();
-   XFlush(WpeXInfo.display);
+   if (e_x_conn_step_usable())
+    XFlush(WpeXInfo.display);
 #ifndef NO_XWINDOWS
    {
     /* Mirror each painted frame to XWPE_X_DUMP (a PPM), like the Wayland dump,
@@ -1322,6 +1384,8 @@ static int e_x_apply_size(int raw_w, int raw_h, int *pw, int *ph,
 static int e_x_apply_configure(XEvent *report, int *pw, int *ph,
                                int *old_scol, int *old_slns)
 {
+ if (!e_x_conn_usable("the window size"))
+  return 0;
  while (XCheckTypedWindowEvent(WpeXInfo.display, WpeXInfo.window,
         ConfigureNotify, report))
   ;
@@ -1417,6 +1481,8 @@ static void e_x_answer_expose(XEvent *report)
 {
  XExposeEvent *expose_report = (XExposeEvent *)report;
 
+ if (!e_x_conn_usable("the event queue"))
+  return;
  if (e_x_backbuf_exists() &&
      XCheckTypedWindowEvent(WpeXInfo.display, WpeXInfo.window,
       ConfigureNotify, report))
@@ -1457,6 +1523,8 @@ static void e_x_repaint_resized(void)
  */
 static void e_x_answer_configure(XEvent *report)
 {
+ if (!e_x_conn_usable("the event queue"))
+  return;
  while (XCheckTypedWindowEvent(WpeXInfo.display, WpeXInfo.window,
         ConfigureNotify, report))
   ;
@@ -1468,7 +1536,9 @@ static void e_x_answer_configure(XEvent *report)
  *
  * Called first thing in the key reader, before anything is refreshed: the
  * grid and buffers change, the window shows the back buffer, and the layout
- * owner lays the windows and every box out again.
+ * owner lays the windows and every box out again.  A size noted before the
+ * server went away is not taken after it: the pending size stays noted, which
+ * costs one refusal line per key read and no request.
  * Return: non-zero when the grid changed (the reader returns the resize
  * sentinel).
  */
@@ -1476,6 +1546,8 @@ static int e_x_apply_pending_resize(void)
 {
  int pw, ph, old_scol, old_slns;
 
+ if (!e_x_conn_usable("the window size"))
+  return 0;
  if (!e_x_size_pending)
   return 0;
  e_x_size_pending = 0;
@@ -1498,6 +1570,8 @@ static void e_x_serve_display(void)
 {
  XEvent report;
 
+ if (!e_x_conn_usable("the event queue"))
+  return;
  while (XCheckMaskEvent(WpeXInfo.display, ExposureMask | StructureNotifyMask,
                         &report) == True)
  {
@@ -1805,6 +1879,9 @@ static int e_x_key_press_code(XKeyEvent *ev)
 void e_x_flush_input(void)
 {
  XEvent report;
+
+ if (!e_x_conn_usable("the event queue"))
+  return;
  while (XCheckMaskEvent(WpeXInfo.display,
                         KeyPressMask | ButtonPressMask | ButtonReleaseMask,
                         &report))
@@ -1856,15 +1933,156 @@ void e_x_register_live_resize(void)
   libx11CompatRegisterLiveResizeReflow(e_x_live_resize_reflow);
 }
 
-int e_x_getch()
+/**
+ * e_x_poll_buttons - Ask the server which buttons the pointer holds now.
+ *
+ * What the user gets: a click reaches the editor only while a button is
+ * really held, and the editor's idea of the pointer's cell follows it.  A
+ * server that is gone sends no release, so with a button reported held every
+ * key read would answer a click and the editor would spin without ever
+ * reaching the wait that ends it; a query that fails holds no button either.
+ * Return: the editor's button bits (1 left, 2 middle, 4 right), 0 for none.
+ */
+static int e_x_poll_buttons(void)
 {
  Window tmp_win, tmp_root;
- XEvent report;
+ int root_x, root_y, x, y;
+ unsigned int key_b = 0;
+ int c;
+
+ if (!e_x_conn_usable("the pointer state"))
+  return 0;
+ if (!XQueryPointer(WpeXInfo.display, WpeXInfo.window, &tmp_root, &tmp_win,
+        &root_x, &root_y, &x, &y, &key_b))
+  return 0;
+ if (!(key_b & (Button1Mask | Button2Mask | Button3Mask)))
+  return 0;
+ e_mouse.x = x / WpeXInfo.font_width;
+ e_mouse.y = y / WpeXInfo.font_height;
+ c = 0;
+ if (key_b & Button1Mask) c |= 1;
+ if (key_b & Button2Mask) c |= 4;
+ if (key_b & Button3Mask) c |= 2;
+ return c;
+}
+
+/**
+ * e_x_answer_selection_request - Give another application the text we copied.
+ * @req: the SelectionRequest event.
+ *
+ * What the user gets: a paste in any other program after a copy in the
+ * editor.  We own both PRIMARY and CLIPBOARD; the requestor's `selection`
+ * field says which, and the same cached bytes are served for either.  TARGETS
+ * (the list a GTK/Qt app probes first) is answered, and UTF8_STRING or STRING
+ * carries the UTF-8 bytes.  A request that arrives after the server went away
+ * is dropped: there is no requestor left to answer.
+ */
+static void e_x_answer_selection_request(XSelectionRequestEvent *req)
+{
  XSelectionEvent se;
+
+ if (!e_x_conn_usable("the selection"))
+  return;
+ if (!WpeXInfo.selection)
+  return;
+ se.type = SelectionNotify;
+ se.display = req->display;
+ se.requestor = req->requestor;
+ se.selection = req->selection;
+ se.time = req->time;
+ se.target = req->target;
+ se.property = (req->property == None) ? req->target : req->property;
+ if (req->target == WpeXInfo.targets_atom)
+ {
+  Atom targets[3];
+  targets[0] = WpeXInfo.targets_atom;
+  targets[1] = WpeXInfo.utf8_atom;
+  targets[2] = WpeXInfo.text_atom;
+  XChangeProperty(se.display, se.requestor, se.property, XA_ATOM, 32,
+    PropModeReplace, (unsigned char *)targets, 3);
+ }
+ else if (req->target == WpeXInfo.utf8_atom ||
+          req->target == WpeXInfo.text_atom)
+  XChangeProperty(se.display, se.requestor, se.property, req->target, 8,
+    PropModeReplace, WpeXInfo.selection, strlen(WpeXInfo.selection));
+ else
+  se.property = None;
+ XSendEvent(WpeXInfo.display, se.requestor, False, 0, (XEvent *)&se);
+}
+
+/**
+ * e_x_answer_selection_clear - Forget the copied text another app took over.
+ *
+ * What the user gets: a paste in the editor reads what is on the clipboard
+ * now, not bytes copied before another application took the selection over.
+ * ONE selection (PRIMARY or CLIPBOARD) is lost at a time, so the cached bytes
+ * are dropped only once the editor owns NEITHER: losing CLIPBOARD does not
+ * stop it serving a still-owned PRIMARY, and the other way round.  After the
+ * server went away there is no owner left to ask, and the cached bytes go
+ * with the process.
+ */
+static void e_x_answer_selection_clear(void)
+{
+ if (!e_x_conn_usable("the selection"))
+  return;
+ if (WpeXInfo.selection &&
+     XGetSelectionOwner(WpeXInfo.display, WpeXInfo.selection_atom)
+       != WpeXInfo.window &&
+     XGetSelectionOwner(WpeXInfo.display, WpeXInfo.clipboard_atom)
+       != WpeXInfo.window)
+ {
+  WpeFree(WpeXInfo.selection);
+  WpeXInfo.selection = NULL;
+ }
+}
+
+/**
+ * e_x_wait_if_lost - Go to the editor's own wait once the server is gone.
+ * @keyboard_watched: whether the connection's descriptor is watched already.
+ *
+ * What the user gets: a server that crashed, a session that ended or a
+ * connection that was cut costs no hang and no crash.  The key reader has one
+ * thing left to do and it is not an X call: the editor's own wait serves the
+ * end request, so the windows with unsaved changes are written to .ESV files
+ * and the editor ends as it does when its terminal is closed.  Nothing of the
+ * dispatch that follows runs after the loss, so no handler answers an event
+ * from a server that is gone (wl_conn_dispatch of the Wayland backend is the
+ * model).
+ * Return: 1 once the connection is gone, and the wait was served (the caller
+ * returns no key), 0 while the server is there.
+ */
+static int e_x_wait_if_lost(int keyboard_watched)
+{
+ if (e_x_conn_step_usable())
+  return 0;
+ e_fd_key_wait(keyboard_watched);
+ return 1;
+}
+
+/**
+ * e_x_flush_painted - Put the requests of a repaint out at once.
+ *
+ * What the user gets: after a size the server sent, the new picture reaches
+ * the window in one step, so a window that just changed size is never shown
+ * half laid out.  A server that is gone gets no flush: the size it sent was
+ * refused, so there is nothing of the editor's left to put out.  This is no
+ * wait, so it asks the owner like any other call and does not ride on the
+ * exemption of the key reader's own wait.
+ */
+static void e_x_flush_painted(void)
+{
+ if (!e_x_conn_usable("the painted frame"))
+  return;
+ XFlush(WpeXInfo.display);
+}
+
+int e_x_getch()
+{
+ XEvent report;
  KeySym keysym;
  int charcount;
  unsigned char buffer[BUFSIZE];
- int c, root_x, root_y, x, y;
+ int c;
  unsigned int key_b;
  XSizeHints size_hints;
  int keyboard_watched;
@@ -1882,30 +2100,20 @@ int e_x_getch()
  if (c > 0)
   return c;
 
- /* A server that is gone sends no release: with the button reported held
-    every call here would return a click and the editor would spin without
-    reaching the wait that ends it.  A failed query holds no button either. */
- key_b = 0;
- if (WpeXInfo.lost
-   || !XQueryPointer(WpeXInfo.display, WpeXInfo.window, &tmp_root, &tmp_win,
-        &root_x, &root_y, &x, &y, &key_b))
-  key_b = 0;
- if (key_b & (Button1Mask | Button2Mask | Button3Mask))
- {
-  e_mouse.x = x / WpeXInfo.font_width;
-  e_mouse.y = y / WpeXInfo.font_height;
-  c = 0;
-  if (key_b & Button1Mask) c |= 1;
-  if (key_b & Button2Mask) c |= 4;
-  if (key_b & Button3Mask) c |= 2;
+ c = e_x_poll_buttons();
+ if (c)
   return(-c);
- }
 
  keyboard_watched = (e_fd_watch(ConnectionNumber(WpeXInfo.display), POLLIN, NULL, NULL,
                                  "the keyboard") == 0);
 
  while (1)
  {
+  /* A connection that is gone leaves the editor one thing to do: its own
+     wait, which serves the end request and touches no Xlib call, so nothing
+     of the dispatch below runs after the loss and the editor never spins. */
+  if (e_x_wait_if_lost(keyboard_watched))
+   return(0);
   /* A resize a command's window noted while it ran is laid out here, at
      the one point where nothing is being drawn. */
   if (e_x_apply_pending_resize() || wpe_layout_run_pending())
@@ -1933,7 +2141,7 @@ int e_x_getch()
       if (e_x_apply_configure(&report, &_pw, &_ph, &_old_scol, &_old_slns))
       {
        e_x_backbuf_present(0, 0, _pw, _ph);
-       XFlush(WpeXInfo.display);
+       e_x_flush_painted();
 
        /* The layout owner lays the windows and every box out again, and
           forgets a stale last view first (the grid, and so every pic, was
@@ -1984,52 +2192,10 @@ int e_x_getch()
     if (report.xbutton.button == 3) c |= 4;
     return(-c);
    case SelectionRequest:
-    /* Another app asks for the text we copied.  We own both PRIMARY and
-       CLIPBOARD; the requestor's `selection` field says which, and we serve
-       the same cached bytes for either.  Answer TARGETS (the list a GTK/Qt app
-       probes first), and serve UTF8_STRING or STRING with the UTF-8 bytes. */
-    if (WpeXInfo.selection)
-    {
-     XSelectionRequestEvent *req = &report.xselectionrequest;
-
-     se.type = SelectionNotify;
-     se.display = req->display;
-     se.requestor = req->requestor;
-     se.selection = req->selection;
-     se.time = req->time;
-     se.target = req->target;
-     se.property = (req->property == None) ? req->target : req->property;
-     if (req->target == WpeXInfo.targets_atom)
-     {
-      Atom targets[3];
-      targets[0] = WpeXInfo.targets_atom;
-      targets[1] = WpeXInfo.utf8_atom;
-      targets[2] = WpeXInfo.text_atom;
-      XChangeProperty(se.display, se.requestor, se.property, XA_ATOM, 32,
-        PropModeReplace, (unsigned char *)targets, 3);
-     }
-     else if (req->target == WpeXInfo.utf8_atom ||
-              req->target == WpeXInfo.text_atom)
-      XChangeProperty(se.display, se.requestor, se.property, req->target, 8,
-        PropModeReplace, WpeXInfo.selection, strlen(WpeXInfo.selection));
-     else
-      se.property = None;
-     XSendEvent(WpeXInfo.display, se.requestor, False, 0, (XEvent *)&se);
-    }
+    e_x_answer_selection_request(&report.xselectionrequest);
     break;
    case SelectionClear:
-    /* We lost ONE selection (PRIMARY or CLIPBOARD) to another app.  Only drop
-       the cached bytes once we own NEITHER, so losing CLIPBOARD does not stop
-       us serving a still-owned PRIMARY (and vice versa). */
-    if (WpeXInfo.selection &&
-        XGetSelectionOwner(WpeXInfo.display, WpeXInfo.selection_atom)
-          != WpeXInfo.window &&
-        XGetSelectionOwner(WpeXInfo.display, WpeXInfo.clipboard_atom)
-          != WpeXInfo.window)
-    {
-     WpeFree(WpeXInfo.selection);
-     WpeXInfo.selection = NULL;
-    }
+    e_x_answer_selection_clear();
     break;
    default:
     break;
@@ -2044,6 +2210,8 @@ int e_x_kbhit()
  int c;
  unsigned int key_b;
 
+ if (!e_x_conn_usable("the event queue"))
+  return(0);
  e_refresh();
  e_input_was_char = 0;               /* default; the UTF-8 decoders set it when a
                                         typed character is returned */
@@ -2119,7 +2287,8 @@ static Bool e_x_is_press_of(Display *display, XEvent *ev, XPointer arg)
  *
  * A key asked for by name is picked out of the queue with every other
  * event left in its place and order, so the user who typed ahead and then
- * pressed Esc to stop a wait keeps what was typed.
+ * pressed Esc to stop a wait keeps what was typed.  A server that is gone
+ * has no queue left to pick from, so the wait ends with no key.
  * Return: the key, or 0.
  */
 static int e_x_key_take(int want)
@@ -2128,6 +2297,8 @@ static int e_x_key_take(int want)
  KeySym sym;
  KeyCode code;
 
+ if (!e_x_conn_usable("the event queue"))
+  return 0;
  if (want == WPE_PAINT_ANY_KEY)
   return e_x_kbhit();
  sym = e_x_keysym_of(want);
@@ -2175,6 +2346,8 @@ static Time e_x_get_server_time(void)
  XEvent ev;
  Time ts = CurrentTime;
 
+ if (!e_x_conn_usable("the window raise"))
+  return CurrentTime;
  XChangeProperty(WpeXInfo.display, WpeXInfo.window,
    XA_WM_NAME, XA_STRING, 8, PropModeAppend, (unsigned char *)"", 0);
  XFlush(WpeXInfo.display);
@@ -2188,6 +2361,8 @@ static void e_x_send_active_window(Time ts)
 {
  XEvent ev;
 
+ if (!e_x_conn_usable("the window raise"))
+  return;
  memset(&ev, 0, sizeof(ev));
  ev.type = ClientMessage;
  ev.xclient.window = WpeXInfo.window;
@@ -2205,10 +2380,13 @@ static void e_x_send_active_window(Time ts)
  *
  * After a debug session starts the user types into the editor, not into a
  * window the debugger came up behind.  The stacking stays as it is, so the
- * debugger's own terminal stays in view.
+ * debugger's own terminal stays in view.  A debug session that starts after
+ * the server went away gets no focus request: the editor is on its way out.
  */
 static void e_x_focus_editor(void)
 {
+ if (!e_x_conn_usable("the keyboard focus"))
+  return;
  XSetInputFocus(WpeXInfo.display, WpeXInfo.window,
    RevertToParent, CurrentTime);
  XFlush(WpeXInfo.display);
@@ -2217,12 +2395,15 @@ static void e_x_focus_editor(void)
 /**
  * e_x_raise_editor - Bring the editor's X window back to the front and
  * give it the keyboard, when a debug stop brought the user's attention
- * elsewhere.
+ * elsewhere.  A server that is gone gets no request: there is no window left
+ * to raise, and the editor ends at its next wait.
  */
 static void e_x_raise_editor(void)
 {
  Time ts;
 
+ if (!e_x_conn_usable("the window raise"))
+  return;
  ts = e_x_get_server_time();
 
  XRaiseWindow(WpeXInfo.display, WpeXInfo.window);
@@ -2369,23 +2550,35 @@ int e_x_repaint_desk(FENSTER *f)
 }
 
 
+/**
+ * fk_x_mouse_no_server - The pointer answer for a server that is gone.
+ * @g: receives the buttons and the position the last query gave.
+ *
+ * No release will ever come from a server that is gone, so no button is
+ * reported: a loop that polls the mouse ends instead of spinning on a click
+ * that cannot come, and reaches the wait that saves the user's work.
+ * Return: 0 buttons.
+ */
+static int fk_x_mouse_no_server(int *g)
+{
+ g[2] = e_mouse.x * 8;
+ g[3] = e_mouse.y * 8;
+ g[0] = g[1] = 0;
+ return(0);
+}
+
 int fk_x_mouse(int *g)
 {
  Window tmp_win, tmp_root;
  int root_x, root_y, x, y;
  unsigned int key_b;
 
+ if (!e_x_conn_usable("the pointer state"))
+  return fk_x_mouse_no_server(g);
  key_b = 0;
- /* No release will come from a server that is gone: report no button. */
- if (WpeXInfo.lost
-   || !XQueryPointer(WpeXInfo.display, WpeXInfo.window, &tmp_root, &tmp_win,
+ if (!XQueryPointer(WpeXInfo.display, WpeXInfo.window, &tmp_root, &tmp_win,
         &root_x, &root_y, &x, &y, &key_b))
- {
-  g[2] = e_mouse.x * 8;
-  g[3] = e_mouse.y * 8;
-  g[0] = g[1] = 0;
-  return(0);
- }
+  return fk_x_mouse_no_server(g);
  g[0] = 0;
  if (key_b & Button1Mask)
   g[0] |= 1;
@@ -2399,9 +2592,20 @@ int fk_x_mouse(int *g)
  return(g[1]);
 }
 
-/* X11 scrollbar-drag pointer grab: capture button/motion for the whole drag. */
+/**
+ * fk_x_grab_pointer - Hold the pointer for the whole of a drag, or let it go.
+ * @on: non-zero to grab, 0 to release.
+ *
+ * What the user gets: a scrollbar drag keeps tracking the pointer even when
+ * it leaves the window, and the pointer is the user's again once the drag
+ * ends.  A server that is gone gets neither request: the drag that the loss
+ * ended has no pointer left to let go of.
+ * Return: 0.
+ */
 int fk_x_grab_pointer(int on)
 {
+ if (!e_x_conn_usable("the pointer grab"))
+  return(0);
  if (on)
   XGrabPointer(WpeXInfo.display, WpeXInfo.window, False,
     Button1MotionMask | ButtonReleaseMask,
@@ -2419,8 +2623,10 @@ int fk_x_grab_pointer(int on)
  * XNextEvent then crashes once they return.  So the wait is the editor's
  * own, in the shared loop (which also serves the end request): flush, wait
  * on the connection, and let XPending read it; the user whose server died
- * mid-drag gets the emergency save instead of a crash.  Returns with
- * WpeXInfo.lost set when the server is gone.
+ * mid-drag gets the emergency save instead of a crash.  This is the one wait
+ * that may touch a connection which may be gone, because it is the place that
+ * finds out (wl_conn_dispatch is the model): it returns with WpeXInfo.lost
+ * set, and the drag's end then runs with every request of its own refused.
  */
 static void e_x_wait_for_event(void)
 {
@@ -2437,18 +2643,28 @@ static void e_x_wait_for_event(void)
  }
 }
 
-/* X11 scrollbar-drag event step: 0 on release (done), -1 on an unrelated event,
-   1 on motion with the pointer position (pixels) in *px/*py.  Queued motions are
-   coalesced so the drag tracks the latest position, not every intermediate one. */
+/**
+ * fk_x_drag_next - The next step of a scrollbar drag.
+ * @px: @py: receive the pointer's position in window pixels.
+ *
+ * What the user gets: the thumb follows the pointer, queued motions
+ * coalesced so it tracks the latest one.  A server that is gone ends the drag
+ * at once: the release it will never send is not waited for.
+ * Return: 0 on the release (the drag is over) or on a server that is gone,
+ * -1 on an unrelated event, 1 on motion.
+ */
 int fk_x_drag_next(int *px, int *py)
 {
  XEvent ev;
 
+ if (!e_x_conn_usable("the drag's next event"))
+  return(0);
  e_x_wait_for_event();
- /* XNextEvent that reads from a connection that broke ends in a crash once
-    Xlib's exit handler has returned: the drag ends, and the next wait of
-    the editor serves the end request. */
- if (WpeXInfo.lost)
+ /* The wait above is the place that finds the loss out, and XNextEvent that
+    reads from a connection that broke ends in a crash once Xlib's exit
+    handler has returned: the owner is asked again, so the drag ends and says
+    what it gave up. */
+ if (!e_x_conn_usable("the drag's next event"))
   return(0);
  XNextEvent(WpeXInfo.display, &ev);
  if (ev.type == ButtonRelease)
@@ -2475,6 +2691,8 @@ static int e_clip_x_wait_notify(XEvent *ev)
  int waited;
  struct pollfd pfd;
 
+ if (!e_x_conn_usable("the selection"))
+  return 0;
  for (waited = 0; waited < 1000; waited += 100)
  {
   if (XCheckTypedEvent(WpeXInfo.display, SelectionNotify, ev))
@@ -2483,6 +2701,10 @@ static int e_clip_x_wait_notify(XEvent *ev)
   pfd.events = POLLIN;
   if (poll(&pfd, 1, 100) > 0)
    XEventsQueued(WpeXInfo.display, QueuedAfterReading);
+  /* The answer may have been the I/O error that ended the connection: stop
+     polling a descriptor that is gone. */
+  if (!e_x_conn_step_usable())
+   return 0;
  }
  return XCheckTypedEvent(WpeXInfo.display, SelectionNotify, ev);
 }
@@ -2492,9 +2714,13 @@ static int e_clip_x_wait_notify(XEvent *ev)
    paste) and CLIPBOARD (^C/^V in GTK/Qt apps) selections, so a plain Copy in
    xwpe is pasteable everywhere.  The SelectionRequest handler then serves these
    bytes as UTF8_STRING/STRING and answers TARGETS.  Installed at X11 start-up,
-   so e_edt_copy's transparent export reaches the X selections. */
+   so e_edt_copy's transparent export reaches the X selections.  A Copy asked
+   for after the server went away (a debugger's callback, a box the emergency
+   save opens) keeps the bytes and takes no selection. */
 static void e_clip_x_set(const char *utf8, int len)
 {
+ if (!e_x_conn_usable("the selection"))
+  return;
  if (len < 0)
   return;
  if (WpeXInfo.selection)
@@ -2517,16 +2743,20 @@ static void e_clip_x_set(const char *utf8, int len)
    is CLIPBOARD (another application's, or the editor's own, which gives NULL
    so Paste uses xwpe's internal clipboard, no round-trip), else another
    application's PRIMARY.  The text is fetched as UTF8_STRING, event-driven,
-   and returned malloc'd + NUL-terminated (caller frees). */
+   and returned malloc'd + NUL-terminated (caller frees).  A Paste asked for
+   after the server went away reads no selection: there is nothing to read it
+   from, and the editor is on its way out. */
 static char *e_clip_x_get(int *len)
 {
  Atom sels[2];
  int order[2];
  int count, si;
- Window own_clip = XGetSelectionOwner(WpeXInfo.display,
-                                      WpeXInfo.clipboard_atom);
- Window own_prim = XGetSelectionOwner(WpeXInfo.display,
-                                      WpeXInfo.selection_atom);
+ Window own_clip, own_prim;
+
+ if (!e_x_conn_usable("the selection"))
+  return NULL;
+ own_clip = XGetSelectionOwner(WpeXInfo.display, WpeXInfo.clipboard_atom);
+ own_prim = XGetSelectionOwner(WpeXInfo.display, WpeXInfo.selection_atom);
 
  count = e_clip_paste_order(own_clip == WpeXInfo.window,
                             own_clip != None && own_clip != WpeXInfo.window,

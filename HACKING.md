@@ -1040,32 +1040,77 @@ editor then ends as it does on SIGHUP, so the user keeps the work.
   served and nothing spins), present commits nothing, and `clip_pipe_drain`
   stops on `POLLHUP`. Before the backend is published a failure keeps the old
   way out (fall back to X11).
-- X11: `XSetIOErrorHandler(e_x_io_error)` in `WpeXInit` (`WeXterm.c`) marks
-  `WpeXInfo.lost` and calls `e_display_lost`. With libX11 1.7 or later,
-  `XSetIOErrorExitHandler` (found by configure) installs an exit handler that
-  returns, so the process lives on to save; afterwards Xlib calls on the
-  broken display do nothing, with one exception: an `XNextEvent` that has to
-  read from the socket crashes once the handlers have returned. So the drag
-  (`fk_x_drag_next`) never lets it read: `e_x_wait_for_event` flushes and
-  waits in the shared loop until an event is queued (`XPending`) or the
-  display is lost, and the drag ends when lost.
+- X11: `XSetIOErrorHandler(e_x_io_error)` in `WpeXInit` (`WeXterm.c`) calls
+  `e_x_conn_lost`, the one owner of the connection after the server is gone.
+  It marks `WpeXInfo.lost` and calls `e_display_lost`. With libX11 1.7 or
+  later, `XSetIOErrorExitHandler` (found by configure) installs an exit
+  handler that returns, so the process lives on to save. What keeps the later
+  calls off the broken connection is the owner's flag, not a property of that
+  libX11: dropping requests once the I/O error handler has returned is what
+  one version does, and on a stack that keeps sending them the first call that
+  reaches libXrender ends the editor with SIGSEGV, so the save never runs.
+  Every call that can put a request on the wire or wait for a reply therefore
+  asks `e_x_conn_usable(what)` first, returns the "nothing happened" value its
+  caller already handles (no key, no button, no event, no present), and names
+  what it refused in `$XWPE_UI_TRACE`, one line a call. The loops that paint a
+  cell, a window or a rectangle at a time, and the stages of a back buffer
+  remake, ask the silent `e_x_conn_step_usable()` once a step instead, because
+  Xlib runs the handler inside whichever call flushed or waited for a reply
+  and that call then goes on; a trace line a cell would cost more than the
+  paint. The step is asked a cell and not a row: one request into libXrender
+  on a display that is gone is the crash, so a row left to finish after the
+  loss is a row of them. The one call inside which Xlib found the loss cannot
+  be guarded by anyone, only its next step.
+  The two waits that read events are the places that find out, so they are
+  exempt call by call and not as whole functions: `e_x_wait_for_event` (which
+  the drag uses) flushes and waits in the shared loop until an event is queued
+  (`XPending`) or the display is lost, and `e_x_getch`'s loop may hold two
+  `XPending`, one `XFlush` and one `XNextEvent`, each of them after the test
+  that ends the wait, and nothing else. Once lost, `e_x_getch` asks
+  `e_x_wait_if_lost`, which serves the editor's own `e_fd_key_wait` and
+  touches no Xlib call (`wl_conn_dispatch` is the model), so nothing of its
+  dispatch switch runs after the loss, and the drag ends.
   The other thing a dead display must not do is report a held button: the
   editor polls the pointer in loops that wait for a release (a click on the
   menu bar, the text or a scrollbar track), and a release never comes. The
-  X11 pointer owners (`e_x_getch`, `fk_x_mouse`) report no button once
-  `WpeXInfo.lost` and when `XQueryPointer` fails (its result is checked and
-  the button state is initialised, so a failed query cannot leave stale
-  data); `fk_w_mouse` does the same on Wayland once `WpeWl.lost`. That is the
-  fix of the spin at full speed; `fk_w_drag_next` returning 0 when lost is
-  only defence for the drag. Without the exit handler the handler must not
-  return, so it runs the end itself (`e_display_lost_exit`, which also runs an
-  end a signal asked for and ends the children of an end already running): the
-  one platform-forced divergence. `e_x_display_end` does not call
-  `XCloseDisplay` on a lost connection.
-- `tests/check-wayland-frame.sh` rules 4 and 5 hold this: libwayland's
+  X11 pointer owners (`e_x_poll_buttons`, `fk_x_mouse`) ask the guard and
+  report no button once the connection is gone, and check the result of
+  `XQueryPointer`, so a failed query cannot leave stale data; `fk_w_mouse`
+  does the same on Wayland once `WpeWl.lost`. That is the fix of the spin at
+  full speed; `fk_w_drag_next` returning 0 when lost is only defence for the
+  drag. Without the exit handler the handler must not return, so it runs the
+  end itself (`e_display_lost_exit`, which also runs an end a signal asked for
+  and ends the children of an end already running): the one platform-forced
+  divergence. `e_x_display_end` refuses the teardown once the connection is
+  gone and leaves the resources to the process exit, since Xlib forbids calls
+  from inside its handler and `XCloseDisplay` on a broken connection is
+  undefined. The Wayland end does run its teardown.
+- `tests/check-x11-lost-owner.sh` holds the X11 half of the invariant: a
+  function of `we_xterm.c`, `WeXterm.c`, `we_xbackbuf.c`, `we_render_cairo.c`
+  or `we_render_glyphs.h` that holds a call which can reach the server is an
+  owner, is guarded as its first `if`, or is a counted line of
+  `tests/x11-lost-owner.allow` (`startup`, `local`, `dead` or `below`, the
+  last verified against every caller). A call through the renderer's table
+  (`WpeRender.draw_rect` and its fellows) counts as one at the caller, not
+  where the address was taken, and so does a call of a helper that reaches the
+  server: the guard has to be the first thing that can send, and its `return`
+  has to return. The owners are exempt call by call and position by position,
+  so a new X call in `e_x_getch` is an offence and so is an exempt one moved
+  before the test that ends the wait. Every undefined `X*`, `Xft*`,
+  `cairo_*` or `pango_cairo_*` symbol of the four objects must be a call the
+  source scan saw, so a macro cannot hide one. The canaries that prove the
+  scanner sees each of these run at the start of every run, not only under
+  `--selftest`. Rows:
+  `tests/x11/test_display_lost.py`, which loses the server inside a scrollbar
+  drag and asserts the four refusals of the drag's end, the key reader's
+  entry, its pointer poll and the teardown in trace order,
+  `tests/test_xbackbuf.c`, which loses it in the middle of a remake, and
+  `tests/test_xcells.c`, which counts the requests of a refresh on both routes
+  and loses the server at one cell of a row.
+- `tests/check-wayland-frame.sh` rules 4 and 5 hold the rest: libwayland's
   dispatch, roundtrip and flush only in the `wl_conn_*` functions,
   `XSetIOErrorHandler` once, `e_display_lost` defined and declared once and
-  called from `wl_conn_lost` and `e_x_io_error` only (counted lines of
+  called from `wl_conn_lost` and `e_x_conn_lost` only (counted lines of
   `tests/wayland-frame.allow`). Rows: `tests/wayland/test_display_lost.py` and
   `tests/x11/test_display_lost.py`, each on a display of its own that the row
   ends, with rows that lose the display at a debugger stop (also while the

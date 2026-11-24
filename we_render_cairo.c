@@ -399,10 +399,14 @@ static void cr_direct_touch(int x, int y, int w, int h)
  *
  * What the user sees after a refresh: the frame the editor finished
  * painting, put on the window in one copy so it never shows half drawn.
+ * A server that is gone gets no copy: flushing the surface to it is what
+ * reached libXrender and ended the editor with SIGSEGV.
  */
 static void cr_direct_present(int x, int y, int w, int h)
 {
 #ifndef NO_XWINDOWS
+ if (!e_x_conn_usable("the painted frame"))
+  return;
  cairo_surface_flush(cr_surface);
  e_x_backbuf_present(x, y, w, h);
 #endif
@@ -431,10 +435,13 @@ static void cr_direct_present_all(void)
  * @h: height, in pixels
  *
  * Lets a scroll move the text already painted instead of painting it again.
+ * A scroll asked for after the server went away moves nothing.
  */
 static void cr_direct_blit(int sx, int sy, int dx, int dy, int w, int h)
 {
 #ifndef NO_XWINDOWS
+ if (!e_x_conn_usable("the painted frame"))
+  return;
  cairo_surface_flush(cr_surface);
  e_x_backbuf_scroll(sx, sy, dx, dy, w, h);
  cairo_surface_mark_dirty_rectangle(cr_surface, dx, dy, w, h);
@@ -886,7 +893,10 @@ static void cr_ix_put_rect(const cairo_rectangle_int_t *r)
  * @changed: what changed since it was last sent
  *
  * Each changed rectangle goes on its own; when a refresh changed many
- * scattered pieces, the box around them goes in one request instead.
+ * scattered pieces, the box around them goes in one request instead.  A
+ * request that found the connection broken is the last one: the rectangles
+ * after it are dropped, silently, because the present that asked for them has
+ * already said so in the trace.
  *
  * Return: how many rectangles changed.
  */
@@ -902,7 +912,7 @@ static int cr_ix_send(cairo_region_t *changed)
   cr_ix_put_rect(&r);
   return n;
  }
- for (i = 0; i < n; i++)
+ for (i = 0; i < n && e_x_conn_step_usable(); i++)
  {
   cairo_region_get_rectangle(changed, i, &r);
   cr_ix_put_rect(&r);
@@ -984,6 +994,8 @@ static void cr_ix_present(int x, int y, int w, int h)
  cairo_rectangle_int_t r;
  cairo_region_t *changed;
 
+ if (!e_x_conn_usable("the painted frame"))
+  return;
  r.x = x;
  r.y = y;
  r.width = w;
@@ -1023,6 +1035,8 @@ static void cr_ix_present_all(void)
  cairo_region_t *changed;
  int i, n;
 
+ if (!e_x_conn_usable("the painted frame"))
+  return;
  n = cairo_region_num_rectangles(cr_ix_dirty);
  if (n == 0)
   return;
@@ -1034,7 +1048,7 @@ static void cr_ix_present_all(void)
  cr_ix_bytes = 0;
  cairo_surface_flush(cr_surface);
  changed = cairo_region_create();
- for (i = 0; i < n; i++)
+ for (i = 0; i < n && e_x_conn_step_usable(); i++)
  {
   cairo_region_get_rectangle(cr_ix_dirty, i, &r);
   cr_ix_map_rect(&r, changed);
@@ -1058,12 +1072,15 @@ static void cr_ix_present_all(void)
  *
  * Lets a scroll move the text already painted instead of painting it
  * again; the moved rectangle reaches the window with the next refresh.
+ * A scroll asked for after the server went away moves nothing.
  */
 static void cr_ix_blit(int sx, int sy, int dx, int dy, int w, int h)
 {
  unsigned char *data;
  int stride, row, first, last, step;
 
+ if (!e_x_conn_usable("the painted frame"))
+  return;
  if (!cr_ix_surface_ok())
   return;
  cairo_surface_flush(cr_surface);
@@ -1902,22 +1919,40 @@ static void e_chrome_paint_window_scrollbars(ECNT *ed, FENSTER *f, int w,
 
  if (e_chrome_col_content_visible(ed, f, f->e.x - 1, w))
   cr_chrome_vscrollbar(f, track, thumb);
- if (e_chrome_row_content_visible(ed, f, f->e.y - 1, w))
+ /* A scrollbar is a run of requests of its own, and Xlib reports a broken
+    connection from inside the one that flushed: the bar after it is left
+    alone, silently, as the cell loops leave the cells after one. */
+ if (e_chrome_row_content_visible(ed, f, f->e.y - 1, w) &&
+     e_x_conn_step_usable())
   cr_chrome_hscrollbar(f, track, thumb);
 }
 #endif
 
+/**
+ * wpe_render_chrome - Paint the scrollbars over the cells just painted.
+ *
+ * What the user gets: the scrollbar of every text window on top of the cells,
+ * clipped to the part of the window still visible, so a window stacked above
+ * is never painted over.  A server that is gone gets no overlay: on X11 the
+ * drawing itself is traffic on the wire, so the overlay is refused here rather
+ * than at a present (the forced divergence from the Wayland backend, which
+ * draws into local shared memory and refuses only at wpe_wlframe_present).
+ */
 void wpe_render_chrome(void)
 {
 #ifndef NO_XWINDOWS
  extern ECNT *WpeEditor;
  int w;
 
+ if (!e_x_conn_usable("the scrollbar overlay"))
+  return;
  if (!cr || !WpeEditor || wpe_paint_chrome_suppressed() ||
      wpe_paint_modal_depth() > 0)
   return;
 
- for (w = 1; w <= WpeEditor->mxedt; w++)
+ /* One window a pass, and every glyph of it is a request: a loss found
+    inside the paint of one window leaves the ones after it alone. */
+ for (w = 1; w <= WpeEditor->mxedt && e_x_conn_step_usable(); w++)
  {
   /* f[] is indexed by Z-LEVEL (f[1]=bottom .. f[mxedt]=top), the same
      convention the cell compositor uses (e_repaint_desk_nopic).  The active

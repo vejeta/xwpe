@@ -50,8 +50,8 @@ typedef struct wpeXStruct {
  int colors[16];
  WpeMouseShape shape_list[2];
  char *selection;
- int lost;             /* the X server went away: Xlib is not to be called
-                          again except to be left alone (see e_x_io_error) */
+ int lost;             /* the X server went away: no call of the editor's may
+                          reach it again (see e_x_conn_usable) */
 #ifdef HAVE_XFT
  XftFont *xftfont;
  XftDraw *xftdraw;
@@ -67,6 +67,34 @@ typedef struct wpeXStruct {
 \* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - */
 extern WpeXStruct WpeXInfo;
 
+/* The owner of the connection after the server is gone.  Xlib runs
+   e_x_io_error inside whichever call of the editor's flushed or waited for a
+   reply, so e_x_conn_lost marks the connection gone and from there on every
+   call that can put a request on the wire, or wait for a reply, asks
+   e_x_conn_usable first and returns what its caller already handles as
+   "nothing happened".  The Wayland backend is the model (wl_conn_lost and
+   wpe_wl_conn_flush of we_wayland.c); the X11 guard is a function rather than
+   an inline read of the flag because it has about forty call sites in four
+   files, and it names what it refused in $XWPE_UI_TRACE.
+
+   e_x_conn_step_usable is the silent form for the middle of a call: a loop
+   over cells, windows or rectangles, and the stages of a buffer remake.
+   Xlib finds the loss inside one call of that loop, the handler returns, and
+   the loop goes on; without this the next step of the same call still reaches
+   the server that is gone.  It writes no trace line, because
+   $XWPE_UI_TRACE opens its file once per line.
+
+   The names a refusal says are fixed: a row asserts on them, in the order the
+   four paths after a loss run.  "the refresh", "the pointer grab", "the
+   pointer state", "the drag's next event", "the event queue", "the window
+   size", "the picture copy", "the painted frame", "the scrollbar overlay",
+   "the frame dump", "the selection", "the keyboard focus", "the window
+   raise", "the font", "the display teardown".  There is no name for the
+   cursor shape: we_xterm.c installs no-ops for it, so WpeXMouseChangeShape
+   and WpeXMouseRestoreShape are reached by nothing. */
+void e_x_conn_lost(void);
+int e_x_conn_usable(const char *what);
+int e_x_conn_step_usable(void);
 
 void WpeXInit(int *argc, char **argv);
 void e_x_grid_of_pixels(int pixel_w, int pixel_h, int *cols, int *rows);

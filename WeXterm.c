@@ -265,6 +265,8 @@ void e_x_publish_size_hints(void)
 {
  XSizeHints size_hints;
 
+ if (!e_x_conn_usable("the font"))
+  return;
  if (!WpeXInfo.display || !WpeXInfo.window)
   return;
  if (WpeXInfo.font_width <= 0 || WpeXInfo.font_height <= 0)
@@ -286,9 +288,12 @@ void e_x_publish_size_hints(void)
    metrics -- and thus the glyph size track the destination monitor. Returns 1
    when the font was reloaded (caller recomputes MAXSCOL/MAXSLNS and the back
    buffer), 0 when the scale was unchanged. No-op on a real X server, where the
-   scale is always 1.0. */
+   scale is always 1.0.  A resize taken after the server went away reloads no
+   font: there is no server to ask for one, and the editor is on its way out. */
 int e_x_refit_font_for_dpi(void)
 {
+ if (!e_x_conn_usable("the font"))
+  return 0;
 #ifdef HAVE_XFT
  double scale = e_x_read_hidpi_scale();
  int seed_h;
@@ -1419,6 +1424,80 @@ void WpeXGCSetup()
  return ;
 }
 
+/* The line the owner of the connection writes about a call it refused, one
+   line per call, naming what it refused in the user's words. */
+#define E_X_CONN_REFUSED "x11 refused %s after the loss"
+
+/**
+ * e_x_conn_lost - The connection to the X server broke: say so once.
+ *
+ * Called from Xlib's I/O error handler and from nowhere else.  The window is
+ * gone, so from here on no call of the editor's reaches the server: every
+ * owner asks e_x_conn_usable first.  The end is asked for, not run, because
+ * Xlib forbids work from inside its handler; the editor does it at its next
+ * wait.  On a libX11 without an exit handler that may return (before 1.7) the
+ * end runs here, the platform's own forced divergence.
+ */
+void e_x_conn_lost(void)
+{
+ if (WpeXInfo.lost)
+  return;
+ WpeXInfo.lost = 1;
+ e_display_lost("the X server", "connection broken");
+#ifndef HAVE_XSETIOERROREXITHANDLER
+ e_display_lost_exit();
+#endif
+}
+
+/**
+ * e_x_conn_usable - May this call still reach the X server?
+ * @what: the call, in the user's words ("the refresh", "the pointer grab").
+ *
+ * What the user gets: a server that crashed, a session that ended or a
+ * connection that was cut costs no work that was saved, and the editor ends
+ * the way it ends on SIGHUP.  Every owner of an X call asks here first, so
+ * nothing reaches libX11's extensions, Xft, cairo or pango after the loss,
+ * and what was refused is named in $XWPE_UI_TRACE, one line per refused call.
+ *
+ * Every refusal writes its line, and not only the first of a name: the same
+ * name is refused on more than one path (the end of a drag refuses a refresh,
+ * and the key reader that runs after it refuses another), so the order and
+ * the number of the lines are what tell one path from the next, and a row
+ * that loses the server inside a drag asserts both.  What keeps the volume
+ * down is not a count of names here but the silent predicate the loops and
+ * the stages of a remake ask instead (e_x_conn_step_usable): a paint storm
+ * after the loss writes no line a cell.
+ *
+ * Return: 1 while the server is there, 0 once it is gone.
+ */
+int e_x_conn_usable(const char *what)
+{
+ if (!WpeXInfo.lost)
+  return 1;
+ wpe_ui_trace(E_X_CONN_REFUSED, what);
+ return 0;
+}
+
+/**
+ * e_x_conn_step_usable - May a step in the middle of a call still reach the
+ * server?
+ *
+ * Xlib runs e_x_io_error inside whichever of the editor's calls flushed or
+ * waited for a reply, and that call then goes on: a loop over cells, windows
+ * or rectangles would keep putting one request per step on a wire that is
+ * gone.  The long loops and the multi-step remakes ask this instead of the
+ * traced e_x_conn_usable, so a paint storm after the loss costs no trace line
+ * per cell ($XWPE_UI_TRACE opens its file for every line it writes).  The one
+ * call inside which Xlib found the loss cannot be guarded by anyone: it is
+ * already running, and only its next step is refused.
+ *
+ * Return: 1 while the server is there, 0 once it is gone.
+ */
+int e_x_conn_step_usable(void)
+{
+ return !WpeXInfo.lost;
+}
+
 /**
  * e_x_io_error - Xlib's handler for a connection to the X server that broke.
  * @display: the display that broke (unused).
@@ -1426,22 +1505,14 @@ void WpeXGCSetup()
  * The X server crashed, the session ended or the connection was cut: the
  * window is gone.  The editor then saves the windows with unsaved changes to
  * .ESV files and exits with code 1, as it does when its terminal is closed;
- * Xlib's own handler would have exited at once and lost the text.  Xlib
- * forbids any Xlib call from here, so the work is only asked for
- * (e_display_lost) and done by the editor at its next wait, after Xlib's exit
- * handler (e_x_io_exit) has returned.  Without that handler (libX11 before
- * 1.7) this handler may not return, so the end is run here, the platform's
- * forced divergence.
+ * Xlib's own handler would have exited at once and lost the text.  The work
+ * is the connection owner's (e_x_conn_lost).
  * Return: 0 (Xlib then calls the exit handler).
  */
 static int e_x_io_error(Display *display)
 {
  (void)display;
- WpeXInfo.lost = 1;
- e_display_lost("the X server", "connection broken");
-#ifndef HAVE_XSETIOERROREXITHANDLER
- e_display_lost_exit();
-#endif
+ e_x_conn_lost();
  return 0;
 }
 
@@ -1452,8 +1523,11 @@ static int e_x_io_error(Display *display)
  * @user_data: unused.
  *
  * Returning leaves the process running, so the editor can save the user's
- * work on its own thread before it exits; Xlib calls here once, and every
- * later Xlib call on the broken display does nothing.
+ * work on its own thread before it exits; Xlib calls here once.  What keeps
+ * the editor's later calls off the broken connection is the owner's own flag
+ * (e_x_conn_usable), not a property of this libX11: dropping requests after
+ * the I/O error handler returned is what one version does, and the editor
+ * does not rest on it.
  */
 static void e_x_io_exit(Display *display, void *user_data)
 {
