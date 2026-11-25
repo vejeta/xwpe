@@ -1285,14 +1285,18 @@ static int fileop_job_finish_move(FileJob *j)
  *
  * Under the test hook the source is replaced by a link between the moment
  * it was judged a file and the moment it is opened, the race the user can
- * only meet by chance.  Does nothing otherwise.
+ * only meet by chance.  Does nothing otherwise, and nothing more when the
+ * link cannot be made: the row then sees a missing source, not a link, and
+ * fails on its own assertion.
  */
 static void fileop_job_plant_source(FileJob *j)
 {
  if (!fileop_test_hook(FILEOP_HOOK_PLANT_SOURCE))
   return;
- if (unlinkat(j->spfd, j->sname, 0) == 0)
-  (void)symlinkat(FILEOP_PLANTED_TARGET, j->spfd, j->sname);
+ if (unlinkat(j->spfd, j->sname, 0) != 0)
+  return;
+ if (symlinkat(FILEOP_PLANTED_TARGET, j->spfd, j->sname) != 0)
+  return;
 }
 
 /**
