@@ -8116,6 +8116,56 @@ static void e_prj_skip_comment_rest(FILE *fp, char *str)
 }
 
 /**
+ * e_prj_value_wants_more - Does a project value go on in the next read?
+ * @value: the value read so far, its newline (if any) still on.
+ *
+ * A value goes on when its line ended in a backslash before the newline,
+ * or when the read stopped before the newline because the line was longer
+ * than one read.  A value with no newline at the end of the file, or an
+ * empty one, is whole: the next read finds nothing and the value is kept as
+ * it stands.
+ * Return: 1 when the next read belongs to this value, 0 when it is whole.
+ */
+static int e_prj_value_wants_more(const char *value)
+{
+ size_t n = strlen(value);
+
+ if (n == 0)
+  return 0;
+ if (value[n - 1] != '\n')
+  return 1;
+ return n >= 2 && value[n - 2] == '\\';
+}
+
+/**
+ * e_prj_value_drop_continuation - Take the backslash and newline off a value
+ * that goes on in the next line, so the lines join with nothing between them.
+ * @value: a value e_prj_value_wants_more said goes on.
+ */
+static void e_prj_value_drop_continuation(char *value)
+{
+ size_t n = strlen(value);
+
+ if (n >= 2 && value[n - 1] == '\n' && value[n - 2] == '\\')
+  value[n - 2] = '\0';
+}
+
+/**
+ * e_prj_value_drop_newline - Take the line's newline off a whole value.
+ * @value: the value as read.
+ *
+ * Only a newline goes: the last line of a project saved without one keeps
+ * its last character (FILES=alpha.c lists alpha.c, not alpha.).
+ */
+static void e_prj_value_drop_newline(char *value)
+{
+ size_t n = strlen(value);
+
+ if (n > 0 && value[n - 1] == '\n')
+  value[n - 1] = '\0';
+}
+
+/**
  * e_read_var - Read the open project's variables into p_v.
  * @f: a window of the desktop; @why: receives the refusal, or NULL.
  * Return: 0 when read; E_PRJ_READ_NOT_OPENED when the read owner refused the
@@ -8185,9 +8235,9 @@ int e_read_var(FENSTER *f, WpeReadOutcome *why)
   if (!(p_v[p_v_n-1]->string = MALLOC((strlen(sp2)+1) * sizeof(char))))
   {  fclose(fp);  e_error(e_msg[ERR_LOWMEM], 0, f->fb);  return(E_PRJ_READ_LOWMEM);  }
   strcpy(p_v[p_v_n-1]->string, sp2);
-  while (p_v[p_v_n-1]->string[i = strlen(p_v[p_v_n-1]->string) - 1] != '\n' || (i && p_v[p_v_n-1]->string[i-1] == '\\'))
+  while (e_prj_value_wants_more(p_v[p_v_n-1]->string))
   {
-   if (p_v[p_v_n-1]->string[i-1] == '\\') p_v[p_v_n-1]->string[i-1] = '\0';
+   e_prj_value_drop_continuation(p_v[p_v_n-1]->string);
    if (!fgets(str, 256, fp)) break;
    if (!(p_v[p_v_n-1]->string = REALLOC(stmp = p_v[p_v_n-1]->string,
 		(strlen(p_v[p_v_n-1]->string)+strlen(str)+1) * sizeof(char))))
@@ -8197,7 +8247,7 @@ int e_read_var(FENSTER *f, WpeReadOutcome *why)
    }
    strcat(p_v[p_v_n-1]->string, str);
   }
-  p_v[p_v_n-1]->string[strlen(p_v[p_v_n-1]->string) - 1] = '\0';
+  e_prj_value_drop_newline(p_v[p_v_n-1]->string);
   for (i = 0; p_v[p_v_n-1]->string[i]; i++)
    if (p_v[p_v_n-1]->string[i] == '\t') p_v[p_v_n-1]->string[i] = ' ';
   p_v[p_v_n-1]->raw = WpeStrdup(p_v[p_v_n-1]->string);

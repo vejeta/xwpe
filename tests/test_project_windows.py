@@ -865,3 +865,37 @@ def test_a_prj_member_opened_from_the_project_window_opens_as_text(tmp_path):
         assert w.alive(), text
         assert 'AddressSanitizer' not in bytes(w.raw).decode('utf-8', 'replace')
     assert 'CMP' in text and 'EXENAME' in text, text      # the .prj as text
+
+
+def _open_prj_text(tmp_path, prj_text):
+    """Open d.prj written as @prj_text (bytes as given, no newline added);
+    return the screen text and whether the editor is still running."""
+    (tmp_path / 'alpha.c').write_text('int a;\n')
+    (tmp_path / 'd.prj').write_bytes(prj_text.encode())
+    with WpeSession(str(tmp_path), SEED_TEXT, filename='t.c', wait=2.0, **COLS_ROWS) as w:
+        _open_d_prj(w)
+        text = _screen_text(w)
+        alive = w.alive()
+        raw = bytes(w.raw).decode('utf-8', 'replace')
+    return text, alive, raw
+
+
+def test_a_project_whose_last_line_has_no_newline_keeps_its_last_character(tmp_path):
+    """A .prj saved by another editor may end without a newline.  Its last
+    value is read whole: FILES=alpha.c lists alpha.c, not alpha. (the reader
+    used to cut the last byte of every value as if it were the newline)."""
+    text, alive, _raw = _open_prj_text(
+        tmp_path, 'CMP=\tgcc\nEXENAME=\td\nFILES=\talpha.c')
+    assert alive, text
+    assert 'alpha.c' in text, text
+
+
+def test_a_project_ending_in_an_empty_value_without_a_newline_is_read(tmp_path):
+    """The last line FILES= with nothing after it and no newline is an empty
+    value; reading it touches no byte before the value (under the sanitizer
+    build it used to read string[-1])."""
+    text, alive, raw = _open_prj_text(
+        tmp_path, 'CMP=\tgcc\nEXENAME=\td\nFILES=')
+    assert alive, text
+    assert 'AddressSanitizer' not in raw, raw[-2000:]
+    assert 'Project: d.prj' in text, text
