@@ -366,7 +366,7 @@ static int ai_role_of(int y)
  */
 static int ai_is_pane(const FENSTER *f)
 {
- return f && f->datnam && !strcmp(f->datnam, AI_PANE_NAME);
+ return f && e_window_pane(f) == WPE_PANE_ASSISTANT;
 }
 
 /**
@@ -1128,7 +1128,7 @@ static FENSTER *ai_pane_win(FENSTER *f)
 {
  ECNT *cn = f->ed;
  int i;
- for (i = cn->mxedt; i > 0 && strcmp(cn->f[i]->datnam, AI_PANE_NAME); i--)
+ for (i = cn->mxedt; i > 0 && e_window_pane(cn->f[i]) != WPE_PANE_ASSISTANT; i--)
   ;
  if (i == 0) {
   if (e_edit_view(cn, AI_PANE_NAME))
@@ -1167,7 +1167,7 @@ static FENSTER *ai_pane_existing(ECNT *cn)
 {
  int i;
  for (i = cn->mxedt; i > 0; i--)
-  if (!strcmp(cn->f[i]->datnam, AI_PANE_NAME))
+  if (e_window_pane(cn->f[i]) == WPE_PANE_ASSISTANT)
    return cn->f[i];
  return NULL;
 }
@@ -11739,7 +11739,7 @@ static FENSTER *ai_messages_window(FENSTER *f)
  ECNT *cn = f->ed;
  int i;
  for (i = cn->mxedt; i > 0; i--)
-  if (!strcmp(cn->f[i]->datnam, "Messages")) return cn->f[i];
+  if (e_window_pane(cn->f[i]) == WPE_PANE_MESSAGES) return cn->f[i];
  return NULL;
 }
 
@@ -16223,7 +16223,7 @@ static int ai_op_targets_window(const ai_async_op *op, const FENSTER *closing)
   return 1;
  if (!op->kind || strcmp(op->kind, AI_KIND_CHAT))
   return 0;
- return closing->datnam && !strcmp(closing->datnam, AI_PANE_NAME);
+ return e_window_pane(closing) == WPE_PANE_ASSISTANT;
 }
 
 static void ai_op_drop_for_window(FENSTER *closing)

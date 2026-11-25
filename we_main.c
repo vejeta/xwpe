@@ -793,7 +793,7 @@ static int e_debug_program_runs(ECNT *cn)
  */
 static int e_is_messages_window(FENSTER *f)
 {
- return(f && f->datnam && !strcmp(f->datnam, "Messages"));
+ return(f && e_window_pane(f) == WPE_PANE_MESSAGES);
 }
 
 /**

@@ -1632,7 +1632,7 @@ int e_help_loc(FENSTER *f, int sw)
   tmp = e_hlp;
  for (i = f->ed->mxedt; i >= 0; i--)
  {
-  if (!strcmp(f->ed->f[i]->datnam, "Help"))
+  if (e_window_pane(f->ed->f[i]) == WPE_PANE_HELP)
   {
    e_switch_window(f->ed->edt[i], f);
    if (ud_help && sw != ud_help->sw)
@@ -1700,7 +1700,7 @@ int e_hp_next(FENSTER *f)
 
  for (i = f->ed->mxedt; i >= 0; i--)
  {
-  if (!strcmp(f->ed->f[i]->datnam, "Help"))
+  if (e_window_pane(f->ed->f[i]) == WPE_PANE_HELP)
   {
    e_switch_window(f->ed->edt[i], f);
    f = f->ed->f[f->ed->mxedt];
@@ -1719,7 +1719,7 @@ int e_hp_prev(FENSTER *f)
 
  for (i = f->ed->mxedt; i >= 0; i--)
  {
-  if (!strcmp(f->ed->f[i]->datnam, "Help"))
+  if (e_window_pane(f->ed->f[i]) == WPE_PANE_HELP)
   {
    e_switch_window(f->ed->edt[i], f);
    f = f->ed->f[f->ed->mxedt];
@@ -1738,7 +1738,7 @@ int e_hp_back(FENSTER *f)
 
  for (i = f->ed->mxedt; i >= 0; i--)
  {
-  if (!strcmp(f->ed->f[i]->datnam, "Help"))
+  if (e_window_pane(f->ed->f[i]) == WPE_PANE_HELP)
   {
    e_switch_window(f->ed->edt[i], f);
    f = f->ed->f[f->ed->mxedt];
@@ -1757,7 +1757,7 @@ int e_hp_ret(FENSTER *f)
 
  for (i = f->ed->mxedt; i >= 0; i--)
  {
-  if (!strcmp(f->ed->f[i]->datnam, "Help"))
+  if (e_window_pane(f->ed->f[i]) == WPE_PANE_HELP)
   {
    e_switch_window(f->ed->edt[i], f);
    f = f->ed->f[f->ed->mxedt];

@@ -191,24 +191,18 @@ void e_relayout_windows(ECNT *cn, int old_scol, int old_slns)
     the old (squashed) position -- so the layout recovers no matter how far the
     window was shrunk.  Shared by all three backends. */
  for (i = 1; i <= cn->mxedt; i++)
-  if (!strcmp(cn->f[i]->datnam, "Messages"))
+  if (e_window_pane(cn->f[i]) == WPE_PANE_MESSAGES)
   {
    e_position_messages_window(cn->f[i], cn);
    break;
   }
  for (i = 1; i <= cn->mxedt; i++)
-  if (!strcmp(cn->f[i]->datnam, "AI"))
+  if (e_window_pane(cn->f[i]) == WPE_PANE_ASSISTANT)
   {
    e_position_ai_window(cn->f[i], cn);
    break;
   }
 }
-
-/* The windows that live in the bottom strip and keep their place when the
-   file windows are placed, tiled or cascaded. */
-#define STRIP_WINDOW_MESSAGES "Messages"
-#define STRIP_WINDOW_WATCHES  "Watches"
-#define STRIP_WINDOW_AI       "AI"
 
 /* The strip's default split row: the lower third for Messages alone, the
    bottom half for the AI pane (a conversation is tall). */
@@ -238,15 +232,17 @@ void e_relayout_windows(ECNT *cn, int old_scol, int old_slns)
  */
 static int e_win_is_bottom_docked(const FENSTER *f)
 {
- if (f == NULL || f->datnam == NULL)
+ if (f == NULL)
   return 0;
- if (!strcmp(f->datnam, STRIP_WINDOW_MESSAGES))
-  return 1;
- if (!strcmp(f->datnam, STRIP_WINDOW_WATCHES))
-  return 1;
- if (!strcmp(f->datnam, STRIP_WINDOW_AI))
-  return 1;
- return 0;
+ switch (e_window_pane(f))
+ {
+  case WPE_PANE_MESSAGES:
+  case WPE_PANE_WATCHES:
+  case WPE_PANE_ASSISTANT:
+   return 1;
+  default:
+   return 0;
+ }
 }
 
 /**
@@ -317,18 +313,17 @@ static void e_strip_clamp_editors(ECNT *cn, const FENSTER *self, int split_y)
  * @cn: the desktop.
  * @self: the window being placed; never returned, so a window does not find
  *        itself when it is created under a docked pane's name.
- * @name: the window's name as shown in its title.
+ * @pane: which pane to look for, by the tag the editor gave it when it opened.
  */
 static FENSTER *e_strip_find_window(ECNT *cn, const FENSTER *self,
-                                    const char *name)
+                                    WpePane pane)
 {
  int j;
 
  for (j = 1; j <= cn->mxedt; j++)
  {
   if (cn->f[j] == self) continue;
-  if (cn->f[j]->datnam == NULL) continue;
-  if (!strcmp(cn->f[j]->datnam, name))
+  if (e_window_pane(cn->f[j]) == pane)
    return cn->f[j];
  }
  return NULL;
@@ -381,7 +376,7 @@ static void e_place_strip_pair(FENSTER *msg, FENSTER *ai, int split_y)
  */
 void e_position_messages_window(FENSTER *msg, ECNT *cn)
 {
- FENSTER *ai = e_strip_find_window(cn, msg, STRIP_WINDOW_AI);
+ FENSTER *ai = e_strip_find_window(cn, msg, WPE_PANE_ASSISTANT);
  int split_y;
 
  if (ai)
@@ -415,7 +410,7 @@ void e_position_messages_window(FENSTER *msg, ECNT *cn)
 void e_position_ai_window(FENSTER *ai, ECNT *cn)
 {
  int split_y = e_strip_split_row(cn, ai, STRIP_SPLIT_AI);
- FENSTER *msg = e_strip_find_window(cn, ai, STRIP_WINDOW_MESSAGES);
+ FENSTER *msg = e_strip_find_window(cn, ai, WPE_PANE_MESSAGES);
 
  if (msg)
   e_place_strip_pair(msg, ai, split_y);
@@ -2315,7 +2310,7 @@ void e_ed_rahmen(FENSTER *f, int sw)
  if (f->datnam[0])
  {
   if (strcmp(f->dirct, f->ed->dirct) == 0 ||
-    f->dtmd == DTMD_HELP || strcmp(f->datnam, BUFFER_NAME) == 0 ||
+    f->dtmd == DTMD_HELP || e_window_pane(f) == WPE_PANE_CLIPBOARD ||
     NUM_COLS_ON_SCREEN < 40)
   {
    header = (char *)WpeMalloc(strlen(f->datnam) + 1);

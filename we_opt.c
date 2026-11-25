@@ -470,7 +470,7 @@ static int e_info_wrap(WpeBox *box, int dx, int dy, const char *str, int width,
 static void e_sys_info_rows(FENSTER *f, int avail, int *file_rows, int *dir_rows,
                             const char **shown, char *buf, size_t size)
 {
- if (strcmp(f->datnam, "Clipboard") != 0 && strcmp(f->dirct, f->ed->dirct) != 0)
+ if (e_window_pane(f) != WPE_PANE_CLIPBOARD && strcmp(f->dirct, f->ed->dirct) != 0)
  {
   snprintf(buf, size, "%s%s%s", f->dirct, DIRS, f->datnam);
   *shown = buf;
@@ -566,8 +566,8 @@ static WpeBoxDrawn e_sys_info_box_draw(WpeBox *box)
  e_sys_info_rows(f, avail, &file_rows, &dir_rows, &filepath, tmp, sizeof tmp);
 
  e_info_line(box, 3, row, " Current File: ", col);
- if (strcmp(f->datnam, "Clipboard") != 0)
-  row += e_info_wrap(box, E_SYS_INFO_VALUE_COL, row, filepath, avail, col);
+ if (e_window_pane(f) != WPE_PANE_CLIPBOARD)
+  row +=e_info_wrap(box, E_SYS_INFO_VALUE_COL, row, filepath, avail, col);
  else
   row++;
  row++;

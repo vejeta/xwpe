@@ -1035,16 +1035,16 @@ int e_edt_mouse(int c, FENSTER *f)
 #ifdef PROG
 #ifdef DEBUGGER
    {
-    if (WpeIsProg() && (!strcmp(f->datnam, "Watches") ||
-      !strcmp(f->datnam, "Messages") ||
-      !strcmp(f->datnam, "Stack")))
+    if (WpeIsProg() && (e_window_pane(f) == WPE_PANE_WATCHES ||
+      e_window_pane(f) == WPE_PANE_MESSAGES ||
+      e_window_pane(f) == WPE_PANE_STACK))
      ret = e_d_car_mouse(f);
     else
      e_cur_mouse(f);
    }
 #else
    {
-    if (WpeIsProg() && !strcmp(f->datnam, "Messages"))
+    if (WpeIsProg() && e_window_pane(f) == WPE_PANE_MESSAGES)
      ret = e_d_car_mouse(f);
     else
      e_cur_mouse(f);

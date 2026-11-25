@@ -820,7 +820,7 @@ E_AFILE *e_aopen(char *name, char *path, int mode, char **found)
  ep->fp = NULL;
  if (mode & 1)
  {
-  for (i = 1; i <= cn->mxedt && strcmp(cn->f[i]->datnam, name); i++)
+  for (i = 1; i <= cn->mxedt && !e_window_title_is(cn->f[i], name); i++)
    ;
   if (i <= cn->mxedt)
   {

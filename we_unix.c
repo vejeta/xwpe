@@ -1758,7 +1758,7 @@ int e_recover(ECNT *cn)
      there is one. */
   wpe_write_identity_set(&f->copies.esv, &f->file_id);
   (void)wpe_write_identity_of_name(f->dirct, f->datnam, &f->file_id);
-  if (!strcmp(f->datnam, BUFFER_NAME))
+  if (e_window_title_is(f, BUFFER_NAME))
   {
    b = e_window_text(cn->f[cn->mxedt]);
    e_buffer_mark_set(b, E_BUFFER_MARK_END, b->mxlines - 1,

@@ -50,10 +50,10 @@
 #     window on top without touching the number of windows.  The one write
 #     that is not a change is the desktop's start value.
 #  6. no pasted name reaches a member, the owner itself pastes no tokens, and
-#     the count of window titles compared against a name is held at a
-#     ceiling.  A title comparison is how a file the user named after one of
-#     the editor's own panes is taken for that pane; the comparisons go down
-#     as the readers move to the pane the owner holds, and a new one fails
+#     window title is compared against a name anywhere but in the owner.  A
+#     title comparison is how a file the user named after one of the editor's
+#     own panes is taken for that pane; the readers ask the pane the owner
+#     holds, or a file-name question of the owner, and a new comparison fails
 #     here.
 #  7. the payload is reached through the accessors: the count of accessor
 #     calls over the count of holds is printed as the evidence.  The window
@@ -96,7 +96,6 @@ done
 # now.
 CEIL_CASTS=0
 CEIL_DTMD=32
-CEIL_DATNAM=73
 
 # A write that cannot change what is on top says so on its own line: the
 # desktop's start value and the clipboard's slot 0, which is never a window
@@ -341,9 +340,12 @@ EOF
 
 # ---- rule 6: no pasted name reaches a member ---------------------------
 
-# How many window titles the readers compare against a name.  The owner is
-# not a reader, and the one file-name helper the rule allows is counted with
-# the rest until the pass that moves the readers off titles makes it strict.
+# How many window titles the readers compare against a name, written on one
+# line.  The owner is not a reader: its file-name questions
+# (e_window_title_is and e_window_title_ends_with) are the only place a
+# title is compared.  This count reads lines, so a comparison split over two
+# lines or made through a local copy of the title is not seen yet; a rule
+# that reads statements, not lines, is to replace it.
 count_titles() {
   readers=$(product_readers "$1")
   # shellcheck disable=SC2086
@@ -364,16 +366,16 @@ check_no_pasted_name() {
 
   printf 'rule 6: token pastes in the owner: %s, files naming a member the block does not have: %s\n' \
     "$pasted" "$invented"
-  printf 'rule 6: window titles compared against a name: %s (ceiling %s)\n' \
-    "$titles" "$CEIL_DATNAM"
+  printf 'rule 6: window titles compared outside the owner: %s (none allowed)\n' \
+    "$titles"
   if [ "$pasted" -ne 0 ]; then
     say_problem "rule 6: the owner pastes $pasted token(s): a pasted name reaches a member without ever spelling it"
   fi
   if [ "$invented" -ne 0 ]; then
     say_problem "rule 6: $invented file(s) name a member of the owner's block that the block does not have"
   fi
-  if [ "$titles" -gt "$CEIL_DATNAM" ]; then
-    say_problem "rule 6: $titles window title(s) are compared against a name, over the ceiling of $CEIL_DATNAM: a title comparison takes a file the user named after a pane for that pane, which is what the tag the owner holds is for"
+  if [ "$titles" -ne 0 ]; then
+    say_problem "rule 6: $titles window title(s) are compared outside the owner: a title comparison takes a file the user named after a pane for that pane, which is what the tag the owner holds is for"
   fi
 }
 
@@ -479,7 +481,6 @@ list_ceilings() {
   read_rule7 "$SRCDIR"
   printf 'CEIL_CASTS=%s\n' "$R7_CASTS"
   printf 'CEIL_DTMD=%s\n' "$R7_DTMD"
-  printf 'CEIL_DATNAM=%s\n' "$(count_titles "$SRCDIR")"
 }
 
 run_checks() {
@@ -577,7 +578,7 @@ selftest() {
     sh -c 'printf "\n#define PLANTED(f, m) ((f)->held_->m)\nvoid p(FENSTER *f){ (void)f->text_; }\n" >> "$0/we_winkind.c"'
 
   plant_and_expect "a window title compared against a pane's name" "rule 6" \
-    sh -c 'printf "\nint planted_is_pane(FENSTER *f){ return strcmp(f->datnam, STRIP_WINDOW_MESSAGES); }\n" >> "$0/we_wind.c"'
+    sh -c 'printf "\n#define PLANTED_TITLE \"Messages\"\nint planted_is_pane(FENSTER *f){ return strcmp(f->datnam, PLANTED_TITLE); }\n" >> "$0/we_wind.c"'
 
   plant_and_expect "the window's text member declared again" "rule 7" \
     sh -c 'awk "{ print } /^typedef struct FNST *\\{/ { print \" struct BFF *b;\" }" "$0/edit.h" > "$0/edit.h.planted" && mv "$0/edit.h.planted" "$0/edit.h"'

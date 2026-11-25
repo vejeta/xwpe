@@ -322,17 +322,26 @@ char *wpe_ai_workspace_root(FENSTER *f)
 
 /* ===================== scope ============================================= */
 
-static const char *ws_reserved[] = {
- "Messages", "AI", "Watches", "Stack", "Project", "Grep", "Find", "Windows",
- "Variables", "Install", "Help", "Function-Index", "Noname", NULL };
+/* The title a new, unsaved file carries until it is given a name. */
+#define WS_UNNAMED_TITLE "Noname"
 
+/**
+ * ws_is_real_file_window - Is this window a file the user opened and named?
+ * @w: the window.
+ *
+ * What the user gains: the assistant's scope lists the user's files and never
+ * the editor's own panes, lists or an unsaved scratch window.  A pane is told
+ * by the tag the editor gave it when it opened it, so a file the user named
+ * "Messages" or "Help" is still a file of theirs.
+ * Return: 1 for a named file, 0 for anything else.
+ */
 static int ws_is_real_file_window(FENSTER *w)
 {
- int i;
  if (!w || !w->datnam || !*w->datnam || !w->dirct) return 0;
  if (!DTMD_ISTEXT(w->dtmd)) return 0;
- for (i = 0; ws_reserved[i]; i++) if (!strcmp(w->datnam, ws_reserved[i])) return 0;
- return 1;
+ if (!e_window_is_text(w)) return 0;
+ if (e_window_pane(w) != WPE_PANE_FILE) return 0;
+ return !e_window_title_is(w, WS_UNNAMED_TITLE);
 }
 
 /**

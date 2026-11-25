@@ -79,7 +79,9 @@ typedef enum {
  WPE_PANE_STACK,        /* the debugger's call stack */
  WPE_PANE_HELP,         /* the help viewer */
  WPE_PANE_CLIPBOARD,    /* the paste buffer shown as a window */
- WPE_PANE_ASSISTANT     /* the assistant's pane */
+ WPE_PANE_ASSISTANT,    /* the assistant's pane */
+ WPE_PANE_REPORT        /* a window the editor writes itself and names, such
+                           as the language server's Doctor report */
 } WpePane;
 
 /* What a window holds.  Each answers for one kind and NULL (or
@@ -128,6 +130,15 @@ struct FNST *e_window_top(const struct CNT *cn);
 struct FNST *e_window_text_under(const struct CNT *cn);
 struct FNST *e_window_top_except_pane(const struct CNT *cn, WpePane pane);
 struct FNST *e_window_pane_find(const struct CNT *cn, WpePane pane);
+
+/* A window the editor writes itself (the assistant's pane, a report), by the
+   name it gave it: its slot from 1 to mxedt, or 0 when none is open. */
+int e_window_view_slot(const struct CNT *cn, const char *name);
+
+/* The one question about a window's title that is about a file and not a
+   pane: is it this file name? */
+int e_window_title_is(const struct FNST *f, const char *name);
+int e_window_title_ends_with(const struct FNST *f, const char *suffix);
 
 /* The slot of the remembered list a project list kind reads and writes.
    Return: 0 to 2 for the three project lists, -1 for any other kind. */

@@ -3950,7 +3950,7 @@ int e_ed_man(char *str, FENSTER * f)
     return(0);
   for(i = f->ed->mxedt; i >= 0; i--)
   {
-    if(!strcmp(f->ed->f[i]->datnam, str))
+    if(e_window_title_is(f->ed->f[i], str))
     {
       e_switch_window(f->ed->edt[i], f);
       return(0);

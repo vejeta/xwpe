@@ -650,7 +650,7 @@ static int e_edit_open(ECNT *cn, char *filename, int view, WpeReadOutcome *why)
  /* Should check for error here */
  for (i = cn->mxedt; i >= 0; i--)
  {
-  if ((strcmp(cn->f[i]->datnam, file) == 0) &&
+  if (e_window_title_is(cn->f[i], file) &&
     (strcmp(cn->f[i]->dirct, path) == 0))
   {
    e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
@@ -706,12 +706,12 @@ static int e_edit_open(ECNT *cn, char *filename, int view, WpeReadOutcome *why)
   e_error(e_msg[ERR_LOWMEM], 1, f->fb);
 #ifdef PROG
  for (i = cn->mxedt-1;
-   i > 0 && (!strcmp(cn->f[i]->datnam, "Messages") || !DTMD_ISTEXT(cn->f[i]->dtmd) ||
-     !strcmp(cn->f[i]->datnam, "Watches") ||
-     !strcmp(cn->f[i]->datnam, "Stack")); i--)
+   i > 0 && (e_window_pane(cn->f[i]) == WPE_PANE_MESSAGES || !DTMD_ISTEXT(cn->f[i]->dtmd) ||
+     e_window_pane(cn->f[i]) == WPE_PANE_WATCHES ||
+     e_window_pane(cn->f[i]) == WPE_PANE_STACK); i--)
   ;
  for (j = cn->mxedt-1; j > 0 && !st; j--)
-  if (!strcmp(cn->f[j]->datnam, "Stack"))
+  if (e_window_pane(cn->f[j]) == WPE_PANE_STACK)
    st = 1;
 #else
  for(i = cn->mxedt-1; i > 0 && !DTMD_ISTEXT(cn->f[i]->dtmd); i--)
@@ -873,6 +873,8 @@ static int e_edit_open(ECNT *cn, char *filename, int view, WpeReadOutcome *why)
  /* The pane this window is, by the intent that opened it: the requested name
     above decided it, never the title the window ends up carrying, so a file
     the user named "Messages" stays the user's writable file. */
+ if (view && pane == WPE_PANE_FILE)
+  pane = WPE_PANE_REPORT;   /* a window the editor writes, not a file of the user */
  e_window_set_pane(f, pane);
 #ifdef DEBUGGER
  /* A plain editor window (not Help/Messages/Watches/Stack) holding a file a

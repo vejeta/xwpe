@@ -490,6 +490,70 @@ FENSTER *e_window_pane_find(const ECNT *cn, WpePane pane)
 }
 
 /**
+ * e_window_view_slot - The slot of a window the editor writes, by its name.
+ * @cn: the desktop; @name: the name the editor gave the window.
+ *
+ * What the user gains: the assistant's lines and the language server's report
+ * go on writing into their own window once it is open; this lookup itself
+ * matches only a window the editor tagged as its own.  The window is still
+ * made through e_edit_view, whose already-open check matches by name, so a
+ * user's file of the same name open first can still be taken for it.  That
+ * belongs to the one function that opens windows, not to this lookup.
+ * Return: the slot (1 to mxedt, the window on top first), or 0 when the
+ * editor has no such window open.
+ */
+int e_window_view_slot(const ECNT *cn, const char *name)
+{
+ int i;
+ WpePane pane;
+
+ if (!cn)
+  return(0);
+ for (i = cn->mxedt; i > 0; i--)
+ {
+  pane = e_window_pane(cn->f[i]);
+  if ((pane == WPE_PANE_ASSISTANT || pane == WPE_PANE_REPORT) &&
+      e_window_title_is(cn->f[i], name))
+   return(i);
+ }
+ return(0);
+}
+
+/**
+ * e_window_title_ends_with - Does a window's file name end this way?
+ * @f: the window; @suffix: the ending asked about, such as ".sh".
+ *
+ * What the user gains: a shell script runs as a script and a worksheet gets
+ * its inline results, told by the name of the file the user opened.
+ * Return: 1 when the title ends with @suffix, else 0.
+ */
+int e_window_title_ends_with(const FENSTER *f, const char *suffix)
+{
+ size_t len, tail;
+
+ if (!f || !f->datnam || !suffix)
+  return(0);
+ len = strlen(f->datnam);
+ tail = strlen(suffix);
+ return(len >= tail && !strcmp(f->datnam + len - tail, suffix));
+}
+
+/**
+ * e_window_title_is - Does a window carry this file name as its title?
+ * @f: the window; @name: the file name asked about.
+ *
+ * What the user gains: opening a file that is already open, or asking for a
+ * manual page that is already shown, raises that window and does not make a
+ * second one.  This answers a question about a file, never about a pane: the
+ * editor's own windows are asked through their tag.
+ * Return: 1 when the title is @name, else 0.
+ */
+int e_window_title_is(const FENSTER *f, const char *name)
+{
+ return(f && f->datnam && name && !strcmp(f->datnam, name));
+}
+
+/**
  * e_window_top_except_pane - The window the user was in, past one pane.
  * @cn: the desktop; @pane: the pane to walk past.
  *

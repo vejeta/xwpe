@@ -1136,7 +1136,7 @@ static FENSTER *e_d_find_messages_window(void)
  int i;
  ECNT *cn = WpeEditor;
  for (i = cn->mxedt; i > 0; i--)
-  if (!strcmp(cn->f[i]->datnam, "Messages"))
+  if (e_window_pane(cn->f[i]) == WPE_PANE_MESSAGES)
    return cn->f[i];
  return NULL;
 }
@@ -3923,7 +3923,7 @@ static int e_d_gdb_settle_later(ECNT *cn, int owed, int why)
 
 int e_d_is_watch(int c, FENSTER *f)
 {
- if (strcmp(f->datnam, "Watches"))
+ if (e_window_pane(f) != WPE_PANE_WATCHES)
   return(0);
  switch (wpe_binding_action(c, wpe_binding_style(f->ed->edopt), WPE_CTX_WATCHES))
  {
@@ -4506,7 +4506,7 @@ int e_remove_all_watches(FENSTER *f)
  e_d_nwtchs = 0;
  for (i = cn->mxedt; i > 0; i--)
  {
-  if (!strcmp(cn->f[i]->datnam, "Watches"))
+  if (e_window_pane(cn->f[i]) == WPE_PANE_WATCHES)
   {
    e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
    e_close_window(cn->f[cn->mxedt]);
@@ -4527,7 +4527,7 @@ int e_delete_watches(FENSTER *f)
  f = cn->f[cn->mxedt];
  if (e_d_ga_refused(f))
   return(0);
- if (e_d_nwtchs < 1 || strcmp(f->datnam, "Watches"))
+ if (e_d_nwtchs < 1 || e_window_pane(f) != WPE_PANE_WATCHES)
   return(0);
  for (n = 0; n < e_d_nwtchs && e_d_nrwtchs[n] <= b->b.y; n++)
   ;
@@ -4548,7 +4548,7 @@ int e_make_watches(FENSTER *f)
 
  if (e_d_ga_refused(f) || e_d_watch_refused(f))
   return(0);
- if ((f->ed->mxedt > 0) && (strcmp(f->datnam, "Watches") == 0))
+ if ((f->ed->mxedt > 0) && (e_window_pane(f) == WPE_PANE_WATCHES))
  { /* sets y=number of watch we're inserting */
   for(y = 0; y < e_d_nwtchs && e_d_nrwtchs[y] < e_window_text(f)->b.y; y++)
    ;
@@ -4600,7 +4600,7 @@ int e_edit_watches(FENSTER *f)
  char str[128];
  int l;
 
- if (e_d_ga_refused(f) || strcmp(f->datnam, "Watches"))
+ if (e_d_ga_refused(f) || e_window_pane(f) != WPE_PANE_WATCHES)
   return(0);
  for (l = 0; l < e_d_nwtchs && e_d_nrwtchs[l] <= b->b.y; l++)
   ;
@@ -4846,7 +4846,7 @@ static int e_d_watches_window_open(ECNT *cn)
  int i;
 
  for (i = cn->mxedt; i > 0; i--)
-  if (!strcmp(cn->f[i]->datnam, "Watches"))
+  if (e_window_pane(cn->f[i]) == WPE_PANE_WATCHES)
    return(1);
  return(0);
 }
@@ -4886,7 +4886,7 @@ static int e_d_watches_window_take(ECNT *cn)
 {
  int iw;
 
- for (iw = cn->mxedt; iw > 0 && strcmp(cn->f[iw]->datnam, "Watches"); iw--)
+ for (iw = cn->mxedt; iw > 0 && e_window_pane(cn->f[iw]) != WPE_PANE_WATCHES; iw--)
   ;
  if (iw == 0 && !e_d_nwtchs)
  {
@@ -5010,7 +5010,7 @@ int e_p_show_watches(FENSTER *f)
  int i;
 
  for (i = f->ed->mxedt; i > 0; i--)
-  if (!strcmp(f->ed->f[i]->datnam, "Watches"))
+  if (e_window_pane(f->ed->f[i]) == WPE_PANE_WATCHES)
   {
    e_switch_window(f->ed->edt[i], f->ed->f[f->ed->mxedt]);
    break;
@@ -5031,7 +5031,7 @@ int e_d_reinit_watches(FENSTER * f,char * prj)
 
  for(i = f->ed->mxedt; i > 0; i--)
  {
-  if (!strcmp(f->ed->f[i]->datnam, "Watches"))
+  if (e_window_pane(f->ed->f[i]) == WPE_PANE_WATCHES)
   {  
    e_remove_all_watches(f->ed->f[f->ed->edt[i]]);
    break; 
@@ -5268,7 +5268,7 @@ int e_d_p_stack(FENSTER *f, int sw)
  if (e_d_swtch < 3)
   return(e_error(e_d_msg[ERR_NOTRUNNING], 0, f->fb));
  e_d_out_clear();
- for (is = cn->mxedt; is > 0 && strcmp(cn->f[is]->datnam, "Stack"); is--)
+ for (is = cn->mxedt; is > 0 && e_window_pane(cn->f[is]) != WPE_PANE_STACK; is--)
   ;
  if (!sw && is == 0)
   return(0);
@@ -5323,7 +5323,7 @@ static int e_d_stack_open(ECNT *cn)
 {
  int is;
 
- for (is = cn->mxedt; is > 0 && strcmp(cn->f[is]->datnam, "Stack"); is--)
+ for (is = cn->mxedt; is > 0 && e_window_pane(cn->f[is]) != WPE_PANE_STACK; is--)
   ;
  if (is > 0)
   return(is);
@@ -5530,7 +5530,7 @@ int e_brk_schirm(FENSTER *f)
  s->brp[0]=0;
  for(i=0;i<e_d_nbrpts;i++)
  {
-  if(!strcmp(f->datnam,e_d_sbrpts[i]))
+  if(e_window_title_is(f, e_d_sbrpts[i]))
   {
    for(n=1;n<= (s->brp[0]);n++) if(e_d_ybrpts[i]==(s->brp[n])) break;
    if(n>s->brp[0]) 
@@ -5604,7 +5604,7 @@ int e_d_reinit_brks(FENSTER * f,char * prj)
 /**** needed to keep schirm in sync ****/
 	   
 	   for(g = f->ed->mxedt; g > 0; g--)
-            if(!strcmp(f->ed->f[g]->datnam, name))
+            if(e_window_title_is(f->ed->f[g], name))
             {  
               e_brk_schirm(f->ed->f[g]);
             }
@@ -11024,7 +11024,7 @@ static int e_d_dap_watches_fill(FENSTER *f, char **values, int nvalues,
  e_d_switch_out(0);
  if (!e_d_watches_wait() && (e_d_swtch > 2) && (e_d_p_stack(f, 0) == -1))
   return(-1);
- for (iw = cn->mxedt; iw > 0 && strcmp(cn->f[iw]->datnam, "Watches"); iw--)
+ for (iw = cn->mxedt; iw > 0 && e_window_pane(cn->f[iw]) != WPE_PANE_WATCHES; iw--)
   ;
  if (iw == 0 && !e_d_nwtchs)
  {
@@ -13191,7 +13191,7 @@ int e_start_debug(FENSTER *f)
  /* Find the source file window -- f may point to Messages if the
     cursor is there from a previous compile.  Same fix as #45. */
  for (i = cn->mxedt; i > 0; i--)
-  if (strcmp(cn->f[i]->datnam, "Messages") && DTMD_ISTEXT(cn->f[i]->dtmd))
+  if (e_window_pane(cn->f[i]) != WPE_PANE_MESSAGES && DTMD_ISTEXT(cn->f[i]->dtmd))
    break;
  if (i > 0)
  {
@@ -13345,7 +13345,7 @@ static int e_d_window_path_of(ECNT *cn, const char *name, char *out, size_t n)
 
  for (i = cn->mxedt; i > 0; i--)
  {
-  if (strcmp(cn->f[i]->datnam, name))
+  if (!e_window_title_is(cn->f[i], name))
    continue;
   len = strlen(cn->f[i]->dirct);
   if (len > 0 && cn->f[i]->dirct[len - 1] == DIRC)
@@ -18188,14 +18188,9 @@ static int e_d_show_source(char *file, int line, FENSTER *f, int asked)
  WpeFilenameToPathFile(file, &ftmp.dirct, &ftmp.datnam);
  e_d_out_clear();
  for (i = cn->mxedt; i > 0; i--)
-  if (!strcmp(cn->f[i]->datnam, ftmp.datnam) &&
+  if (e_window_title_is(cn->f[i], ftmp.datnam) &&
     !strcmp(cn->f[i]->dirct, ftmp.dirct))
   {
-   /*  for(j = 0; j <= cn->mxedt; j++)
-	 if(!strcmp(cn->f[j]->datnam, "Stack"))
-	 {  if(cn->f[i]->e.x > 2*MAXSCOL/3-1) cn->f[i]->e.x = 2*MAXSCOL/3-1;
-	 break;
-	 }  */
    e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
    break;
   }
@@ -21704,7 +21699,7 @@ static int e_d_gs_stack_window_open(ECNT *cn)
 {
  int is;
 
- for (is = cn->mxedt; is > 0 && strcmp(cn->f[is]->datnam, "Stack"); is--)
+ for (is = cn->mxedt; is > 0 && e_window_pane(cn->f[is]) != WPE_PANE_STACK; is--)
   ;
  return(is > 0);
 }
@@ -29485,11 +29480,9 @@ static const e_lsp_server *e_lsp_server_for(const char *lang)
    results just appear -- a lightweight REPL. */
 static int e_lsp_is_worksheet(FENSTER *f)
 {
- int n;
  if (!f || !f->datnam)
   return(0);
- n = strlen(f->datnam);
- return(n > 3 && !strcmp(f->datnam + n - 3, ".sc"));
+ return(strlen(f->datnam) > 3 && e_window_title_ends_with(f, ".sc"));
 }
 
 /* Past the end of any row: a problem that runs on to later lines is marked

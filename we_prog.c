@@ -2380,7 +2380,7 @@ static int e_run_program(ECNT *cn)
   WpeMouseRestoreShape();
   return(0);
  }
- for (i = cn->mxedt; i > 0 && strcmp(cn->f[i]->datnam, "Messages"); i--)
+ for (i = cn->mxedt; i > 0 && e_window_pane(cn->f[i]) != WPE_PANE_MESSAGES; i--)
   ;
  if (i <= 0 && e_edit(cn, "Messages") != 0)
  {
@@ -3277,10 +3277,9 @@ int e_print_arg(FILE *fp, char *s, char **argv, int n)
 
 static FENSTER *e_find_or_create_messages(ECNT *cn)
 {
- int i;
- for (i = cn->mxedt; i > 0; i--)
-  if (!strcmp(cn->f[i]->datnam, "Messages"))
-   return cn->f[i];
+ FENSTER *messages = e_window_pane_find(cn, WPE_PANE_MESSAGES);
+ if (messages)
+  return messages;
  if (e_edit(cn, "Messages"))
   return cn->f[cn->mxedt];
  return cn->f[cn->mxedt];
@@ -4743,7 +4742,7 @@ int e_show_error(int n, FENSTER *f)
    {
     _bn++;  /* skip the '/' */
     for (i = cn->mxedt; i > 0; i--)
-     if (!strcmp(_bn, cn->f[i]->datnam))
+     if (e_window_title_is(cn->f[i], _bn))
      {
       e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
       break;
@@ -5121,7 +5120,7 @@ static int e_err_row_in_window(int n, FENSTER *f)
   FREE(filename);
  }
  else
-  same = !strcmp(err_li[n].file + bg, f->datnam);
+  same = e_window_title_is(f, err_li[n].file + bg);
  return(same);
 }
 
@@ -5225,12 +5224,12 @@ int e_cur_error(int y, FENSTER *f)
 
 int e_d_car_ret(FENSTER *f)
 {
- if (!strcmp(f->datnam, "Messages"))
+ if (e_window_pane(f) == WPE_PANE_MESSAGES)
   return(e_cur_error(e_window_text(f->ed->f[f->ed->mxedt])->b.y, f));
 #ifdef DEBUGGER
- if (!strcmp(f->datnam, "Watches"))
+ if (e_window_pane(f) == WPE_PANE_WATCHES)
   return(e_edit_watches(f));
- if(!strcmp(f->datnam, "Stack"))
+ if (e_window_pane(f) == WPE_PANE_STACK)
   return(e_make_stack(f));
 #endif
  return(0);
@@ -7791,7 +7790,7 @@ static int e_p_message_now(char *str, FENSTER *f, int sw)
 
  if (str[0] == '\0' || str[0] == '\n')
   return(0);
- for (i = cn->mxedt; i > 0 && strcmp(cn->f[i]->datnam, "Messages"); i--)
+ for (i = cn->mxedt; i > 0 && e_window_pane(cn->f[i]) != WPE_PANE_MESSAGES; i--)
   ;
  if (i == 0)
  {
@@ -7848,8 +7847,7 @@ int e_d_p_named(char *winname, char *str, FENSTER *f, int sw)
 
  if (str[0] == '\0')
   return(0);
- for (i = cn->mxedt; i > 0 && strcmp(cn->f[i]->datnam, winname); i--)
-  ;
+ i = e_window_view_slot(cn, winname);
  if (i == 0)
  {
   if (e_edit_view(cn, winname))
@@ -7944,7 +7942,7 @@ static int e_msg_press(FENSTER *f, int row)
  */
 void e_d_note_messages_focus_click(FENSTER *f)
 {
- if (!f || !f->datnam || strcmp(f->datnam, "Messages"))
+ if (!f || e_window_pane(f) != WPE_PANE_MESSAGES)
   return;
  e_msg_press(f, e_msg_row_at_mouse(f));
 }
@@ -7973,7 +7971,7 @@ int e_d_car_mouse(FENSTER *f)
  BUFFER *b = e_window_text(f->ed->f[f->ed->mxedt]);
  SCHIRM *s = e_window_screen(f->ed->f[f->ed->mxedt]);
 
- if (!strcmp(f->datnam, "Messages"))
+ if (e_window_pane(f) == WPE_PANE_MESSAGES)
   return(e_msg_car_mouse(f));
  if (e_mouse.y-f->a.y+s->c.y-1 == b->b.y)
   return(WPE_CR);
@@ -8001,10 +7999,11 @@ int e_messages_return(FENSTER *f)
  ECNT *cn = f->ed;
  int i;
 
- if (!f->datnam || strcmp(f->datnam, "Messages") || f != cn->f[cn->mxedt])
+ if (e_window_pane(f) != WPE_PANE_MESSAGES || f != cn->f[cn->mxedt])
   return(0);
  for (i = cn->mxedt - 1; i > 0; i--)
-  if (DTMD_ISTEXT(cn->f[i]->dtmd) && strcmp(cn->f[i]->datnam, "Messages"))
+  if (DTMD_ISTEXT(cn->f[i]->dtmd) &&
+      e_window_pane(cn->f[i]) != WPE_PANE_MESSAGES)
    break;
  if (i <= 0)
   return(0);
@@ -8144,9 +8143,8 @@ int e_exec_make(FENSTER *f)
     follows it so Messages finds the files make names. */
  cwd_changed = e_build_pushd(f, saved_cwd, sizeof(saved_cwd));
  for (i = cn->mxedt; i > 0; i--)
-  if (cn->f[i] && cn->f[i]->datnam &&
-      (!strcmp(cn->f[i]->datnam, "Makefile") ||
-       !strcmp(cn->f[i]->datnam, "makefile")))
+  if (cn->f[i] && (e_window_title_is(cn->f[i], "Makefile") ||
+                   e_window_title_is(cn->f[i], "makefile")))
   {
    e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
    e_save(cn->f[cn->mxedt]);
@@ -8185,7 +8183,6 @@ int e_exec_make(FENSTER *f)
 
 /* What a shell script's Run is called in its key and its question. */
 #define E_RUN_SH_SUFFIX     ".sh"
-#define E_RUN_SH_SUFFIX_LEN 3
 #define E_RUN_SH_NAME       "sh"
 #define E_RUN_SH_WHAT_ASKED "script's arguments"
 
@@ -8303,10 +8300,9 @@ static void e_run_sh_make_runnable(FENSTER *f)
  */
 int e_run_sh(FENSTER *f)
 {
- int len = strlen(f->datnam);
  WpeStartPlan *plan;
 
- if (len < E_RUN_SH_SUFFIX_LEN || strcmp(f->datnam + len - E_RUN_SH_SUFFIX_LEN, E_RUN_SH_SUFFIX))
+ if (!e_window_title_ends_with(f, E_RUN_SH_SUFFIX))
   return(1);
 
  WpeMouseChangeShape(WpeWorkingShape);
@@ -9844,7 +9840,7 @@ static void e_prj_save_file(int k)
  int j;
 
  for (j = cn->mxedt; j > 0; j--)
-  if (!strcmp(cn->f[j]->datnam, g_prj.df->name[k]) && cn->f[j]->save)
+  if (e_window_title_is(cn->f[j], g_prj.df->name[k]) && cn->f[j]->save)
    e_save(cn->f[j]);
 }
 
@@ -10892,8 +10888,7 @@ int e_p_show_messages(FENSTER *f)
  int i;
 
  for (i = f->ed->mxedt; i > 0; i--)
-  if (f->ed->f[i] && f->ed->f[i]->datnam &&
-      !strcmp(f->ed->f[i]->datnam, "Messages"))
+  if (e_window_pane(f->ed->f[i]) == WPE_PANE_MESSAGES)
   {
    e_switch_window(f->ed->edt[i], f->ed->f[f->ed->mxedt]);
    break;
@@ -10932,7 +10927,7 @@ int e_p_show_program_output(FENSTER *f)
 
  e_p_show_messages(f);                       /* find/create + focus */
  mf = f->ed->f[f->ed->mxedt];                /* now the active window */
- if (strcmp(mf->datnam, "Messages"))
+ if (e_window_pane(mf) != WPE_PANE_MESSAGES)
   return(0);
  if (e_window_text(mf)->mxlines > 0)
  {

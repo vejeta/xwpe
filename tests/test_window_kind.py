@@ -629,6 +629,67 @@ def test_a_file_named_messages_is_the_users_file_and_not_the_pane(tmp_path):
         "the build's own pane"
 
 
+# The names the editor gives its own windows.  A file the user opens under
+# one of them is the user's file.
+PANE_NAMES = [
+    pytest.param("Watches", id="Watches"),
+    pytest.param("Stack", id="Stack"),
+    pytest.param("Help", id="Help"),
+    pytest.param("Clipboard", id="Clipboard"),
+    pytest.param("AI", id="AI"),
+    pytest.param("Messages", id="Messages"),
+]
+
+
+# K18C
+@pytest.mark.parametrize("name", PANE_NAMES)
+def test_a_file_named_like_a_pane_is_edited_and_saved_as_a_file(tmp_path, name):
+    """`wpe ./<name> main.c`: the file the user named after one of the
+    editor's own windows takes a letter and saves it, whatever the window
+    would have been.  A guard on every comparison that used to ask the title."""
+    (tmp_path / name).write_text(USER_NOTES)
+    with session_in(tmp_path, filename=MAIN_C, seed=SOURCE,
+                    args=("./" + name,)) as w:
+        w.key(ALT_1, delay=0.8)
+        assert wait_screen(w, name, tmo=OPEN_WAIT_S), screen_text(w)
+        w.key("X", delay=0.5)
+        w.save()
+        assert w.alive(), "the editor died with a file named %s open" % name
+    assert (tmp_path / name).read_text() == "X" + USER_NOTES, \
+        "the user's file named %s was taken for the editor's own window" % name
+
+
+# K18D
+@pytest.mark.parametrize("name", [
+    pytest.param("Watches", id="Watches"),
+    pytest.param("Stack", id="Stack"),
+    pytest.param("Messages", id="Messages"),
+])
+def test_enter_in_a_read_only_file_named_like_a_pane_does_not_act_as_the_pane(
+        tmp_path, name):
+    """Enter in a locked window of the debugger or of the build acts on the
+    row under the cursor: the Watches pane asks for the expression, Messages
+    jumps to the error.  A read-only file of the user's that carries the same
+    name is locked too, and Enter there must do nothing at all: no box, no
+    new window, the file as it was.  Red while the title decides."""
+    path = tmp_path / name
+    path.write_text(USER_NOTES)
+    path.chmod(0o444)
+    with session_in(tmp_path, filename=MAIN_C, seed=SOURCE,
+                    args=("./" + name,)) as w:
+        w.key(ALT_1, delay=0.8)
+        assert wait_screen(w, USER_NOTES.strip(), tmo=OPEN_WAIT_S), \
+            screen_text(w)
+        before = screen_text(w)
+        w.key(ENTER, delay=0.8)
+        assert w.alive(), "the editor died on Enter in a file named %s" % name
+        after = screen_text(w)
+        assert after == before, \
+            "Enter in the user's read-only file named %s acted as the pane:\n" \
+            "%s\n--- before:\n%s" % (name, after, before)
+    assert path.read_text() == USER_NOTES
+
+
 # --- K20: the replay is a second path to the same stale read ------------
 
 # K20
