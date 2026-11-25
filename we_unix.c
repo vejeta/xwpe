@@ -50,6 +50,7 @@ void wpe_render_cairo_start_threads(void);
 #include "we_dap.h"
 #include "we_startplan.h"
 #include "we_keymap.h"
+#include "we_fmt.h"
 
 #ifdef NOSYMLINKS
 #define lstat(x,y)  stat(x,y)
@@ -1581,14 +1582,68 @@ struct dirfile *e_find_dir(char *sufile, int sw)
  * A folder holding a file with a long name is listed like any other: the
  * row is written within @size, never past it.
  */
+/* The date and time columns of a row whose time cannot be shown. */
+#define E_FILE_INFO_NO_DATE "--.--.----  --.--"
+
+/**
+ * e_file_info_look - What the File Manager shows of one name.
+ * @filen: the name; @buf: receives what is known of it.
+ *
+ * A link whose target is gone has nothing to follow, so the link itself is
+ * shown (its own size and date) instead of whatever the row buffer held
+ * before.  A name that cannot be looked at at all shows zero size and no
+ * date, never another file's numbers.
+ * Return: 1 when @buf describes the name, 0 when nothing could be read.
+ */
+static int e_file_info_look(const char *filen, struct stat *buf)
+{
+ if (stat(filen, buf) == 0)
+  return 1;
+ if (lstat(filen, buf) == 0)
+  return 1;
+ memset(buf, 0, sizeof *buf);
+ return 0;
+}
+
+/**
+ * e_file_info_no_date - Dashes where a row's date and time would be.
+ * @out/@n: receive them; @n is never less than the dashes and their end.
+ */
+static void e_file_info_no_date(char *out, size_t n)
+{
+ if (n >= sizeof E_FILE_INFO_NO_DATE)
+  memcpy(out, E_FILE_INFO_NO_DATE, sizeof E_FILE_INFO_NO_DATE);
+ else if (n > 0)
+  out[0] = '\0';
+}
+
+/**
+ * e_file_info_date - The date and time columns of a File Manager row.
+ * @when: the modification time; @known: 0 when the name could not be read;
+ * @out/@n: receive the columns.
+ *
+ * A time the system cannot turn into a calendar date (localtime refuses it)
+ * shows dashes, as a name that could not be read does.
+ */
+static void e_file_info_date(time_t when, int known, char *out, size_t n)
+{
+ struct tm *ttm = known ? localtime(&when) : NULL;
+
+ if (ttm == NULL
+     || wpe_fmt_whole(out, n, "%2.2u.%2.2u.%4.4u  %2.2u.%2.2u", ttm->tm_mday,
+                      ttm->tm_mon + 1, ttm->tm_year + 1900, ttm->tm_hour,
+                      ttm->tm_min) != WPE_FMT_OK)
+  e_file_info_no_date(out, n);
+}
+
 char *e_file_info(char *filen, char *str, size_t size, int *num, int sw)
 {
- struct tm *ttm;
  struct stat buf[1];
+ char date[sizeof E_FILE_INFO_NO_DATE + 8];
+ int known = e_file_info_look(filen, buf);
 
- stat(filen, buf);
- ttm = localtime(&(buf->st_mtime));
- snprintf(str, size, "%c%c%c%c%c%c%c%c%c%c  %-13s  %6lld  %2.2u.%2.2u.%4.4u  %2.2u.%2.2u",
+ e_file_info_date(buf->st_mtime, known, date, sizeof date);
+ snprintf(str, size, "%c%c%c%c%c%c%c%c%c%c  %-13s  %6lld  %s",
    buf->st_mode & 040000 ? 'd' : '-',
    buf->st_mode & 0400 ? 'r' : '-',
    buf->st_mode & 0200 ? 'w' : '-',
@@ -1600,8 +1655,7 @@ char *e_file_info(char *filen, char *str, size_t size, int *num, int sw)
    buf->st_mode & 02 ? 'w' : '-',
    buf->st_mode & 01 ? 'x' : '-',
    filen,
-   (long long) buf->st_size, ttm->tm_mday,
-   ttm->tm_mon + 1, ttm->tm_year + 1900, ttm->tm_hour, ttm->tm_min);
+   (long long) buf->st_size, date);
  if (sw & 1) *num = buf->st_mtime;
  else if (sw & 2) *num = buf->st_size;
  return(str);
