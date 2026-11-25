@@ -827,6 +827,10 @@ CTRL_G_STACK = (CTRL_G, "k")     # Debug > Stack
 CTRL_G_WATCH = (CTRL_G, "w")     # Debug > Watches: add a watch
 F8 = "\033[19~"                  # step over
 NO_MORE_UNDO = "No more Undo"    # the status-row line Edit > Undo says with nothing to undo
+# The line every edit command says in a window the user cannot change (the
+# Stack window is read-only): since f5d03da Undo asks that question first,
+# like the other edits, so it is the line Undo says there.
+READ_ONLY_REFUSAL = "Read-only window: the text is unchanged"
 
 # Three calls deep, so the Stack window lists three frames at the first stop and
 # one at the second.  Lines are 1-based; a breakpoint goes on 3 and on 12.
@@ -908,8 +912,11 @@ def _stack_window_body(s):
 # @scenario SC-buffer-02
 def test_the_stack_window_has_no_undo_after_three_refreshes(tmp_path):
     """The Stack window is rewritten at every stop, and what the debugger
-    printed is nothing the user did: Edit > Undo in it says there is
-    nothing to undo, where it used to put back a row of an earlier listing."""
+    printed is nothing the user did: Edit > Undo in it changes nothing and
+    says so on the status row, where it used to put back a row of an earlier
+    listing.  The Stack window is read-only, so the line is the read-only
+    refusal every edit says there (or, before an edit asked that first,
+    "No more Undo")."""
     _need_gdb()
     with _stack_session(tmp_path) as s:
         _run_to_the_leaf(s)
@@ -919,12 +926,15 @@ def test_the_stack_window_has_no_undo_after_three_refreshes(tmp_path):
         dbg._wait_for(s, lambda: dbg._mark_line(s) == STACK_IN_MAIN + 1,
                       dbg.STEP_TIMEOUT_S)
         s.key(*CTRL_G_STACK, delay=0.8)     # the Stack window on top
+        before = s.display(drain=0.8)[:-1]
         s.menu(ALT.EDIT, "u")
         rows = s.display(drain=0.8)
         shown = "\n".join(rows)
-        assert NO_MORE_UNDO in rows[-1], \
-            "Edit > Undo in the Stack window changed it instead of saying " \
-            "there is nothing to undo:\n" + shown
+        assert rows[:-1] == before, \
+            "Edit > Undo in the Stack window changed it:\n" + shown
+        assert NO_MORE_UNDO in rows[-1] or READ_ONLY_REFUSAL in rows[-1], \
+            "Edit > Undo in the Stack window said nothing on the status " \
+            "row:\n" + shown
         assert "Error" not in shown, "the refusal is a line, not a box:\n" + shown
         assert s.alive(), "wpe died"
 
