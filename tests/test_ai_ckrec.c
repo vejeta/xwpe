@@ -887,9 +887,18 @@ static void row_a_rename_on_a_back_only_birth(void)
 static void row_order_on_a_back_only_system(void)
 {
  static const int first[] = { 0, 1, 2, 3 };
- char story[1024];
+ const char *row = "order on a back-only system";
+ char story[1024], w[NAME_MAX_TEST];
  play_back_only_system();
  row_order();
+ /* The true story needs a birth that can only go back: where the play
+    cannot give one (NetBSD, OpenBSD, a file system with no birth) the
+    orders agreeing is all this row can ask. */
+ row_folder(w, sizeof w);
+ if (!later_birth_possible(w, row)) {
+  clear_seen_hook();
+  return;
+ }
  order_text(first, story, sizeof story);
  rows++;
  if (strcmp(story, ORDER_TRUE_STORY) != 0)
