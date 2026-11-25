@@ -34,6 +34,19 @@
 #include "we_number.h"      /* what a number the user or a file gives the editor may be */
 #include "we_fieldtake.h"   /* the copy of a dialog field's text out into a buffer */
 
+/* What the File Manager shows of one listed entry, looked at in the folder the
+   list was read from (known is 0 when nothing could be read of it). */
+typedef struct {
+ WpeSeen seen;
+ int     known;
+} WpeFileLook;
+/* One look per name of a list, in the list's order. */
+typedef struct {
+ int          n;
+ WpeFileLook *row;
+} WpeFileLooks;
+void wpe_file_looks_free(WpeFileLooks *looks);
+
 #ifdef HAVE_LIBGPM
 #include <gpm.h>
 #endif
@@ -737,7 +750,8 @@ char *WpeGetCurrentDir(ECNT *cn);
 struct dirfile *WpeCreateWorkingDirTree(int sw, ECNT *cn);
 char *WpeAssemblePath(char *pth, struct dirfile *cd, struct dirfile *dd, int n, 
                       FENSTER *f);
-struct dirfile *WpeGraphicalFileList(struct dirfile *df, int sw, ECNT *cn);
+struct dirfile *WpeGraphicalFileList(struct dirfile *df, const WpeFileLooks *looks, int sw, ECNT *cn);
+struct dirfile *WpeFileListRows(struct dirfile **names, char *pattern, int fmode, int sw, ECNT *cn);
 struct dirfile *WpeGraphicalDirTree(struct dirfile *cd, struct dirfile *dd,
                                     ECNT *cn);
 
@@ -1136,12 +1150,12 @@ void e_display_lost_exit(void);
 void e_exit(int n);
 char *e_mkfilepath(char *dr, char *fn, char *fl, size_t n);
 int e_compstr(char *a, char *b);
-struct dirfile *e_find_files(char *sufile, int sw);
+struct dirfile *e_find_files(char *sufile, int sw, WpeFileLooks *looks);
 struct dirfile *e_find_dir(char *sufile, int sw);
 /* Room for one row of the file manager's list: the mode, a name of up to
    WPE_NAME_MAX bytes, the size and the date. */
 #define E_FILE_INFO_ROW_SIZE (WPE_NAME_SIZE + 64)
-char *e_file_info(char *filen, char *str, size_t size, int *num, int sw);
+char *e_file_info(const WpeFileLook *look, char *filen, char *str, size_t size, int *num, int sw);
 void ini_repaint(ECNT *cn);
 void end_repaint(void);
 int e_frb_t_menue(int sw, int xa, int ya, FENSTER *f, int md);

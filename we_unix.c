@@ -1399,70 +1399,167 @@ int e_compstr(char *a, char *b)
  return(e_compstr(a+n, b+n));
 }
 
-struct dirfile *e_find_files(char *sufile, int sw)
+/* The noun of a refusal when the File Manager lists a folder. */
+#define E_FIND_FOLDER_WHAT "folder"
+
+/**
+ * e_find_open_folder - Open the folder the File Manager is about to list.
+ * @sdir: the folder's name.
+ *
+ * The folder is opened as a folder and judged on the descriptor, so a name
+ * that holds a pipe or a terminal gives an empty list and never a wait.
+ * Return: the folder (closedir it), or NULL.
+ */
+static DIR *e_find_open_folder(const char *sdir)
 {
- char           *stmp, *tmpst, *sfile, *sdir;
+ WpeReadAsk ask = WPE_READ_ASK_FOLDER(E_FIND_FOLDER_WHAT);
+ WpeReadOutcome o;
+
+ return(wpe_read_folder(sdir, &ask, &o));
+}
+
+/**
+ * e_find_entry_is_file - Does the list of files offer this entry?
+ * @dirp: the folder being listed; @name: the entry; @sw: bit 2 asks for
+ * executable files only.
+ *
+ * A regular file is offered, and so is a link that points to a non-folder
+ * or to nothing (a broken link is still a name the user may want to remove
+ * or look at).  Each entry is looked at through the folder's descriptor, so
+ * a folder swapped for a link meanwhile is not followed.
+ * Return: 1 when the entry belongs in the list, else 0.
+ */
+static int e_find_entry_is_file(DIR *dirp, const char *name, int sw)
+{
+ WpeSeen own, target;
+ int     has_target;
+
+ if (wpe_read_entry_look(dirp, name, &own) != 0)
+  return(0);
+ has_target = wpe_read_entry_look_target(dirp, name, &target) == 0;
+ if (has_target && wpe_seen_kind(&target) == S_IFDIR)
+  return(0);
+ if (has_target && wpe_seen_kind(&target) != S_IFREG && wpe_seen_kind(&own) != S_IFLNK)
+  return(0);
+ if (!has_target && wpe_seen_kind(&own) != S_IFLNK)
+  return(0);
+ return(!(sw & 2) || (has_target && (wpe_seen_mode(&target) & 0111)));
+}
+
+/**
+ * e_find_entry_is_folder - Does the list of folders offer this entry?
+ * @dirp: the folder being listed; @name: the entry.
+ *
+ * Only a folder that exists is offered: a link counts when it leads to one.
+ * Return: 1 when the entry is a folder, else 0.
+ */
+static int e_find_entry_is_folder(DIR *dirp, const char *name)
+{
+ WpeSeen target;
+
+ if (wpe_read_entry_look_target(dirp, name, &target) != 0)
+  return(0);
+ return(wpe_seen_kind(&target) == S_IFDIR);
+}
+
+/**
+ * wpe_file_looks_free - Release the looks of a file list.
+ * @looks: what e_find_files filled; empty afterwards.
+ */
+void wpe_file_looks_free(WpeFileLooks *looks)
+{
+ if (looks == NULL)
+  return;
+ if (looks->row != NULL)
+  FREE(looks->row);
+ looks->row = NULL;
+ looks->n = 0;
+}
+
+/**
+ * e_find_look_row - What the File Manager shows of one listed name.
+ * @dirp: the folder the list was read from; @name: the entry; @look: receives it.
+ *
+ * A link shows the file it points to.  A link whose target is gone shows the
+ * link itself.  An entry that cannot be looked at shows nothing (known is 0),
+ * never another file's numbers.  Both looks are asked of the folder held, so
+ * a name that also exists in the working folder is never taken for it.
+ */
+static void e_find_look_row(DIR *dirp, const char *name, WpeFileLook *look)
+{
+ look->known = 1;
+ if (wpe_read_entry_look_target(dirp, name, &look->seen) == 0)
+  return;
+ if (wpe_read_entry_look(dirp, name, &look->seen) == 0)
+  return;
+ look->known = 0;
+}
+
+/**
+ * e_find_look_rows - Look at every listed name while the folder is still held.
+ * @dirp: the folder the list was read from; @df: the list; @looks: receives
+ * one look per name, in the list's order (empty when out of memory).
+ *
+ * Done before the folder is closed, so the sizes and dates the user reads
+ * beside a name are those of the folder the list shows, whichever folder the
+ * editor is working in.
+ */
+static void e_find_look_rows(DIR *dirp, const struct dirfile *df, WpeFileLooks *looks)
+{
+ int i;
+
+ if (df->anz <= 0)
+  return;
+ looks->row = MALLOC(df->anz * sizeof(WpeFileLook));
+ if (looks->row == NULL)
+  return;
+ for (i = 0; i < df->anz; i++)
+  e_find_look_row(dirp, df->name[i], looks->row + i);
+ looks->n = df->anz;
+}
+
+struct dirfile *e_find_files(char *sufile, int sw, WpeFileLooks *looks)
+{
+ char           *tmpst, *sfile, *sdir;
  struct dirfile *df = MALLOC(sizeof(struct dirfile));
  DIR            *dirp;
  struct dirent  *dp;
- struct stat     buf;
- struct stat     lbuf;
- int             i, n, cexist, sizeStmp, sizeSdir;
+ int             i, n, sizeSdir;
 
+ if (looks != NULL)
+ {
+  looks->n = 0;
+  looks->row = NULL;
+ }
  df->name = NULL;
  df->anz = 0;
  for (n = strlen(sufile); n >= 0 && sufile[n] != DIRC; n--);
  sfile = sufile + 1 + n;
  if (n <= 0)
  {
-  sizeSdir = 2;
   sdir = (char *)WpeMalloc(2 * sizeof(char));
   sdir[0] = n ? '.' : DIRC;
   sdir[1] = '\0';
  }
  else
  {
-  sizeSdir = n + 1;
   sdir = (char *)WpeMalloc((n + 1) * sizeof(char));
   for (i = 0; i < n; i++)
    sdir[i] = sufile[i];
   sdir[n] = '\0';
  }
- if (!(dirp = opendir(sdir)))
+ if (!(dirp = e_find_open_folder(sdir)))
  {
   FREE(sdir);
   return(df);
  }
- sizeStmp = 256;
- stmp = (char *)WpeMalloc(sizeStmp);
  while((dp = readdir(dirp)) != NULL)
  {
   if (!(sw & 1) && dp->d_name[0] == '.' && sfile[0] != '.')
    continue;
   if (!e_compstr(sfile, dp->d_name))
   {
-   if (sizeSdir + strlen(dp->d_name) + 10 > sizeStmp)
-   {
-    while (sizeSdir + strlen(dp->d_name) + 10 > sizeStmp)
-     sizeStmp <<= 1;
-    stmp = (char *)WpeRealloc(stmp, sizeStmp);
-   }
-
-   e_mkfilepath(sdir, dp->d_name, stmp, sizeStmp);
-   lstat(stmp, &lbuf);
-   stat(stmp, &buf);
-
-   /* check existence of the file */
-   cexist = access(stmp, F_OK);
-
-   /* we accept it as a file if
-      - a regular file
-      - link and it does not point to anything
-      - link and it points to a non-directory */
-   if ((S_ISREG(buf.st_mode) ||
-     (S_ISLNK(lbuf.st_mode) &&
-     (cexist || (cexist == 0 && !S_ISDIR(buf.st_mode))))) &&
-     (!(sw & 2) || (buf.st_mode & 0111)) )
+   if (e_find_entry_is_file(dirp, dp->d_name, sw))
    {
     if (df->anz == 0)
      df->name = MALLOC((df->anz + 1) * sizeof(char *));
@@ -1472,7 +1569,6 @@ struct dirfile *e_find_files(char *sufile, int sw)
     {
      df->anz = 0;
      closedir(dirp);
-     WpeFree(stmp);
      WpeFree(sdir);
      return(df);
     }
@@ -1484,20 +1580,20 @@ struct dirfile *e_find_files(char *sufile, int sw)
    }
   }
  }
+ if (looks != NULL)
+  e_find_look_rows(dirp, df, looks);
  closedir(dirp);
- WpeFree(stmp);
  WpeFree(sdir);
  return(df);
 }
 
 struct dirfile *e_find_dir(char *sufile, int sw)
 {
- char           *stmp, *tmpst, *sfile, *sdir;
+ char           *tmpst, *sfile, *sdir;
  struct dirfile *df = MALLOC(sizeof(struct dirfile));
  DIR            *dirp;
  struct dirent  *dp;
- struct stat     buf;
- int             i, n, sizeStmp, sizeSdir;
+ int             i, n;
 
  df->name = NULL;
  df->anz = 0;
@@ -1506,26 +1602,22 @@ struct dirfile *e_find_dir(char *sufile, int sw)
  sfile = sfile + n;
  if (n <= 0)
  {
-  sizeSdir = 2;
   sdir = MALLOC(2 * sizeof(char));
   sdir[0] = n ? '.' : DIRC;
   sdir[1] = '\0';
  }
  else
  {
-  sizeSdir = n + 1;
   sdir = MALLOC((n + 1) * sizeof(char));
   for (i = 0; i < n; i++)
    sdir[i] = sufile[i];
   sdir[n] = '\0';
  }
- if (!(dirp = opendir(sdir)))
+ if (!(dirp = e_find_open_folder(sdir)))
  {
   FREE(sdir);
   return(df);
  }
- sizeStmp = 256;
- stmp = (char *)WpeMalloc(sizeStmp);
  while ((dp = readdir(dirp)) != NULL)
  {
   if (!sw && dp->d_name[0] == '.' && sfile[0] != '.')
@@ -1533,16 +1625,8 @@ struct dirfile *e_find_dir(char *sufile, int sw)
   if (!e_compstr(sfile, dp->d_name) && strcmp(dp->d_name, ".") &&
     strcmp(dp->d_name, ".."))
   {
-   if (sizeSdir + strlen(dp->d_name) + 10 > sizeStmp)
-   {
-    while (sizeSdir + strlen(dp->d_name) + 10 > sizeStmp)
-     sizeStmp <<= 1;
-    stmp = (char *)WpeRealloc(stmp, sizeStmp);
-   }
-   stat(e_mkfilepath(sdir, dp->d_name, stmp, sizeStmp), &buf);
-
    /* we accept _only_ real, existing directories */
-   if (S_ISDIR(buf.st_mode))
+   if (e_find_entry_is_folder(dirp, dp->d_name))
    {
 
     if (df->anz == 0)
@@ -1554,7 +1638,6 @@ struct dirfile *e_find_dir(char *sufile, int sw)
      df->anz = 0;
      closedir(dirp);
      FREE(sdir);
-     WpeFree(stmp);
      return(df);
     }
     strcpy(tmpst, dp->d_name);
@@ -1567,7 +1650,6 @@ struct dirfile *e_find_dir(char *sufile, int sw)
  }
  closedir(dirp);
  FREE(sdir);
- WpeFree(stmp);
  return(df);
 }
 
@@ -1575,7 +1657,8 @@ struct dirfile *e_find_dir(char *sufile, int sw)
 
 /**
  * e_file_info - One row of the file manager's list: mode, name, size, date.
- * @filen: the file's name; @str/@size: the row's buffer and its size
+ * @look: what was looked at of the entry in the folder the list was read
+ * from (NULL shows no numbers); @filen: the file's name; @str/@size: the row's buffer and its size
  * (E_FILE_INFO_ROW_SIZE holds any name the system allows); @num: receives
  * the time or the size the list is sorted by, as @sw says.
  *
@@ -1584,26 +1667,6 @@ struct dirfile *e_find_dir(char *sufile, int sw)
  */
 /* The date and time columns of a row whose time cannot be shown. */
 #define E_FILE_INFO_NO_DATE "--.--.----  --.--"
-
-/**
- * e_file_info_look - What the File Manager shows of one name.
- * @filen: the name; @buf: receives what is known of it.
- *
- * A link whose target is gone has nothing to follow, so the link itself is
- * shown (its own size and date) instead of whatever the row buffer held
- * before.  A name that cannot be looked at at all shows zero size and no
- * date, never another file's numbers.
- * Return: 1 when @buf describes the name, 0 when nothing could be read.
- */
-static int e_file_info_look(const char *filen, struct stat *buf)
-{
- if (stat(filen, buf) == 0)
-  return 1;
- if (lstat(filen, buf) == 0)
-  return 1;
- memset(buf, 0, sizeof *buf);
- return 0;
-}
 
 /**
  * e_file_info_no_date - Dashes where a row's date and time would be.
@@ -1636,28 +1699,31 @@ static void e_file_info_date(time_t when, int known, char *out, size_t n)
   e_file_info_no_date(out, n);
 }
 
-char *e_file_info(char *filen, char *str, size_t size, int *num, int sw)
+char *e_file_info(const WpeFileLook *look, char *filen, char *str, size_t size, int *num, int sw)
 {
- struct stat buf[1];
+ const WpeSeen *seen = look != NULL ? &look->seen : NULL;
  char date[sizeof E_FILE_INFO_NO_DATE + 8];
- int known = e_file_info_look(filen, buf);
+ int known = look != NULL && look->known;
+ mode_t mode = known ? wpe_seen_mode(seen) : 0;
+ off_t bytes = known ? wpe_seen_size(seen) : 0;
+ time_t when = known ? wpe_seen_mtime(seen) : 0;
 
- e_file_info_date(buf->st_mtime, known, date, sizeof date);
+ e_file_info_date(when, known, date, sizeof date);
  snprintf(str, size, "%c%c%c%c%c%c%c%c%c%c  %-13s  %6lld  %s",
-   buf->st_mode & 040000 ? 'd' : '-',
-   buf->st_mode & 0400 ? 'r' : '-',
-   buf->st_mode & 0200 ? 'w' : '-',
-   buf->st_mode & 0100 ? 'x' : '-',
-   buf->st_mode & 040 ? 'r' : '-',
-   buf->st_mode & 020 ? 'w' : '-',
-   buf->st_mode & 010 ? 'x' : '-',
-   buf->st_mode & 04 ? 'r' : '-',
-   buf->st_mode & 02 ? 'w' : '-',
-   buf->st_mode & 01 ? 'x' : '-',
+   known && wpe_seen_kind(seen) == S_IFDIR ? 'd' : '-',
+   mode & 0400 ? 'r' : '-',
+   mode & 0200 ? 'w' : '-',
+   mode & 0100 ? 'x' : '-',
+   mode & 040 ? 'r' : '-',
+   mode & 020 ? 'w' : '-',
+   mode & 010 ? 'x' : '-',
+   mode & 04 ? 'r' : '-',
+   mode & 02 ? 'w' : '-',
+   mode & 01 ? 'x' : '-',
    filen,
-   (long long) buf->st_size, date);
- if (sw & 1) *num = buf->st_mtime;
- else if (sw & 2) *num = buf->st_size;
+   (long long) bytes, date);
+ if (sw & 1) *num = when;
+ else if (sw & 2) *num = bytes;
  return(str);
 }
 
@@ -1679,7 +1745,7 @@ int e_recover(ECNT *cn)
  BUFFER *b;
  int i;
 
- files = e_find_files("*.ESV", 1);
+ files = e_find_files("*.ESV", 1, NULL);
  for (i = 0; i < files->anz; i++)
  {
   if (e_edit(cn, files->name[i]) != 0)

@@ -480,8 +480,7 @@ int WpeMouseInFileDirList(int k, int sw, FENSTER * f)
       e_rename(b->df->name[b->fw->nf], tmp, f);
     freedf(b->df);
     freedf(b->fw->df);
-    b->df = e_find_files(b->rdfile, f->ed->flopt & FM_SHOW_HIDDEN_DIRS ? 1 : 0);
-    b->fw->df = WpeGraphicalFileList(b->df, f->ed->flopt >> 9, cn);
+    b->fw->df = WpeFileListRows(&b->df, b->rdfile, f->ed->flopt & FM_SHOW_HIDDEN_DIRS ? 1 : 0, f->ed->flopt >> 9, cn);
     b->fw->ia = b->fw->nf = 0;
     b->fw->ja = b->fw->srcha;
     e_pr_file_window(b->fw, 0, 1, f->fb->ft.fb, f->fb->fz.fb, f->fb->frft.fb);

@@ -10,6 +10,17 @@
  */
 #include "we_startcmd.h"
 #include "we_fmt.h"
+#include "we_read.h"
+
+/* The noun of a refusal; a store that cannot be read is a store with no
+   answers in it, and nothing is said of it. */
+#define STARTCMD_STORE_WHAT "start-command store"
+
+/* The most a store may hold and still be read: the built-outputs store keeps
+   WPE_BUILT_MAX_RECORDS records of a folder and a name each, which is over a
+   megabyte at its cap, so the bound is the project file's.  A store over it
+   is refused whole, never read cut short. */
+#define STARTCMD_STORE_MAX WPE_READ_PROJECT_MAX
 
 #include <errno.h>
 #include <fcntl.h>
@@ -194,16 +205,25 @@ int wpe_startcmd_store_path(char *out, size_t sz)
 }
 
 /**
- * startcmd_mine_alone - Is a file or folder the user's, and not writable by
- * group or others?
- * @st: its stat.
+ * startcmd_owned_alone - Is an object the user's, and not writable by group
+ * or others?
+ * @uid: its owner; @mode: its st_mode.
  *
  * What a store and its folder must be before the editor believes a word of
  * it: anyone who could write there could answer for the user.
  */
+static int startcmd_owned_alone(uid_t uid, mode_t mode)
+{
+ return uid == geteuid() && !(mode & (S_IWGRP | S_IWOTH));
+}
+
+/**
+ * startcmd_mine_alone - startcmd_owned_alone for a stat.
+ * @st: its stat.
+ */
 static int startcmd_mine_alone(const struct stat *st)
 {
- return st->st_uid == geteuid() && !(st->st_mode & (S_IWGRP | S_IWOTH));
+ return startcmd_owned_alone(st->st_uid, st->st_mode);
 }
 
 /**
@@ -215,7 +235,7 @@ static int startcmd_mine_alone(const struct stat *st)
  * does: older editors made it with the umask (0775 under umask 002), and
  * refusing it would lose every answer the user gave.  That is safe because
  * the folder only holds the stores, and each store is still believed only
- * when it is the user's alone (startcmd_stream_of): what a group member could
+ * when it is the user's alone (startcmd_read_store): what a group member could
  * do there is remove or rename the user's own files, never write one.
  * Return: WPE_STARTCMD_STORE_OK, _MISSING (no folder yet), or _BAD (not a
  * folder, not the user's, or a mode that could not be tightened).
@@ -340,8 +360,31 @@ static void startcmd_chop(char *line)
 }
 
 /**
- * startcmd_parse_stream - Read the store's lines.
- * @fp: the open store; @s: receives its records.
+ * startcmd_take_line - Cut the next line off the text of a store.
+ * @cursor: where the text goes on, moved past the line; @end: the text's end.
+ *
+ * The line ends where its newline was, which becomes the end of the string,
+ * so the caller reads and splits it in place.
+ * Return: the line, or NULL when the text is used up.
+ */
+static char *startcmd_take_line(char **cursor, const char *end)
+{
+ char *line = *cursor, *stop;
+ if (line >= end) return NULL;
+ stop = memchr(line, '\n', (size_t)(end - line));
+ if (stop) {
+  *stop = '\0';
+  *cursor = stop + 1;
+ } else {
+  *cursor = (char *)end;          /* the last line has no newline; the text is NUL-ended past it */
+ }
+ return line;
+}
+
+/**
+ * startcmd_parse_text - Read the store's lines.
+ * @text: the store's bytes, NUL-ended at @len, changed in place; @s: receives
+ * its records.
  *
  * A version-1 store holds answers about single commands, which version 2
  * no longer asks about: it is read as an empty store, so each folder asks
@@ -350,12 +393,11 @@ static void startcmd_chop(char *line)
  * Return: WPE_STARTCMD_STORE_OK, or WPE_STARTCMD_STORE_BAD when the first
  * line is neither version's or any line does not parse.
  */
-static int startcmd_parse_stream(FILE *fp, startcmd_store *s)
+static int startcmd_parse_text(char *text, size_t len, startcmd_store *s)
 {
- char *line = NULL;
- size_t room = 0;
+ char *cursor = text, *line;
  int first = 1, state = WPE_STARTCMD_STORE_OK;
- while (state == WPE_STARTCMD_STORE_OK && getline(&line, &room, fp) >= 0) {
+ while (state == WPE_STARTCMD_STORE_OK && (line = startcmd_take_line(&cursor, text + len))) {
   startcmd_chop(line);
   if (first) {
    first = 0;
@@ -366,61 +408,65 @@ static int startcmd_parse_stream(FILE *fp, startcmd_store *s)
   if (!line[0]) continue;
   if (startcmd_parse_record(s, line) < 0) state = WPE_STARTCMD_STORE_BAD;
  }
- if (first || ferror(fp)) state = WPE_STARTCMD_STORE_BAD;
- free(line);
+ if (first) state = WPE_STARTCMD_STORE_BAD;
  return state;
 }
 
 /**
- * startcmd_stream_of - The stream of a regular file already open as @fd.
- * @fd: the descriptor (taken: closed on failure); @mode: the stream's mode.
+ * startcmd_write_stream - The stream a new store is written through.
+ * @fd: the descriptor mkstemp made (taken: closed on failure).
  *
- * The stream works through the very descriptor that was opened without
- * following a link or made by mkstemp, never through the name again, and
- * anything but a regular file (a FIFO, a device planted at the store's
- * name) is refused before a byte is read or written.
+ * The stream works through the very descriptor mkstemp made, never through
+ * the name again, and anything but a regular file of the user's alone is
+ * refused before a byte is written.
  * Return: the stream, or NULL.
  */
-static FILE *startcmd_stream_of(int fd, const char *mode)
+static FILE *startcmd_write_stream(int fd)
 {
  struct stat st;
- int flags;
  FILE *fp;
  if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || !startcmd_mine_alone(&st)) {
   close(fd);                      /* not a regular file of the user's alone */
   return NULL;
  }
- flags = fcntl(fd, F_GETFL);
- if (flags >= 0) fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
- fp = fdopen(fd, mode);
+ fp = fdopen(fd, "w");
  if (!fp) close(fd);
  return fp;
 }
 
 /**
- * startcmd_open_store - Open one of the stores for reading, if it can be
- * believed.
- * @name: the store's file name; @out: receives the stream.
+ * startcmd_read_store - Read one of the stores whole, if it can be believed.
+ * @name: the store's file name; @text: receives its bytes (free them); @len:
+ * receives their count.
  *
- * The folder must be the user's alone, and the file is opened without
- * following a link and checked through its descriptor (a regular file, the
- * user's, not writable by group or others), so a store another user could
- * have written is a store that cannot be read.
+ * The folder must be the user's alone, and the file is read through the read
+ * owner without following a link and judged on its descriptor (a regular
+ * file, the user's, not writable by group or others, within the store's
+ * bound), so
+ * a store another user could have written, a pipe or a device planted at its
+ * name is a store that cannot be read.
  * Return: WPE_STARTCMD_STORE_OK, _MISSING or _BAD.
  */
-static int startcmd_open_store(const char *name, FILE **out)
+static int startcmd_read_store(const char *name, char **text, size_t *len)
 {
  char dir[WPE_STARTCMD_FOLDER_MAX], path[WPE_STARTCMD_FOLDER_MAX];
- int fd, state;
- *out = NULL;
+ WpeReadAsk ask = WPE_READ_ASK_FOLDER_BOUNDED(STARTCMD_STORE_WHAT, STARTCMD_STORE_MAX);
+ WpeReadOutcome o;
+ int state;
+ *text = NULL;
  if (startcmd_state_dir(dir, sizeof dir) < 0 || startcmd_path_of(name, path, sizeof path) < 0)
   return WPE_STARTCMD_STORE_BAD;
  state = startcmd_dir_trusted(dir);
  if (state != WPE_STARTCMD_STORE_OK) return state;
- fd = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
- if (fd < 0) return errno == ENOENT ? WPE_STARTCMD_STORE_MISSING : WPE_STARTCMD_STORE_BAD;
- *out = startcmd_stream_of(fd, "r");
- return *out ? WPE_STARTCMD_STORE_OK : WPE_STARTCMD_STORE_BAD;
+ *text = wpe_read_text(path, &ask, len, &o);
+ if (*text == NULL)
+  return wpe_read_outcome_missing(&o) ? WPE_STARTCMD_STORE_MISSING : WPE_STARTCMD_STORE_BAD;
+ if (!startcmd_owned_alone(o.uid, o.mode)) {
+  free(*text);                    /* a store another user could have written */
+  *text = NULL;
+  return WPE_STARTCMD_STORE_BAD;
+ }
+ return WPE_STARTCMD_STORE_OK;
 }
 
 /**
@@ -434,14 +480,15 @@ static int startcmd_open_store(const char *name, FILE **out)
  */
 static int startcmd_store_load(startcmd_store *s)
 {
- FILE *fp;
+ char *text;
+ size_t len;
  int state;
  s->rec = NULL;
  s->n = 0;
- state = startcmd_open_store(WPE_STARTCMD_STORE_NAME, &fp);
+ state = startcmd_read_store(WPE_STARTCMD_STORE_NAME, &text, &len);
  if (state != WPE_STARTCMD_STORE_OK) return state;
- state = startcmd_parse_stream(fp, s);
- fclose(fp);
+ state = startcmd_parse_text(text, len, s);
+ free(text);
  if (state != WPE_STARTCMD_STORE_OK) startcmd_store_free(s);
  return state;
 }
@@ -608,7 +655,7 @@ static int startcmd_save_file(const char *name, int (*write_fn)(FILE *, const vo
  fd = mkstemp(temp);
  if (fd < 0) return -1;
  fchmod(fd, STARTCMD_FILE_MODE);
- fp = startcmd_stream_of(fd, "w");
+ fp = startcmd_write_stream(fd);
  if (!fp) { unlink(temp); return -1; }
  rc = write_fn(fp, ctx);
  if (fclose(fp) != 0) rc = -1;
@@ -880,16 +927,16 @@ static int built_parse_record(char *line, const char *only, WpeBuiltRec **rec, i
 }
 
 /**
- * built_read_stream - Read the store's lines.
- * @fp: the open store; @only: the folder to keep, or NULL; @rec/@n: receive.
+ * built_parse_text - Read the store's lines.
+ * @text: the store's bytes, NUL-ended at @len, changed in place; @only: the
+ * folder to keep, or NULL; @rec/@n: receive.
  * Return: WPE_STARTCMD_STORE_OK, or _BAD for another first line or a bad line.
  */
-static int built_read_stream(FILE *fp, const char *only, WpeBuiltRec **rec, int *n)
+static int built_parse_text(char *text, size_t len, const char *only, WpeBuiltRec **rec, int *n)
 {
- char *line = NULL;
- size_t room = 0;
+ char *cursor = text, *line;
  int first = 1, state = WPE_STARTCMD_STORE_OK;
- while (state == WPE_STARTCMD_STORE_OK && getline(&line, &room, fp) >= 0) {
+ while (state == WPE_STARTCMD_STORE_OK && (line = startcmd_take_line(&cursor, text + len))) {
   startcmd_chop(line);
   if (first) {
    first = 0;
@@ -899,8 +946,7 @@ static int built_read_stream(FILE *fp, const char *only, WpeBuiltRec **rec, int 
   if (!line[0]) continue;
   if (built_parse_record(line, only, rec, n) < 0) state = WPE_STARTCMD_STORE_BAD;
  }
- if (first || ferror(fp)) state = WPE_STARTCMD_STORE_BAD;
- free(line);
+ if (first) state = WPE_STARTCMD_STORE_BAD;
  return state;
 }
 
@@ -912,7 +958,8 @@ static int built_read_stream(FILE *fp, const char *only, WpeBuiltRec **rec, int 
  */
 static int built_read_store(const char *only, WpeBuiltRec **rec, int *n)
 {
- FILE *fp;
+ char *text;
+ size_t len;
  int state;
  char dir[WPE_STARTCMD_FOLDER_MAX];
  *rec = NULL;
@@ -920,10 +967,10 @@ static int built_read_store(const char *only, WpeBuiltRec **rec, int *n)
  /* No state folder to name (none set, or one too long): there is nothing
     to read, and the first save says it could not write. */
  if (startcmd_state_dir(dir, sizeof dir) < 0) return WPE_STARTCMD_STORE_MISSING;
- state = startcmd_open_store(WPE_BUILT_STORE_NAME, &fp);
+ state = startcmd_read_store(WPE_BUILT_STORE_NAME, &text, &len);
  if (state != WPE_STARTCMD_STORE_OK) return state;
- state = built_read_stream(fp, only, rec, n);
- fclose(fp);
+ state = built_parse_text(text, len, only, rec, n);
+ free(text);
  if (state != WPE_STARTCMD_STORE_OK) {
   built_recs_free(*rec, *n);
   *rec = NULL;
@@ -1063,6 +1110,52 @@ typedef struct {
  int n;
 } built_list;
 
+/* The most the seven numbers of a record, their tabs and the line end can
+   take: each is at most twenty-one characters with its tab. */
+#define BUILT_NUMBERS_TEXT_MAX (7 * 21 + 1)
+
+/**
+ * startcmd_escaped_len - How many bytes a text takes as a field of a store.
+ * @text: the text; a backslash, tab, newline and return take two bytes each.
+ */
+static size_t startcmd_escaped_len(const char *text)
+{
+ size_t len = 0;
+ for (; *text; text++)
+  len += (*text == '\\' || *text == '\t' || *text == '\n' || *text == '\r') ? 2 : 1;
+ return len;
+}
+
+/**
+ * built_record_text_max - The most bytes one record takes in the store.
+ * @r: the record.
+ */
+static size_t built_record_text_max(const WpeBuiltRec *r)
+{
+ return startcmd_escaped_len(r->folder) + 1 + startcmd_escaped_len(r->output) +
+        BUILT_NUMBERS_TEXT_MAX;
+}
+
+/**
+ * built_fit_bound - Drop the oldest records until the store's text fits what
+ * the next read accepts.
+ * @rec/@n: the list, oldest first.
+ *
+ * Without this a long list of long paths could be written whole and then
+ * refused whole when the editor starts the next time, and every remembered
+ * output would be built again.  The newest records are the ones kept.
+ */
+static void built_fit_bound(WpeBuiltRec *rec, int *n)
+{
+ size_t total = strlen(WPE_BUILT_STORE_MAGIC) + 1;
+ int i;
+ for (i = 0; i < *n; i++) total += built_record_text_max(&rec[i]);
+ while (*n > 0 && total > STARTCMD_STORE_MAX) {
+  total -= built_record_text_max(&rec[0]);
+  built_recs_drop(rec, n, 0);
+ }
+}
+
 /** built_write_list - Write the store's text for a list of records. */
 static int built_write_list(FILE *fp, const void *ctx)
 {
@@ -1122,6 +1215,7 @@ int wpe_startcmd_built_save(WpeBuiltSet *set)
  if (built_merge(&all, &nall, set) < 0) { built_recs_free(all, nall); return -1; }
  built_prune(all, &nall);
  while (nall > WPE_BUILT_MAX_RECORDS) built_recs_drop(all, &nall, 0);
+ built_fit_bound(all, &nall);
  l.rec = all;
  l.n = nall;
  rc = startcmd_save_file(WPE_BUILT_STORE_NAME, built_write_list, &l);

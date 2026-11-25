@@ -313,12 +313,10 @@ int WpeCreateFileManager(int sw, ECNT *cn, char *dirct)
   /* finds all files matching the pattern */
   if((sfile = wpe_path_join_dup(f->dirct, b->rdfile)) == NULL)
     e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
-  b->df = e_find_files(sfile, i);
+  /* setup the drawing in the file list window */
+  b->fw->df = WpeFileListRows(&b->df, sfile, i, f->ed->flopt >> 9, cn);
 
   FREE(sfile);
-
-  /* setup the drawing in the file list window */
-  b->fw->df = WpeGraphicalFileList(b->df, f->ed->flopt >> 9, cn);
 
   /* file box - geometry and vertical slider settings */
   b->fw->mxa = f->a.x;
@@ -1025,10 +1023,33 @@ static void WpeWriteBlockToFile(FENSTER *fe, SCHIRM *se, const char *filen)
 }
 
 /* File Manager Handler */
+/* The noun of a refusal when the File Manager lists a folder. */
+#define FM_FOLDER_WHAT "folder"
+
+/* The noun of a refusal when the text of a file is read into the window. */
+#define FM_BLOCK_SOURCE_WHAT "file"
+
+/**
+ * fm_open_block_source - Open the file the File Manager reads into a window.
+ * @name: the file the user picked; @o: receives why it was refused.
+ *
+ * A name that holds a pipe or a terminal is refused and named, so reading a
+ * file into the text never waits for a writer.  The user asked for this
+ * file, so its size is not limited.
+ * Return: the open stream (fclose it), or NULL.
+ */
+static FILE *fm_open_block_source(const char *name, WpeReadOutcome *o)
+{
+  WpeReadAsk ask = WPE_READ_ASK_LOAD(FM_BLOCK_SOURCE_WHAT);
+
+  return(wpe_read_stream_open(name, &ask, o));
+}
+
 int WpeHandleFileManager(ECNT * cn)
 {
   FENSTER        *f = cn->f[cn->mxedt], *fe = NULL;
   WpeEolInfo      read_info;
+  WpeReadOutcome  read_out;
   FLBFFR         *b = (FLBFFR *) f->b;
   BUFFER         *be = NULL;
   SCHIRM         *se = NULL;
@@ -1159,10 +1180,8 @@ int WpeHandleFileManager(ECNT * cn)
           /* free up existing structures */
           freedf(b->df);
           freedf(b->fw->df);
-          /* find files according to the new pattern */
-          b->df = e_find_files(b->rdfile, fmode);
-          /* setup the drawing in the dir tree window */
-          b->fw->df = WpeGraphicalFileList(b->df, f->ed->flopt >> 9, cn);
+          /* find files according to the new pattern and set up the drawing */
+          b->fw->df = WpeFileListRows(&b->df, b->rdfile, fmode, f->ed->flopt >> 9, cn);
           b->fw->ia = b->fw->nf = 0;
           b->fw->ja = b->fw->srcha;
           /* jump to file list window */
@@ -1378,10 +1397,8 @@ int WpeHandleFileManager(ECNT * cn)
         nco = b->dw->nf = b->cd->anz - 1;
         b->dw->ia = b->dw->ja = 0;
 
-        /* finds all files matching the pattern */
-        b->df = e_find_files(b->rdfile, fmode);
-        /* setup the drawing in the file list window */
-        b->fw->df = WpeGraphicalFileList(b->df, f->ed->flopt >> 9, cn);
+        /* finds all files matching the pattern and sets up the drawing */
+        b->fw->df = WpeFileListRows(&b->df, b->rdfile, fmode, f->ed->flopt >> 9, cn);
         b->fw->nf = b->fw->ia = 0;
         b->fw->ja = 12;
 
@@ -1429,10 +1446,8 @@ int WpeHandleFileManager(ECNT * cn)
             freedf(b->df);
             freedf(b->fw->df);
 
-            /* generate the new file list */
-            b->df = e_find_files(b->rdfile, fmode);
-            /* setup the drawing of it */
-            b->fw->df = WpeGraphicalFileList(b->df, f->ed->flopt >> 9, cn);
+            /* generate the new file list and set up the drawing of it */
+            b->fw->df = WpeFileListRows(&b->df, b->rdfile, fmode, f->ed->flopt >> 9, cn);
             b->fw->ia = b->fw->nf = 0;
             b->fw->ja = b->fw->srcha;
           }
@@ -1511,11 +1526,8 @@ int WpeHandleFileManager(ECNT * cn)
             freedf(b->df);
             freedf(b->fw->df);
 
-            /* find files according to the pattern */
-            b->df = e_find_files(b->rdfile, fmode);
-
-            /* setup drawing */
-            b->fw->df = WpeGraphicalFileList(b->df, f->ed->flopt >> 9, cn);
+            /* find files according to the pattern and set up the drawing */
+            b->fw->df = WpeFileListRows(&b->df, b->rdfile, fmode, f->ed->flopt >> 9, cn);
             b->fw->ia = b->fw->nf = 0;
             b->fw->ja = b->fw->srcha;
           }
@@ -1631,9 +1643,9 @@ int WpeHandleFileManager(ECNT * cn)
           else
           {
             /* try to open the file, no success return */
-            if((fp = fopen(filen, "rb")) == NULL)
+            if((fp = fm_open_block_source(filen, &read_out)) == NULL)
             {
-              e_say_path_refused(f, "file", filen, errno);
+              e_say_read_refused(f, FM_BLOCK_SOURCE_WHAT, filen, &read_out);
               c = cold;
               break;
             }
@@ -1827,10 +1839,8 @@ int WpeHandleFileManager(ECNT * cn)
             freedf(b->df);
             freedf(b->fw->df);
 
-            /* create new file list */
-            b->df = e_find_files(b->rdfile, fmode);
-            /* setup drawing */
-            b->fw->df = WpeGraphicalFileList(b->df, f->ed->flopt >> 9, cn);
+            /* create new file list and set up the drawing */
+            b->fw->df = WpeFileListRows(&b->df, b->rdfile, fmode, f->ed->flopt >> 9, cn);
           }
           else if(cold == AltT && (subdir = e_fm_tree_subdir(b)) != NULL) /* coming from dir tree */
           {
@@ -2460,11 +2470,34 @@ struct dirfile *WpeCreateWorkingDirTree(int sw, ECNT *cn)
   return(df);
 }
 
-struct dirfile *WpeGraphicalFileList(struct dirfile *df, int sw, ECNT *cn)
+/**
+ * WpeFileListRows - List the files of a pattern and the rows that show them.
+ * @names: receives the matching names; @pattern: the folder and pattern as
+ * the user typed them; @fmode: the hidden-files bit; @sw: the sort and
+ * display mode of the rows; @cn: the editor.
+ *
+ * The sizes and dates beside each name are looked at in the folder the names
+ * were read from, so a typed "sub/*.c" shows the numbers of the files in
+ * "sub", not those of a file of the same name in the working folder.
+ * Return: the rows to draw.
+ */
+struct dirfile *WpeFileListRows(struct dirfile **names, char *pattern, int fmode, int sw, ECNT *cn)
+{
+ WpeFileLooks    looks;
+ struct dirfile *rows;
+
+ *names = e_find_files(pattern, fmode, &looks);
+ rows = WpeGraphicalFileList(*names, &looks, sw, cn);
+ wpe_file_looks_free(&looks);
+ return(rows);
+}
+
+struct dirfile *WpeGraphicalFileList(struct dirfile *df, const WpeFileLooks *looks, int sw, ECNT *cn)
 {
  struct dirfile *edf;
  char          **name, **ename, *stmp, str[E_FILE_INFO_ROW_SIZE];
  int             ntmp, n, i, *num;
+ const WpeFileLook *look;
 
  /* allocate the same structure as the argument */
  if ((edf = MALLOC(sizeof(struct dirfile))) == NULL)
@@ -2484,7 +2517,8 @@ struct dirfile *WpeGraphicalFileList(struct dirfile *df, int sw, ECNT *cn)
 
   for (i = 0; i < df->anz; i++)
   {
-   e_file_info(*(df->name + i), str, sizeof str, num + i, sw);
+   look = (looks != NULL && i < looks->n) ? looks->row + i : NULL;
+   e_file_info(look, *(df->name + i), str, sizeof str, num + i, sw);
    if ((*(edf->name + i) = MALLOC(strlen(str) + 1)) == NULL)
     e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
    strcpy(*(edf->name + i), str);
@@ -2725,7 +2759,9 @@ int WpeQuitWastebasket(FENSTER * f)
  */
 static int fm_folder_has_entries(const char *path)
 {
-  DIR           *d = opendir(path);
+  WpeReadAsk     ask = WPE_READ_ASK_FOLDER(FM_FOLDER_WHAT);
+  WpeReadOutcome o;
+  DIR           *d = wpe_read_folder(path, &ask, &o);
   struct dirent *e;
   int            found = 0;
 
@@ -3555,7 +3591,7 @@ struct dirfile *WpeSearchFiles(FENSTER *f, char *dirct, char *file, const FIND *
   }
 
   /* search all matching file */
-  dd = e_find_files(tmp, 0);
+  dd = e_find_files(tmp, 0, NULL);
 
   /* if we found something */
   if(dd && dd->anz > 0)
@@ -4070,7 +4106,7 @@ struct dirfile *e_make_funct(char *man)
   }
   if (wpe_man_pattern(sustr, sizeof sustr, subpath, man))
    continue;
-  df = e_find_files(sustr, 0);
+  df = e_find_files(sustr, 0, NULL);
   if (!df->anz)
   {
    freedf(df);

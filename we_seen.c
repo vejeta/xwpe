@@ -88,6 +88,17 @@ off_t wpe_seen_size(const WpeSeen *s)
 }
 
 /**
+ * wpe_seen_mtime - When the object's contents were last changed, in whole seconds.
+ *
+ * Lets a listing show the date of an entry it looked at without reading the
+ * record's members.  The time proves nothing about identity.
+ */
+time_t wpe_seen_mtime(const WpeSeen *s)
+{
+ return(s->seen_mtime.tv_sec);
+}
+
+/**
  * seen_test_drops_birth - Does the test hook ask every look to drop the birth?
  *
  * XWPE_TEST_FAIL=seen-no-birth lets a row on Linux play a system without a

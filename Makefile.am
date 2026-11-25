@@ -513,7 +513,7 @@ test_path_say_CFLAGS = $(TEST_CFLAGS)
 # the extension and stem of a name, the program, the object and the debug
 # binary under Exedir through the start plan's operand, a result that does
 # not fit refused whole, and the project's two names.
-test_progname_SOURCES = tests/test_progname.c we_progname.c we_path.c we_places.c we_startplan.c we_startcmd.c we_child.c we_fdloop.c we_debreq.c we_fmt.c
+test_progname_SOURCES = tests/test_progname.c we_progname.c we_path.c we_places.c we_read.c we_seen.c we_startplan.c we_startcmd.c we_child.c we_fdloop.c we_debreq.c we_fmt.c
 test_progname_CFLAGS = $(TEST_CFLAGS)
 test_progname_LDADD = $(UTIL_LIBS)
 
@@ -541,7 +541,7 @@ test_manpat_CFLAGS = $(TEST_CFLAGS)
 # folder, a removal outside dropped and a write outside asked, the home
 # folder never a root, a plan equal in effect to the user's own, one
 # record per plan, the cover check of a step, and mutants of the rules.
-test_startplan_SOURCES = tests/test_startplan.c we_places.c we_path.c we_startplan.c we_startcmd.c we_child.c we_fdloop.c we_debreq.c we_fmt.c
+test_startplan_SOURCES = tests/test_startplan.c we_places.c we_path.c we_read.c we_seen.c we_startplan.c we_startcmd.c we_child.c we_fdloop.c we_debreq.c we_fmt.c
 test_startplan_CFLAGS = $(TEST_CFLAGS)
 # The rows that make an allocation fail take over malloc and realloc, which
 # needs a linker with --wrap.  Without one (Apple's ld) the test is built
@@ -557,7 +557,7 @@ test_startplan_LDADD = $(UTIL_LIBS)
 # and key, the cap), every way a store fails closed (missing, another
 # version, a bad line, a link), folders through a link, the user's own and
 # the built-in texts, and the printable form of a command.
-test_startcmd_SOURCES = tests/test_startcmd.c we_startcmd.c we_places.c we_path.c we_fmt.c
+test_startcmd_SOURCES = tests/test_startcmd.c we_startcmd.c we_places.c we_path.c we_read.c we_seen.c we_fmt.c
 test_startcmd_CFLAGS = $(TEST_CFLAGS)
 
 # The text's owner: we_buffer.c alone (the editor's side of its seam is
@@ -587,7 +587,7 @@ test_write_owner_LDFLAGS = $(TEST_EXPORT_DYNAMIC)
 # stubs: the atom (a copy is new, private, whole or absent, and one rename
 # puts it in place), the name that is not replaced, the sentence per step,
 # the wastebasket.
-test_fileop_SOURCES = tests/test_fileop.c we_fileop.c we_write.c we_path.c we_places.c we_seen.c we_fmt.c
+test_fileop_SOURCES = tests/test_fileop.c we_fileop.c we_write.c we_path.c we_places.c we_read.c we_seen.c we_fmt.c
 test_fileop_CFLAGS = $(TEST_CFLAGS)
 test_fileop_LDFLAGS = $(TEST_EXPORT_DYNAMIC)
 
@@ -928,13 +928,13 @@ test_syntax_def_LDFLAGS =
 # LSP buffer-serialization unit test: the pure e_lsp_join_lines invariant (one
 # '\n' per editor line, WPE_WR not doubled).  Links we_lsp.c only; no server,
 # always runs (no skip).
-test_lsp_buffer_SOURCES = tests/test_lsp_buffer.c we_places.c we_path.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
+test_lsp_buffer_SOURCES = tests/test_lsp_buffer.c we_places.c we_path.c we_read.c we_seen.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
 test_lsp_buffer_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
 test_lsp_buffer_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # LSP Doctor dedup unit test: the pure e_lsp_doc_is_new gate (re-pushed Doctor
 # rendered only when changed; reset per session shows it again).  we_lsp.c only.
-test_lsp_doctor_SOURCES = tests/test_lsp_doctor.c we_places.c we_path.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
+test_lsp_doctor_SOURCES = tests/test_lsp_doctor.c we_places.c we_path.c we_read.c we_seen.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
 test_lsp_doctor_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
 test_lsp_doctor_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
@@ -946,19 +946,19 @@ test_lsp_positions_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
 test_lsp_positions_LDADD = $(JSONC_LIBS)
 
 # LSP semantic-tokens decode unit test: the pure delta-decode (we_lsp_pos.c).
-test_lsp_semantic_SOURCES = tests/test_lsp_semantic.c we_places.c we_path.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
+test_lsp_semantic_SOURCES = tests/test_lsp_semantic.c we_places.c we_path.c we_read.c we_seen.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
 test_lsp_semantic_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
 test_lsp_semantic_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # LSP requests answered on the loop: each answer reaches its own request,
 # the server's own requests are answered meanwhile, Esc, the deadline, the
 # server's end and the close.  The test plays the server itself.
-test_lsp_requests_SOURCES = tests/test_lsp_requests.c we_places.c we_path.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
+test_lsp_requests_SOURCES = tests/test_lsp_requests.c we_places.c we_path.c we_read.c we_seen.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
 test_lsp_requests_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
 test_lsp_requests_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # Semantic-token truecolor palette unit test: pure token->RGB-slot lookup.
-test_lsp_truecolor_SOURCES = tests/test_lsp_truecolor.c we_places.c we_path.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
+test_lsp_truecolor_SOURCES = tests/test_lsp_truecolor.c we_places.c we_path.c we_read.c we_seen.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
 test_lsp_truecolor_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
 test_lsp_truecolor_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
@@ -968,24 +968,24 @@ test_lsp_truecolor_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 # follows the engine from its loop and never waits on an adapter.  An
 # adapter starts through its start plan (we_startplan.c, with its store
 # we_startcmd.c), in these tests too.
-test_dap_SOURCES = tests/test_dap.c we_places.c we_path.c we_dap.c we_dap_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
+test_dap_SOURCES = tests/test_dap.c we_places.c we_path.c we_read.c we_seen.c we_dap.c we_dap_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
 test_dap_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
 test_dap_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # DAP engine integration test: drives a real `dlv dap` (SKIPs without dlv+go).
-test_dap_dlv_SOURCES = tests/test_dap_dlv.c we_places.c we_path.c we_dap.c we_dap_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
+test_dap_dlv_SOURCES = tests/test_dap_dlv.c we_places.c we_path.c we_read.c we_seen.c we_dap.c we_dap_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
 test_dap_dlv_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
 test_dap_dlv_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # DAP stdio transport integration test: drives a real `gdb --interpreter=dap`
 # on a rustc-built binary (the Rust slice).  SKIPs without gdb+rustc.
-test_dap_gdb_SOURCES = tests/test_dap_gdb.c we_places.c we_path.c we_dap.c we_dap_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
+test_dap_gdb_SOURCES = tests/test_dap_gdb.c we_places.c we_path.c we_read.c we_seen.c we_dap.c we_dap_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
 test_dap_gdb_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
 test_dap_gdb_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # Same stdio transport against `lldb-dap` (the LLVM adapter; native on macOS).
 # SKIPs without lldb-dap+rustc.
-test_dap_lldb_SOURCES = tests/test_dap_lldb.c we_places.c we_path.c we_dap.c we_dap_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
+test_dap_lldb_SOURCES = tests/test_dap_lldb.c we_places.c we_path.c we_read.c we_seen.c we_dap.c we_dap_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
 test_dap_lldb_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
 test_dap_lldb_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
@@ -1005,32 +1005,32 @@ test_bsp_close_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # LSP engine: drives a real Metals language server on a single Scala file
 # (hover/definition/completion/diagnostics).  SKIPs without metals + scala-cli.
-test_lsp_scala_SOURCES = tests/test_lsp_scala.c we_places.c we_path.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
+test_lsp_scala_SOURCES = tests/test_lsp_scala.c we_places.c we_path.c we_read.c we_seen.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
 test_lsp_scala_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
 test_lsp_scala_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # LSP engine, breadth: drives a real clangd on a single C file with the SAME
 # engine (only language id + spawned command differ).  Fast (no JVM/build
 # server).  SKIPs without clangd.
-test_lsp_clangd_SOURCES = tests/test_lsp_clangd.c we_places.c we_path.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
+test_lsp_clangd_SOURCES = tests/test_lsp_clangd.c we_places.c we_path.c we_read.c we_seen.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
 test_lsp_clangd_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
 test_lsp_clangd_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # LSP engine, breadth: drives a real Python server (pyright or pylsp) on a single
 # .py file -- whichever is installed -- with the SAME engine.  SKIPs without one.
-test_lsp_python_SOURCES = tests/test_lsp_python.c we_places.c we_path.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
+test_lsp_python_SOURCES = tests/test_lsp_python.c we_places.c we_path.c we_read.c we_seen.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
 test_lsp_python_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
 test_lsp_python_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # LSP engine, breadth: drives a real gopls on a single .go file in a tiny module.
 # SKIPs without gopls + go.
-test_lsp_gopls_SOURCES = tests/test_lsp_gopls.c we_places.c we_path.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
+test_lsp_gopls_SOURCES = tests/test_lsp_gopls.c we_places.c we_path.c we_read.c we_seen.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
 test_lsp_gopls_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
 test_lsp_gopls_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
 # LSP engine, breadth: drives a real rust-analyzer on a single .rs file in a tiny
 # crate.  Slowest (indexes std on cold start).  SKIPs without rust-analyzer + cargo.
-test_lsp_rust_SOURCES = tests/test_lsp_rust.c we_places.c we_path.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
+test_lsp_rust_SOURCES = tests/test_lsp_rust.c we_places.c we_path.c we_read.c we_seen.c we_lsp.c we_lsp_pos.c we_lsp_sync.c we_child.c we_debreq.c we_dap_proto.c we_fdloop.c we_startplan.c we_startcmd.c we_fmt.c
 test_lsp_rust_CFLAGS = $(TEST_CFLAGS) $(JSONC_CFLAGS)
 test_lsp_rust_LDADD = $(JSONC_LIBS) $(UTIL_LIBS)
 
@@ -1611,6 +1611,7 @@ EXTRA_DIST = \
   tests/test_ai_changeset_record.py \
   tests/test_read_owner.c \
   tests/test_read_waits.py \
+  tests/test_read_waits_plain.py \
   tests/test_ai_read_waits.c \
   tests/test_ai_scan_swap.c \
   tests/test_ai_read_owner.py \

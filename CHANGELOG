@@ -111,6 +111,22 @@ Bugs fixed in 1.6.x:
   it, and after a refused option file your own options are in force and
   Options > Save writes your own file.  An options file over 1 MiB or a project
   file over 16 MiB is refused whole rather than read cut short and saved short.
+* The editor no longer waits on the other files it reads at start or on
+  request.  A pipe where your own syntax_def, your old xwperc (carried over to
+  the new folder), the installed help.key, an info file, your key file or
+  ~/.Xdefaults should be used to stop the start or the command; now it is
+  refused by what it is and the editor goes on without it.  Block > Read of a
+  pipe is refused instead of waiting.  The list of files in the File Manager
+  reads each name, and the size and date beside it, through the folder it
+  lists, and a link whose target is gone is still listed with its own size
+  and date.  An "#include" line in ~/.Xdefaults is no longer followed: the
+  editor reads the resources written in that file itself.  A move of a file
+  to another file system, when a link takes the file's name in the moment
+  between the look and the copy, says the file changed instead of "Invalid
+  argument".  The list of built outputs the editor remembers drops its oldest
+  records rather than grow past what it reads back.
+  A store of remembered answers over 16 MiB is ignored whole, and every
+  answer is asked again.
 * The assistant no longer waits on a name a cloned folder chose.  A pipe at
   .git/config, .git/commondir, .bsp/*.json or AGENTS.md used to stop the
   editor; now it is refused by what it is.  A link at .git/config,

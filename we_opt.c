@@ -5723,8 +5723,12 @@ int e_edt_options(FENSTER *f)
  return(0);
 }
 
+#define E_HELP_KEY_WHAT "help.key"      /* the noun of a refusal; the key help is left empty and nothing is said */
+
 int e_read_help_str()
 {
+ WpeReadAsk ask = WPE_READ_ASK_CONFIG(E_HELP_KEY_WHAT);
+ WpeReadOutcome o;
  FILE *fp;
  char str[128];
  int i, len;
@@ -5735,7 +5739,7 @@ int e_read_help_str()
   e_hlp_str[i] = MALLOC(sizeof(char));
   *e_hlp_str[i] = '\0';
  }
- fp = path ? fopen(path, "rb") : NULL;
+ fp = path ? wpe_read_stream_open(path, &ask, &o) : NULL;
  FREE(path);
  if (!fp)
   return(-1);

@@ -168,6 +168,7 @@ static char *e_info_search_path(const char *fallback)
 /* The most an option file the migration copies may be: an old xwperc is a
    few kilobytes, and one beyond this is not an option file to carry over. */
 #define E_MIGRATE_MAX (1024 * 1024)
+#define E_MIGRATE_WHAT "options file"   /* the noun of a refusal; the copy is best effort and says nothing */
 
 /**
  * e_config_dir_make - Make the user's configuration folder, if it is missing.
@@ -194,19 +195,14 @@ static void e_config_dir_make(void)
  */
 static int e_read_whole(const char *path, char **out, size_t *len)
 {
- FILE *in = fopen(path, "rb");
+ WpeReadAsk ask = WPE_READ_ASK_NAMED_BOUNDED(E_MIGRATE_WHAT, (size_t)E_MIGRATE_MAX);
+ WpeReadOutcome o;
  char *buf;
- size_t got;
 
  *out = NULL;
- if (!in) return -1;
- buf = MALLOC(E_MIGRATE_MAX + 1);
- if (!buf) { fclose(in); return -1; }
- got = fread(buf, 1, E_MIGRATE_MAX + 1, in);
- if (ferror(in) || got > E_MIGRATE_MAX) { fclose(in); FREE(buf); return -1; }
- fclose(in);
+ buf = wpe_read_text(path, &ask, len, &o);
+ if (buf == NULL) return -1;
  *out = buf;
- *len = got;
  return 0;
 }
 

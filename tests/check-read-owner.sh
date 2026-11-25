@@ -34,9 +34,14 @@
 #  f. getline or getdelim: a line with no bound of its own.
 #  g. a WpeReadAsk built by hand ("WpeReadAsk x = {", a compound literal, or a
 #     member assigned) instead of a WPE_READ_ASK_* form; a number as the bound
-#     of WPE_READ_ASK_JUDGED; WPE_READ_UNBOUNDED, WPE_READ_ASK_SCAN and
-#     WPE_READ_ASK_LOAD, which hold no bound, in a function the allow file does
-#     not list with its reason.
+#     of WPE_READ_ASK_JUDGED; WPE_READ_UNBOUNDED, WPE_READ_ASK_SCAN,
+#     WPE_READ_ASK_SCAN_NOFOLLOW and WPE_READ_ASK_LOAD, which hold no bound, in
+#     a function the allow file does not list with its reason.
+#  n. stat, lstat, fstatat, access or faccessat (their 64 spellings too) by
+#     name in a File Manager listing function: e_find_files, e_find_dir,
+#     e_find_open_folder, e_find_entry_is_*, e_find_look_row(s), e_file_info*,
+#     fm_folder_has_entries, WpeGraphicalFileList, WpeFileListRows.  An entry
+#     is looked at through the folder that was read, never by a joined path.
 #  h. WPE_READ_KIND_PIPE: the user's decision is that only the load of a pipe
 #     may name it, and that load is not built yet.
 # In we_read.c itself:
@@ -275,7 +280,7 @@ scan() {
         if (a ~ /^[0-9]/) note("r22g", 1)
         t = substr(t, p + 1)
       }
-      count_word(m, "WPE_READ_UNBOUNDED|WPE_READ_ASK_SCAN|WPE_READ_ASK_LOAD", "r22g")
+      count_word(m, "WPE_READ_UNBOUNDED|WPE_READ_ASK_SCAN|WPE_READ_ASK_SCAN_NOFOLLOW|WPE_READ_ASK_LOAD", "r22g")
     }
     # the clauses of we_read.c itself
     function note_owner(s, m,   t, p, e, lit, a, mode, name) {
@@ -312,6 +317,8 @@ scan() {
       if (file != "we_fileop.c") count_call(m, "fdopendir", "r22c")
       count_call(m, "json_object_from_file|json_object_from_fd|gzopen|gzopen64|XrmGetFileDatabase", "r22e")
       count_call(m, "getline|getdelim", "r22f")
+      if (fn ~ /^(e_find_(files|dir|open_folder|entry_is_[a-z]+|look_rows?)|e_file_info[a-z_]*|fm_folder_has_entries|WpeGraphicalFileList|WpeFileListRows)$/)
+        count_call(m, "stat|lstat|fstatat|access|faccessat|eaccess|stat64|lstat64|fstatat64", "r22n")
       count_word(m, "WPE_READ_KIND_PIPE", "r22h")
       if (m ~ /(^|[^A-Za-z0-9_.>])(fmemopen|fopencookie|funopen|tmpfile)([^A-Za-z0-9_]|$)/) note("r22j", 1)
     }
@@ -437,6 +444,7 @@ int fake_g(char *p)
  x = (WpeReadAsk){ "x" };
  y = WPE_READ_ASK_JUDGED("x", 4096, 1, 0);
  z = WPE_READ_UNBOUNDED;
+ w = WPE_READ_ASK_SCAN_NOFOLLOW("x");
  return(0);
 }
 
@@ -452,6 +460,14 @@ int fake_j(char *buf, int n)
  FILE *c = funopen(buf, rd, 0, sk, cl);
  FILE *d = tmpfile();
  return(0);
+}
+
+int e_file_info_look(char *p)
+{
+ struct stat b;
+ stat(p, &b);
+ lstat(p, &b);
+ return(access(p, F_OK));
 }
 
 int fake_z(void)
@@ -481,6 +497,18 @@ int quiet_folders(char *p)
  int c = open("/dev/tty", O_RDWR);
  int e = openat(AT_FDCWD, "/dev/null", O_RDONLY);
  return(a);
+}
+
+int quiet_stat_elsewhere(char *p)
+{
+ struct stat b;
+ stat(p, &b);
+ return(access(p, F_OK));
+}
+
+int e_find_files(char *p)
+{
+ return(wpe_read_entry_look(d, p, &s) + wpe_seen_stat_of(p) + my_stat(p));
 }
 
 int quiet_names(struct x *x)
@@ -552,9 +580,10 @@ EOF
     "r22d we_fake.c fake_d 2" \
     "r22e we_fake.c fake_e 3" \
     "r22f we_fake.c fake_f 2" \
-    "r22g we_fake.c fake_g 6" \
+    "r22g we_fake.c fake_g 7" \
     "r22h we_fake.c fake_h 1" \
     "r22j we_fake.c fake_j 4" \
+    "r22n we_fake.c e_file_info_look 3" \
     "r22z we_fake.c fake_z 3" \
     "r22i we_read.c read_other 4" \
     "r22j we_read.c read_other 4" \
@@ -713,6 +742,8 @@ awk -F'|' -v kscan=$kscan -v nbobjs=" $(tr '\n' ' ' < "$WORK/notbuilt_objs")" '
         print "offender: " $1 " " $2 ": getline or getdelim takes a line of any length.  Read it over the owner'"'"'s stream, whose bytes are bounded, or list the function with the reason its stream is"
       else if (rule == "r22g")
         print "offender: " $1 " " $2 ": a read request is built by hand or by number (a WpeReadAsk filled in, a member assigned, a bound written as a digit), or it holds no bound (WPE_READ_UNBOUNDED, WPE_READ_ASK_SCAN, WPE_READ_ASK_LOAD) in a function the allow file does not list with its reason.  Use a WPE_READ_ASK_* form"
+      else if (rule == "r22n")
+        print "offender: " $1 " " $2 ": a File Manager listing function looks at an entry by a path (stat, lstat, access or a spelling of them).  The look of an entry is asked of the folder that was read, through wpe_read_entry_look or wpe_read_entry_look_target, so a name never lands on the working folder'"'"'s file of the same name.  No allow line"
       else if (rule == "r22h")
         print "offender: " $1 " " $2 ": WPE_READ_KIND_PIPE is named outside the owner.  Only the load of a pipe may accept one, and it is not built yet.  No allow line"
       else if (rule == "r22i")

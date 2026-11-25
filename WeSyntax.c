@@ -26,6 +26,9 @@
 #include "WeString.h"
 #include "we_places.h"
 #include "we_fmt.h"
+#include "we_read.h"
+
+#define SYNTAX_FILE_WHAT "syntax file"  /* the noun of a refusal; the rules fall back to the built-in ones */
 
 unsigned char *WpeCReservedWord[] = {
  "auto", "break", "case", "char", "const", "continue", "default", "do",
@@ -129,9 +132,12 @@ static int WpeSyntaxGetSystem(char *filename, size_t n)
  */
 static FILE *WpeSyntaxOpenPersonal(char *buf, size_t n)
 {
+ WpeReadAsk ask = WPE_READ_ASK_CONFIG(SYNTAX_FILE_WHAT);
+ WpeReadOutcome o;
+
  if (WpeSyntaxGetPersonal(buf, n))
   return NULL;
- return fopen(buf, "r");
+ return wpe_read_stream_open(buf, &ask, &o);
 }
 
 /**
@@ -141,9 +147,12 @@ static FILE *WpeSyntaxOpenPersonal(char *buf, size_t n)
  */
 static FILE *WpeSyntaxOpenSystem(char *buf, size_t n)
 {
+ WpeReadAsk ask = WPE_READ_ASK_CONFIG(SYNTAX_FILE_WHAT);
+ WpeReadOutcome o;
+
  if (WpeSyntaxGetSystem(buf, n))
   return NULL;
- return fopen(buf, "r");
+ return wpe_read_stream_open(buf, &ask, &o);
 }
 
 /**

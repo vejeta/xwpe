@@ -5709,10 +5709,14 @@ int e_prog_field_text(const struct e_s_prog *p, const char *key, char *out, size
 /* e_algol68_sniff - Guess FILE's dialect from its first lines.  The regimes are
    mutually exclusive, so one strong marker decides: a { } comment or a lowercase
    bold word means ga68; a # comment or an UPPER bold word means a68g.  Returns 1
-   for ga68, 0 for a68g, -1 if undecided. */
+   for ga68, 0 for a68g, -1 if undecided.  A name that is a pipe or a terminal
+   is undecided, never waited on. */
+#define E_ALGOL68_SNIFF_WHAT "source file"  /* the noun of a refusal; the dialect stays undecided */
 static int e_algol68_sniff(const char *filename)
 {
- FILE *fp = fopen(filename, "r");
+ WpeReadAsk ask = WPE_READ_ASK_SCAN(E_ALGOL68_SNIFF_WHAT);
+ WpeReadOutcome o;
+ FILE *fp = wpe_read_stream_open(filename, &ask, &o);
  char line[512];
  int n = 0, verdict = -1;
 

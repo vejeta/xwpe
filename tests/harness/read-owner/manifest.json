@@ -33,6 +33,10 @@
   {"id": "SC-read-owner-35", "requirement": "A link retargeted after the scope check is not followed by the read", "layer": "ncurses", "test": "tests/test_ai_read_tools.py::test_a_link_retargeted_after_the_scope_check_is_not_followed", "status": "new"},
   {"id": "SC-read-owner-28","requirement": "A pipe or a link at the git config, commondir or a build server's connection file does not stop the editor", "layer": "c-unit", "test": "test_ai_read_waits", "status": "new"},
   {"id": "SC-read-owner-10","requirement": "Every kind of object under a name, with the link policy, the four faces and the three bounds, gives what the reference says", "layer": "c-unit", "test": "test_read_owner", "status": "new"},
-  {"id": "SC-read-owner-11", "requirement": "A read refusal is one sentence in the words owner's shape", "layer": "c-unit", "test": "test_path_say", "status": "new"}
+  {"id": "SC-read-owner-11", "requirement": "A read refusal is one sentence in the words owner's shape", "layer": "c-unit", "test": "test_path_say", "status": "new"},
+  {"id": "SC-read-owner-p3a-01", "requirement": "A personal syntax file that is a pipe does not stop the start", "layer": "ncurses", "test": "tests/test_read_waits_plain.py::test_a_personal_syntax_file_that_is_a_pipe_does_not_stop_the_start", "status": "new"},
+  {"id": "SC-read-owner-p3a-02", "requirement": "An old options file that is a pipe does not stop the start", "layer": "ncurses", "test": "tests/test_read_waits_plain.py::test_an_old_options_file_that_is_a_pipe_does_not_stop_the_start", "status": "new"},
+  {"id": "SC-read-owner-p3a-03", "requirement": "An installed key help that is a pipe does not stop the start", "layer": "ncurses", "test": "tests/test_read_waits_plain.py::test_an_installed_key_help_that_is_a_pipe_does_not_stop_the_start", "status": "new"},
+  {"id": "SC-read-owner-p3a-04", "requirement": "A start-command store over its bound is refused whole", "layer": "c-unit", "test": "test_startcmd", "status": "new"}
  ]
 }

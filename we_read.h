@@ -77,6 +77,23 @@ typedef struct {
 #define WPE_READ_ASK_PROJECT(what) \
  ((WpeReadAsk){ (what), WPE_READ_NAMED, WPE_READ_KIND_FILE, WPE_READ_PROJECT_MAX, \
                 WPE_READ_WHOLE_OR_REFUSE, NULL, AT_FDCWD })
+/* A file the user or the installation named, read whole up to a bound the
+   caller names; refused whole over it (a key file, an installed table, a
+   migrated file, a language server's file). */
+#define WPE_READ_ASK_NAMED_BOUNDED(what, max) \
+ ((WpeReadAsk){ (what), WPE_READ_NAMED, WPE_READ_KIND_FILE, (max), \
+                WPE_READ_WHOLE_OR_REFUSE, NULL, AT_FDCWD })
+/* A file read to a bound the caller names and then cut there, the outcome
+   saying so: a file that may be longer than the room the caller has (a
+   start-up file a box shows in part). */
+#define WPE_READ_ASK_NAMED_CUT(what, max) \
+ ((WpeReadAsk){ (what), WPE_READ_NAMED, WPE_READ_KIND_FILE, (max), \
+                WPE_READ_CUT, NULL, AT_FDCWD })
+/* A file judged and then read by the caller from the descriptor, to a bound
+   of its own (a header, a section), a link at the name refused. */
+#define WPE_READ_ASK_SCAN_NOFOLLOW(what) \
+ ((WpeReadAsk){ (what), WPE_READ_NAMED_NOFOLLOW, WPE_READ_KIND_FILE, WPE_READ_UNBOUNDED, \
+                WPE_READ_WHOLE_OR_REFUSE, NULL, AT_FDCWD })
 /* A folder to list: a link at its name is followed (the user's own folder may
    be one).  The folder face ignores the kinds and the bound of a file; they
    carry the same values as the other forms only so the record is complete. */
@@ -148,6 +165,7 @@ typedef struct {
  off_t    size;        /* its size when judged */
  time_t   mtime;       /* for the header check, which compared a second stat by name */
  mode_t   mode;        /* its st_mode */
+ uid_t    uid;         /* its owner, for a store that is believed only when it is the user's */
 } WpeReadOutcome;
 
 /* The descriptor face: judged, no longer non-blocking (a pipe asked for by
@@ -182,6 +200,11 @@ WPE_READ_RESULT DIR *wpe_read_folder(const char *path, const WpeReadAsk *ask, Wp
    entry's name, never of a joined path.  A link is reported as a link.
    Returns 0 or -1. */
 WPE_READ_RESULT int wpe_read_entry_look(DIR *d, const char *name, WpeSeen *s);
+
+/* What an entry leads to: a link is looked at as the file it points to.  Fails
+   when the link's target is gone; ask wpe_read_entry_look for the link then.
+   Returns 0 or -1. */
+WPE_READ_RESULT int wpe_read_entry_look_target(DIR *d, const char *name, WpeSeen *s);
 
 /* The kind of an entry (S_IFMT bits: S_IFREG, S_IFDIR, S_IFLNK, S_IFIFO ...),
    asked the same way, 0 when it cannot be looked at. */

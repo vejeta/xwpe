@@ -286,6 +286,36 @@ static void case_fifo(void)
  drop_store();
 }
 
+/* The most a store may hold and still be read (16 MiB), and a block of blank
+   lines that takes a good store one byte past it. */
+#define STORE_BOUND_BYTES ((size_t)16 << 20)
+#define BLANK_BLOCK_BYTES 65536
+
+/* @scenario SC-read-owner-p3a-04 */
+/* A store over its bound is refused whole, even when every line of it is
+   one the editor wrote: a store cut short would be written back short. */
+static void case_store_over_bound(void)
+{
+ static char blanks[BLANK_BLOCK_BYTES];
+ FILE *fp;
+ size_t written = 0, step;
+ memset(blanks, '\n', sizeof blanks);
+ drop_store();
+ expect_int("a good store is made", wpe_startcmd_remember(proj, "PrintCmd", "lpr", WPE_STARTCMD_YES), 0);
+ expect_int("the good store runs", wpe_startcmd_check(proj, "PrintCmd", "lpr"), WPE_STARTCMD_RUN);
+ fp = fopen(store, "a");
+ if (!fp) { perror(store); exit(2); }
+ while (written < STORE_BOUND_BYTES) {
+  step = STORE_BOUND_BYTES - written < sizeof blanks ? STORE_BOUND_BYTES - written : sizeof blanks;
+  fwrite(blanks, 1, step, fp);
+  written += step;
+ }
+ fclose(fp);
+ expect_int("a store over its bound asks", wpe_startcmd_check(proj, "PrintCmd", "lpr"), WPE_STARTCMD_ASK);
+ expect_int("a store over its bound is not a store", wpe_startcmd_last_store_state(), WPE_STARTCMD_STORE_BAD);
+ drop_store();
+}
+
 /* An existing state folder others may read is made the user's alone. */
 static void case_dir_mode(void)
 {
@@ -652,6 +682,71 @@ static void case_built_cap(void)
  expect_int("the newest is kept", built_asks(built_dir, "c8199.o"), 1);
 }
 
+#define BOUND_LEVELS      20      /* nested folders that make a long build folder */
+#define BOUND_LEVEL_LEN   150     /* characters of each one's name */
+#define BOUND_RECORDS     3000    /* long records: past the read bound in all */
+#define BOUND_STORE_MAX   ((long long)16 << 20)
+
+/* Make the long build folder under built_dir; the length of @deep after each
+   level goes to @ends so the folder can be taken apart again. */
+static void bound_make_folder(char *deep, size_t sz, size_t ends[BOUND_LEVELS])
+{
+ int i;
+ size_t len;
+ snprintf(deep, sz, "%s", built_dir);
+ for (i = 0; i < BOUND_LEVELS; i++) {
+  len = strlen(deep);
+  snprintf(deep + len, sz - len, "/%.*s", BOUND_LEVEL_LEN,
+           "aaaaaaaaaabbbbbbbbbbccccccccccddddddddddeeeeeeeeeeffffffffffgggggggggghhhhhhhhhhiiiiiiiiiijjjjjjjjjjkkkkkkkkkkllllllllllmmmmmmmmmmnnnnnnnnnn");
+  make_dir(deep);
+  ends[i] = strlen(deep);
+ }
+}
+
+/* Remove the long build folder's files and the folders, deepest first. */
+static void bound_remove_folder(char *deep, const size_t ends[BOUND_LEVELS])
+{
+ char path[PATH_ROOM], name[TEXT_ROOM];
+ int i;
+ for (i = 0; i < BOUND_RECORDS; i++) {
+  snprintf(name, sizeof name, "w%d.o", i);
+  snprintf(path, sizeof path, "%s/%s", deep, name);
+  unlink(path);
+ }
+ for (i = BOUND_LEVELS - 1; i >= 0; i--) {
+  deep[ends[i]] = '\0';
+  rmdir(deep);
+ }
+}
+
+static void case_built_store_bound(void)
+{
+ char deep[PATH_ROOM], path[PATH_ROOM], name[TEXT_ROOM];
+ size_t ends[BOUND_LEVELS];
+ WpeBuiltSet set;
+ struct stat st;
+ int i;
+ built_reset_store();
+ bound_make_folder(deep, sizeof deep, ends);
+ wpe_startcmd_built_load(deep, &set);
+ for (i = 0; i < BOUND_RECORDS; i++) {
+  snprintf(name, sizeof name, "w%d.o", i);
+  built_file(deep, name, "x", path, sizeof path);
+  built_stat(path, &st);
+  if (wpe_startcmd_note_built(&set, name, &st) != 0) { fail("store bound", "note failed"); break; }
+ }
+ expect_int("long records: written", wpe_startcmd_built_save(&set), 0);
+ wpe_startcmd_built_free(&set);
+ built_stat(built_store, &st);
+ expect_int("the store fits what a read accepts", (long long)st.st_size <= BOUND_STORE_MAX, 1);
+ wpe_startcmd_built_load(deep, &set);
+ expect_int("and reads back, not refused whole", set.state, WPE_STARTCMD_STORE_OK);
+ wpe_startcmd_built_free(&set);
+ expect_int("the newest record is kept", built_asks(deep, "w2999.o"), 1);
+ expect_int("the oldest was dropped to make room", built_asks(deep, "w0.o"), 0);
+ bound_remove_folder(deep, ends);
+}
+
 /* Remove what the built-outputs cases made, file by file, in the test's own
    folders under the temporary directory. */
 static void built_cleanup(void)
@@ -696,6 +791,7 @@ int main(void)
  case_cap();
  case_folder_cap();
  case_fifo();
+ case_store_over_bound();
  case_umask_folder();
  case_built_round_trip();
  case_built_changed();
@@ -704,6 +800,7 @@ int main(void)
  case_built_many();
  case_built_dead_folder();
  case_built_cap();
+ case_built_store_bound();
  built_cleanup();
  teardown();
  if (failures) { printf("%d failure(s)\n", failures); return 1; }

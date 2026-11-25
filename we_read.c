@@ -57,6 +57,7 @@ static void read_note_stat(WpeReadOutcome *o, const struct stat *st)
  o->size = st->st_size;
  o->mtime = st->st_mtime;
  o->mode = st->st_mode;
+ o->uid = st->st_uid;
 }
 
 /**
@@ -802,6 +803,21 @@ DIR *wpe_read_folder(const char *path, const WpeReadAsk *ask, WpeReadOutcome *o)
 int wpe_read_entry_look(DIR *d, const char *name, WpeSeen *s)
 {
  return wpe_seen_look_at(dirfd(d), name, 0, s);
+}
+
+/**
+ * wpe_read_entry_look_target - What an entry of an open folder leads to.
+ * @d: the folder; @name: the entry's name; @s: receives the look.
+ *
+ * Lets a listing show a link as the file it points to (its size, its date,
+ * whether it is a folder), asked of the folder's descriptor and the name like
+ * wpe_read_entry_look.  A link whose target is gone has no target: the call
+ * fails and the caller asks wpe_read_entry_look for the link itself.
+ * Return: 0, or -1 with errno set.
+ */
+int wpe_read_entry_look_target(DIR *d, const char *name, WpeSeen *s)
+{
+ return wpe_seen_look_at(dirfd(d), name, 1, s);
 }
 
 /**

@@ -114,6 +114,7 @@ mode_t wpe_seen_kind(const WpeSeen *s);
 mode_t wpe_seen_mode(const WpeSeen *s);
 nlink_t wpe_seen_nlink(const WpeSeen *s);
 off_t wpe_seen_size(const WpeSeen *s);
+time_t wpe_seen_mtime(const WpeSeen *s);
 
 WpeSeenIs wpe_seen_judge(const WpeSeen *then, const WpeSeen *now);
 WpeSeenIs wpe_seen_judge_proved(const WpeSeen *then, const WpeSeen *now);

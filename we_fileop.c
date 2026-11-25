@@ -29,6 +29,7 @@
 #include <unistd.h>
 
 #include "we_fmt.h"
+#include "we_read.h"
 #include "we_write.h"
 #include "we_places.h"
 #include "we_fileop.h"
@@ -46,6 +47,7 @@
 #define FILEOP_HOOK_RENAME         "fileop-rename"
 #define FILEOP_HOOK_REMOVE_SOURCE  "fileop-remove-source"
 #define FILEOP_HOOK_PLANT          "fileop-plant"
+#define FILEOP_HOOK_PLANT_SOURCE   "fileop-plant-source"
 #define FILEOP_HOOK_NO_RENAMEAT2   "fileop-no-renameat2"
 #define FILEOP_HOOK_NO_LINK        "fileop-no-link"
 #define FILEOP_HOOK_REFUSE_SPECIAL "fileop-refuse-special"
@@ -913,21 +915,63 @@ static int fileop_job_place(FileJob *j, int fromfd, const char *from, int is_tem
 
 /* --- the copy ------------------------------------------------------------- */
 
+/** The noun of a refusal of a copy's source; the copy tells it its own way. */
+#define FILEOP_SOURCE_WHAT "file"
+
+/**
+ * fileop_source_refused - Record why the read owner refused a copy's source.
+ * @j: the job; @ro: the owner's outcome.
+ * Return: -1 (outcome set).
+ *
+ * Something that is not a file (a pipe, a device, a folder) is told as that;
+ * a link where the entry was judged a file means the name changed after it
+ * was looked at, so the user reads that the source changed, never a system
+ * error that names no cause; every other refusal is told as the error the
+ * system gave.
+ */
+static int fileop_source_refused(FileJob *j, const WpeReadOutcome *ro)
+{
+ if (ro->why == WPE_READ_NOT_A_FILE)
+  return(fileop_not_a_file(j->o, j->src));
+ if (ro->why == WPE_READ_IS_A_LINK)
+  return(fileop_fail(j->o, WPE_FILEOP_STEP_CHANGED, 0));
+ if (ro->why == WPE_READ_REFUSED_BY_SYSTEM)
+  return(fileop_fail(j->o, WPE_FILEOP_STEP_SOURCE, ro->err));
+ return(fileop_fail(j->o, WPE_FILEOP_STEP_SOURCE, ENOMEM));
+}
+
+/**
+ * fileop_source_ask - What the copy asks of the read owner for its source.
+ * @j: the job.
+ *
+ * The name is relative to the folder the walk holds open, so a folder
+ * swapped for a link meanwhile is not followed.  A link is followed only when
+ * the copy was asked to follow it.
+ */
+static WpeReadAsk fileop_source_ask(const FileJob *j)
+{
+ if (j->follow)
+  return(WPE_READ_ASK_AT(WPE_READ_ASK_SCAN(FILEOP_SOURCE_WHAT), j->spfd));
+ return(WPE_READ_ASK_AT(WPE_READ_ASK_SCAN_NOFOLLOW(FILEOP_SOURCE_WHAT), j->spfd));
+}
+
 /**
  * fileop_open_source - Open the file to copy from, whole or not at all.
  * @fd: receives the descriptor.
  * Return: 0, or -1 (outcome set).
  *
- * Opened without blocking so a pipe named as the source is refused at once
- * instead of hanging the editor, then put back to blocking reads.
+ * Opened by the read owner below the folder the walk holds, without waiting,
+ * so a pipe named as the source is refused at once instead of hanging the
+ * editor, then put back to blocking reads.
  */
 static int fileop_open_source(FileJob *j, int *fd)
 {
- int flags, nofollow = (j->follow ? 0 : O_NOFOLLOW);
+ WpeReadAsk ask = fileop_source_ask(j);
+ WpeReadOutcome ro;
 
- *fd = openat(j->spfd, j->sname, O_RDONLY | O_NONBLOCK | O_NOCTTY | O_CLOEXEC | nofollow);
+ *fd = wpe_read_open(j->sname, &ask, &ro);
  if (*fd < 0)
-  return(fileop_fail(j->o, WPE_FILEOP_STEP_SOURCE, errno));
+  return(fileop_source_refused(j, &ro));
  if (fstat(*fd, &j->sst) != 0)
  {
   int err = errno;
@@ -935,14 +979,6 @@ static int fileop_open_source(FileJob *j, int *fd)
   close(*fd);
   return(fileop_fail(j->o, WPE_FILEOP_STEP_SOURCE, err));
  }
- if (!S_ISREG(j->sst.st_mode))
- {
-  close(*fd);
-  return(fileop_not_a_file(j->o, j->src));
- }
- flags = fcntl(*fd, F_GETFL);
- if (flags >= 0)
-  fcntl(*fd, F_SETFL, flags & ~O_NONBLOCK);
  return(0);
 }
 
@@ -1244,6 +1280,22 @@ static int fileop_job_finish_move(FileJob *j)
 }
 
 /**
+ * fileop_job_plant_source - Test seam: a link takes the source's name.
+ * @j: the job.
+ *
+ * Under the test hook the source is replaced by a link between the moment
+ * it was judged a file and the moment it is opened, the race the user can
+ * only meet by chance.  Does nothing otherwise.
+ */
+static void fileop_job_plant_source(FileJob *j)
+{
+ if (!fileop_test_hook(FILEOP_HOOK_PLANT_SOURCE))
+  return;
+ if (unlinkat(j->spfd, j->sname, 0) == 0)
+  (void)symlinkat(FILEOP_PLANTED_TARGET, j->spfd, j->sname);
+}
+
+/**
  * fileop_job_move_across - Move to another file system: copy, then remove.
  * Return: 0 or -1 (outcome set).
  */
@@ -1251,6 +1303,7 @@ static int fileop_job_move_across(FileJob *j)
 {
  int sfd, rc;
 
+ fileop_job_plant_source(j);
  if (S_ISLNK(j->sst.st_mode))
   rc = fileop_job_copy_link_in(j);
  else if (fileop_open_source(j, &sfd) != 0)

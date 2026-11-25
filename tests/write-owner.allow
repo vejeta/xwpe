@@ -36,6 +36,7 @@ we_prog.c|r2:e_comp_start|1|keep|a behaviour trace
 we_prog.c|r2:e_p_make_then|1|keep|a behaviour trace
 we_prog.c|r2:e_run|1|keep|a behaviour trace
 we_term.c|r2:e_t_flush_input|1|keep|a behaviour trace
+we_startcmd.c|r2:startcmd_write_stream|1|keep|the start command's own store, made new by mkstemp in its private folder and written through that descriptor
 we_trace.c|r2:wpe_trace_file|1|keep|the file WPE_TRACE_FILE names: the user's own redirect, and no default name
 we_unix.c|r2:wpe_crash_file_open|1|keep|the crash log, made new (O_EXCL, O_NOFOLLOW) under a name of its own per process
 we_wayland.c|r2:wpe_wl_dump_ppm|1|keep|a test screen dump
@@ -101,8 +102,6 @@ we_fileop.c|r11:wpe_fileop_rename_noreplace|2|keep|a folder's rename the File Ma
 
 # rule 9: a byte loop that is not a copy of the user's file (it reads, or
 # writes something that is not the user's)
-we_debug.c|r9:e_lsp_read_file_text|1|keep|reads a file, copies nothing
-we_main.c|r9:e_read_whole|1|keep|reads the old option file whole, copies nothing
 we_read.c|r9:read_stream_of_hold|1|keep|fills the temporary file a system with no memory stream call reads from, copies no file
 we_term.c|r9:e_t_user_screen|1|keep|a screen dump
 we_wayland.c|r9:wpe_wl_dump_ppm|1|keep|a test screen dump

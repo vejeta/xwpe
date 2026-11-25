@@ -614,6 +614,37 @@ static void test_move(void)
  clean();
 }
 
+/* A link takes the source's name after it was judged a file and before the
+   move across file systems opens it: the user reads that the source
+   changed, never "Invalid argument", and nothing is copied or removed. */
+static void test_move_across_a_link_that_raced_in(void)
+{
+ WpeFileOpPolicy p;
+ WpeFileOpOutcome o;
+ char dst[512], buf[2048];
+ struct stat st;
+
+ make_dir();
+ make_other();
+ if (!other[0]) {
+  clean();
+  return;
+ }
+ chdir(dir);
+ put("raced.txt", "SOURCE\n", 0644);
+ test_path_join(dst, sizeof dst, other, "raced-dst.txt");
+ policy(&p, WPE_REPLACE_NEVER, WPE_REMOVE_NOW);
+ setenv("XWPE_TEST_FAIL", "fileop-plant-source", 1);
+ chk_int("the move refuses", wpe_fileop_move("raced.txt", dst, &p, &o), -1);
+ unsetenv("XWPE_TEST_FAIL");
+ chk_int("as a source that changed", o.step, WPE_FILEOP_STEP_CHANGED);
+ chk_int("the link is not followed: no copy", access(dst, F_OK), -1);
+ chk_int("what holds the name is left alone", lstat("raced.txt", &st) == 0 && S_ISLNK(st.st_mode), 1);
+ wpe_fileop_sentence(buf, sizeof buf, &o);
+ chk_has("the sentence says it changed", buf, "changed");
+ clean();
+}
+
 /* Link, with both errors kept. */
 static void test_link(void)
 {
@@ -2968,6 +2999,7 @@ int main(void)
  test_rename_failure_keeps_everything();
  test_close_and_names();
  test_move();
+ test_move_across_a_link_that_raced_in();
  test_link();
  test_remove();
  /* the rows that arm the fake come last: they put it off when they end */

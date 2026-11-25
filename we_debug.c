@@ -28687,6 +28687,7 @@ static int e_lsp_col_synced(int line, e_lsp_units u)
    the files a location may name (each read from disk once per answer). */
 #define E_LSP_CONV_FILES_MAX 8
 #define E_LSP_CONV_FILE_BYTES (64L * 1024 * 1024)
+#define E_LSP_CONV_WHAT "file"          /* the noun of a refusal; nothing is said of it here */
 typedef struct
 {
  char             *path;         /* the file                               */
@@ -28750,29 +28751,11 @@ static int e_lsp_same_file(const char *p, const char *q)
  */
 static char *e_lsp_read_file_text(const char *path)
 {
- FILE *fp = fopen(path, "rb");
- char *text;
- long n = 0, got;
+ WpeReadAsk ask = WPE_READ_ASK_NAMED_BOUNDED(E_LSP_CONV_WHAT, (size_t)E_LSP_CONV_FILE_BYTES);
+ WpeReadOutcome o;
+ size_t len;
 
- if (!fp)
-  return(NULL);
- if (fseek(fp, 0, SEEK_END) == 0)
-  n = ftell(fp);
- if (n < 0 || n > E_LSP_CONV_FILE_BYTES || fseek(fp, 0, SEEK_SET) != 0)
- {
-  fclose(fp);
-  return(NULL);
- }
- text = malloc((size_t)n + 1);
- if (!text)
- {
-  fclose(fp);
-  return(NULL);
- }
- got = (long)fread(text, 1, (size_t)n, fp);
- fclose(fp);
- text[got] = '\0';
- return(text);
+ return(wpe_read_text(path, &ask, &len, &o));
 }
 
 /**

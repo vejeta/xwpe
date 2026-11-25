@@ -1379,6 +1379,67 @@ void WpeXOptionsGet(XrmDatabase xresdb, XrmQuark *name_list,
 /* The file in the home folder that holds the user's X resources. */
 #define WPE_XDEFAULTS_FILE ".Xdefaults"
 
+/* The noun of a refusal; the resources are left out and nothing is said. */
+#define WPE_XDEFAULTS_WHAT "X resources file"
+
+/* The directive of an X resources file that names another file. */
+#define WPE_XDEFAULTS_INCLUDE "#include"
+/* The character that starts a comment line of an X resources file. */
+#define WPE_XDEFAULTS_COMMENT '!'
+
+/**
+ * WpeXDefaultsSkipIncludes - Turn each "#include" line of a resources text
+ * into a comment.
+ * @text: the file's text, changed in place.
+ *
+ * Xlib opens an included file by a name relative to the working folder when
+ * it is given text rather than a file, and by its own plain open, which waits
+ * on a pipe.  The directive is therefore not followed: the resources written
+ * in ~/.Xdefaults itself are all the editor reads from it.
+ */
+static void WpeXDefaultsSkipIncludes(char *text)
+{
+ char *line = text;
+
+ while (*line != '\0')
+ {
+  char *start = line + strspn(line, " \t");
+
+  if (strncmp(start, WPE_XDEFAULTS_INCLUDE, strlen(WPE_XDEFAULTS_INCLUDE)) == 0)
+   *start = WPE_XDEFAULTS_COMMENT;
+  line = strchr(line, '\n');
+  if (line == NULL)
+   break;
+  line++;
+ }
+}
+
+/**
+ * WpeXDefaultsFromFile - The X resources a file holds.
+ * @path: the user's resources file.
+ *
+ * The file is judged before it is read, so a name that holds a pipe or a
+ * terminal gives no resources and does not stop the window from opening.
+ * An "#include" line is not followed (see WpeXDefaultsSkipIncludes).
+ * Return: the resource database (the caller owns it), or NULL when the file
+ * cannot be read.
+ */
+static XrmDatabase WpeXDefaultsFromFile(const char *path)
+{
+ WpeReadAsk ask = WPE_READ_ASK_CONFIG(WPE_XDEFAULTS_WHAT);
+ WpeReadOutcome o;
+ XrmDatabase db;
+ size_t len;
+ char *text = wpe_read_text(path, &ask, &len, &o);
+
+ if (text == NULL)
+  return NULL;
+ WpeXDefaultsSkipIncludes(text);
+ db = XrmGetStringDatabase(text);
+ free(text);
+ return db;
+}
+
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - *\
   WpeXDefaults - Gets the X default resources.
 
@@ -1400,7 +1461,7 @@ XrmDatabase WpeXDefaults()
   return NULL;
  if (wpe_path_join(path, sizeof path, home, WPE_XDEFAULTS_FILE) != 0)
   return NULL;
- return XrmGetFileDatabase(path);
+ return WpeXDefaultsFromFile(path);
 }
 
 /* - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - *\

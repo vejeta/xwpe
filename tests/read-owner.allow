@@ -14,33 +14,6 @@
 # stale.  "keep" is a permanent row, and the reason says why the name is the
 # editor's own and not one a user, a folder, a model or a server chose.
 
-# the plain callers (P3a)
-we_ai.c|r22a:ai_read_first_line|1|P3a|the user's key file
-we_debug.c|r22a:e_lsp_read_file_text|1|P3a|a file a language server named
-we_fileop.c|r22b:fileop_open_source|1|P3a|moves onto wpe_read_open with the walk's folder descriptor
-we_fl_fkt.c|r22a:e_i_fopen|4|P3a|help and info files by name
-we_fl_fkt.c|r22e:e_i_fopen|6|P3a|gzopen of help and info files by name
-we_fl_fkt.o|r22k:gzopen|1|P3a/cfg|e_i_fopen, in a build with zlib
-we_fl_unix.c|r22a:WpeHandleFileManager|1|P3a|the probe of Block > Read and the other modes
-we_fl_unix.c|r22c:fm_folder_has_entries|1|P3a|the File Manager lists a folder
-we_fl_unix.o|r22k:opendir|1|P3a|fm_folder_has_entries
-we_main.c|r22a:e_read_whole|1|P3a|the migration of an old configuration
-we_opt.c|r22a:e_read_help_str|1|P3a|help.key from the installed folder
-we_prog.c|r22a:e_algol68_sniff|1|P3a|the first lines of the window's file
-we_startcmd.c|r22b:startcmd_open_store|1|P3a|the editor's own store, until it is on the owner
-we_startcmd.c|r22d:startcmd_stream_of|1|P3a|fdopen of the store's descriptor, for reading and for writing
-we_startcmd.c|r22f:built_read_stream|1|P3a|the editor's own store, until it is on the owner
-we_startcmd.c|r22f:startcmd_parse_stream|1|P3a|the editor's own store, until it is on the owner
-we_startplan.c|r22b:startplan_is_build_output|1|P3a|a private copy of the owner's open
-we_startplan.c|r22b:startplan_read_startup|1|P3a|a private copy of the owner's open
-we_startplan.c|r22b:wpe_startplan_elf_section|1|P3a|the user's program, read by section
-we_unix.c|r22c:e_find_dir|1|P3a|the File Manager lists a folder
-we_unix.c|r22c:e_find_files|1|P3a|the File Manager lists a folder
-we_unix.o|r22k:opendir|1|P3a|e_find_dir and e_find_files
-WeSyntax.c|r22a:WpeSyntaxOpenPersonal|1|P3a|the user's syntax_def
-WeSyntax.c|r22a:WpeSyntaxOpenSystem|1|P3a|the installed syntax_def
-WeXterm.c|r22e:WpeXDefaults|1|P3a|XrmGetFileDatabase of ~/.Xdefaults
-
 # the load of a pipe (P3b) and Find in files (P3c)
 we_edit.c|r22a:e_edit_open|1|P3b|File > Open and the command line
 we_fl_unix.c|r22a:WpeGrepFile|1|P3c|every entry of a folder
@@ -54,8 +27,14 @@ we_debug.o|r22k:glob|1|keep|e_find_supported_jdk
 we_fl_fkt.c|r22c:e_tmp_remove|1|keep|removes the editor's own temporary folder without following links
 we_fl_fkt.o|r22k:nftw|1|keep|e_tmp_remove
 we_opt.c|r22f:e_opt_read_line|1|keep|its stream is the owner's memory stream of at most 1 MiB
+we_fileop.c|r22g:fileop_source_ask|2|keep|the copy reads its source to the end with constant memory, below the folder the walk holds, and a file ends
+we_fl_fkt.c|r22g:e_i_open_judged|1|keep|a help or info file is read a node at a time from its descriptor (libc.info is over 10 MB), in the build with zlib and in the one without
+we_fl_unix.c|r22g:fm_open_block_source|1|keep|Block > Read: the user asked for that file, so its size is not limited
+we_prog.c|r22g:e_algol68_sniff|1|keep|reads the first 200 lines with constant memory, and a regular file ends
 we_prog.c|r22g:e_check_header|1|keep|reads 120 bytes at a time with constant memory and a regular file ends; a bound in memory would remove the only brake the include recursion has
 we_progn.c|r22g:e_aopen_stream|1|keep|reads a line at a time with constant memory and a regular file ends
+we_startplan.c|r22g:startplan_is_build_output|1|keep|reads the first bytes of a build product from the descriptor, and no link is followed
+we_startplan.c|r22g:wpe_startplan_elf_section|1|keep|reads fixed-size headers and sized sections of a program from the descriptor
 we_write.c|r22b:write_backup_source|1|keep|the write owner's own judged open of the file it backs up
 we_write.c|r22b:write_mode_open_descriptor|1|keep|the write owner's own judged open for the mode
 

@@ -503,6 +503,52 @@ static int e_unpack_stopped(void)
 #define e_unpack_stopped() 0
 #endif
 
+/* The noun of a refusal; a help or info file that cannot be read is simply
+   not found, and the next candidate name is tried. */
+#define E_INFO_FILE_WHAT "help file"
+
+#ifdef HAS_LIBZ
+/**
+ * e_i_open_judged - Open one candidate name of a help or info file.
+ * @name: the candidate; @mode: the mode the reader asked for.
+ *
+ * A name that holds a pipe or a terminal is not a help file: it is refused
+ * before a byte is read, so opening Help never waits.  The file may be
+ * packed; zlib reads either on the judged descriptor.
+ * Return: the open file, or NULL.
+ */
+static IFILE e_i_open_judged(const char *name, const char *mode)
+{
+ WpeReadAsk ask = WPE_READ_ASK_SCAN(E_INFO_FILE_WHAT);
+ WpeReadOutcome o;
+ IFILE fp;
+ int fd = wpe_read_open(name, &ask, &o);
+
+ if (fd < 0)
+  return(NULL);
+ fp = gzdopen(fd, mode);
+ if (fp == NULL)
+  close(fd);
+ return(fp);
+}
+#else
+/**
+ * e_i_open_judged - Open one candidate name of a help or info file.
+ * @name: the candidate.
+ *
+ * A name that holds a pipe or a terminal is not a help file: it is refused
+ * before a byte is read, so opening Help never waits.
+ * Return: the open stream, or NULL.
+ */
+static FILE *e_i_open_judged(const char *name)
+{
+ WpeReadAsk ask = WPE_READ_ASK_SCAN(E_INFO_FILE_WHAT);
+ WpeReadOutcome o;
+
+ return(wpe_read_stream_open(name, &ask, &o));
+}
+#endif
+
 IFILE *e_i_fopen(char *path, char *stat)
 {
  char *tmp2;
@@ -510,7 +556,7 @@ IFILE *e_i_fopen(char *path, char *stat)
  IFILE *fp;
 
  if (!path) {  return(NULL);  }
- if ((fp = gzopen(path, stat))) {  return(fp);  }
+ if ((fp = e_i_open_judged(path, stat))) {  return(fp);  }
  if (!(tmp2 = MALLOC((strlen(path)+11)*sizeof(char))))
  {
   FREE(fp);
@@ -518,35 +564,35 @@ IFILE *e_i_fopen(char *path, char *stat)
  }
  strcpy(tmp2, path);
  strcat(tmp2, ".info");
- if ((fp = gzopen(tmp2, stat)))
+ if ((fp = e_i_open_judged(tmp2, stat)))
  {
   FREE(tmp2);
   return(fp);
  }
  strcpy(tmp2, path);
  strcat(tmp2, ".gz");
- if ((fp = gzopen(tmp2, stat)))
+ if ((fp = e_i_open_judged(tmp2, stat)))
  {
   FREE(tmp2);
   return(fp);
  }
  strcpy(tmp2, path);
  strcat(tmp2, ".Z");
- if ((fp = gzopen(tmp2, stat)))
+ if ((fp = e_i_open_judged(tmp2, stat)))
  {
   FREE(tmp2);
   return(fp);
  }
  strcpy(tmp2, path);
  strcat(tmp2, ".info.gz");
- if ((fp = gzopen(tmp2, stat)))
+ if ((fp = e_i_open_judged(tmp2, stat)))
  {
   FREE(tmp2);
   return(fp);
  }
  strcpy(tmp2, path);
  strcat(tmp2, ".info.Z");
- if ((fp = gzopen(tmp2, stat)))
+ if ((fp = e_i_open_judged(tmp2, stat)))
  {
   FREE(tmp2);
   return(fp);
@@ -564,7 +610,7 @@ IFILE *e_i_fopen(char *path, char *stat)
  e_unpack_was_stopped = 0;
  if (!fp) return(NULL);
  if (!path) {  FREE(fp); return(NULL);  }
- if ((fp->fp = fopen(path, stat))) {  fp->sw = 0;  return(fp);  }
+ if ((fp->fp = e_i_open_judged(path))) {  fp->sw = 0;  return(fp);  }
  if (!(tmp2 = MALLOC((strlen(path)+11)*sizeof(char)))) 
  {
   FREE(fp);
@@ -572,7 +618,7 @@ IFILE *e_i_fopen(char *path, char *stat)
  }
  strcpy(tmp2, path);
  strcat(tmp2, ".info");
- if ((fp->fp = fopen(tmp2, stat))) 
+ if ((fp->fp = e_i_open_judged(tmp2)))
  {
   FREE(tmp2);
   fp->sw = 0;
@@ -610,7 +656,7 @@ IFILE *e_i_fopen(char *path, char *stat)
  strcpy(tmp, e_tmp_dir);
  if (path[0] != DIRC) {  tmp[len] = DIRC;  tmp[len+1] = '\0';  }
  strcat(tmp, path);
- if ((fp->fp = fopen(tmp, stat)))
+ if ((fp->fp = e_i_open_judged(tmp)))
  {
   fp->sw = 1;
   FREE(tmp);
@@ -626,7 +672,7 @@ IFILE *e_i_fopen(char *path, char *stat)
   return(NULL);
  }
  FREE(tmp2);
- fp->fp = fopen(tmp, stat);
+ fp->fp = e_i_open_judged(tmp);
  FREE(tmp);
  if (!fp->fp) {  FREE(fp);  return(NULL);  }
  fp->sw = 1;

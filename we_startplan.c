@@ -13,6 +13,12 @@
 #include "we_startcmd.h"
 #include "we_places.h"
 #include "we_fmt.h"
+#include "we_read.h"
+
+/* The nouns of a refusal; the plan says nothing of one, it reads less. */
+#define STARTPLAN_STARTUP_WHAT "start-up file"
+#define STARTPLAN_PRODUCT_WHAT "build product"
+#define STARTPLAN_PROGRAM_WHAT "program"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -971,15 +977,13 @@ static int startplan_is_program_or_object(int fd)
  */
 static int startplan_is_build_output(const char *path, int library)
 {
- struct stat st;
+ WpeReadAsk ask = WPE_READ_ASK_SCAN_NOFOLLOW(STARTPLAN_PRODUCT_WHAT);
+ WpeReadOutcome o;
  int fd, ok;
 
- if (lstat(path, &st) != 0)
-  return errno == ENOENT;
- if (!S_ISREG(st.st_mode))
-  return 0;
- if ((fd = open(path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK)) < 0)
-  return 0;
+ fd = wpe_read_open(path, &ask, &o);
+ if (fd < 0)
+  return wpe_read_outcome_missing(&o);   /* nothing there yet: the build may make it */
  ok = startplan_is_program_or_object(fd);
  if (!ok && library)
   ok = startplan_starts_with(fd, STARTPLAN_AR_MAGIC);
@@ -2364,6 +2368,29 @@ static int startplan_read_whole(const char *content, ssize_t got, off_t size)
 }
 
 /**
+ * startplan_startup_unread - Give a start-up file that was not read its marks.
+ * @s: the path; @o: why the read owner refused it.
+ *
+ * The box shows an empty text.  A file the system will not let the editor
+ * open keeps the system's reason (and Run it is still withheld); anything
+ * else (a pipe, a terminal, a folder) is marked too long, as is a file the
+ * editor had no memory for.
+ */
+static void startplan_startup_unread(WpeStartPath *s, const WpeReadOutcome *o)
+{
+ s->content = calloc(1, 1);
+ if (s->content == NULL)
+ {
+  s->too_long = 1;
+  return;
+ }
+ if (o->why == WPE_READ_REFUSED_BY_SYSTEM)
+  s->refused = o->err;
+ else
+  s->too_long = 1;
+}
+
+/**
  * startplan_read_startup - Take a start-up file's text into its path.
  * @s: the path, its length set; @full: the file's path.
  *
@@ -2380,30 +2407,19 @@ static int startplan_read_whole(const char *content, ssize_t got, off_t size)
  */
 static void startplan_read_startup(WpeStartPath *s, const char *full)
 {
- struct stat st;
- ssize_t got;
- int fd;
+ WpeReadAsk ask = WPE_READ_ASK_NAMED_CUT(STARTPLAN_STARTUP_WHAT, (size_t)WPE_STARTPLAN_READS_MAX);
+ WpeReadOutcome o;
+ size_t got = 0;
+ char *text = wpe_read_text(full, &ask, &got, &o);
 
- if (!(s->content = calloc(1, WPE_STARTPLAN_READS_MAX + 1)))
+ if (text == NULL)
  {
-  s->too_long = 1;
+  startplan_startup_unread(s, &o);
   return;
  }
- if ((fd = open(full, O_RDONLY | O_NONBLOCK)) < 0)
- {
-  s->refused = errno;
-  return;
- }
- s->too_long = 1;                /* until judged a whole plain file */
- if (fstat(fd, &st) == 0 && S_ISREG(st.st_mode))
- {
-  s->length = (long)st.st_size;
-  got = read(fd, s->content, WPE_STARTPLAN_READS_MAX);
-  if (got >= 0)
-   s->content[got] = '\0';
-  s->too_long = !startplan_read_whole(s->content, got, st.st_size);
- }
- close(fd);
+ s->content = text;
+ s->length = (long)o.size;
+ s->too_long = !startplan_read_whole(text, (ssize_t)got, o.size);
 }
 
 /**
@@ -2796,6 +2812,8 @@ static int startplan_elf_find(int fd, const startplan_elf *e, const char *names,
 int wpe_startplan_elf_section(const char *file, const char *name, unsigned char *out, size_t max,
                               size_t *size)
 {
+ WpeReadAsk ask = WPE_READ_ASK_SCAN(STARTPLAN_PROGRAM_WHAT);
+ WpeReadOutcome o;
  startplan_elf e;
  startplan_elf_section s;
  char *names;
@@ -2804,7 +2822,7 @@ int wpe_startplan_elf_section(const char *file, const char *name, unsigned char 
 
  if (!file || !name || !out || !size)
   return 0;
- if ((fd = open(file, O_RDONLY | O_NONBLOCK)) < 0)
+ if ((fd = wpe_read_open(file, &ask, &o)) < 0)
   return 0;
  if (startplan_elf_open_header(fd, &e) && (names = startplan_elf_names(fd, &e, &len)) != NULL)
  {

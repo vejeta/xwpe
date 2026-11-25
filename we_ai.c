@@ -1355,9 +1355,23 @@ static void ai_chat_path(int backend, char *out, size_t n)
  }
 }
 
+#define AI_KEY_FILE_WHAT "key file"
+
+/**
+ * ai_read_first_line - The first line of a key file, trimmed.
+ * @path: the file the user named.
+ *
+ * A name that holds a pipe or a terminal gives no key and never waits for
+ * one: the file is judged before a byte is read and is refused when it is
+ * not a regular file or is over a megabyte.
+ * Return: the line (free it), or NULL when the file cannot be read or is
+ * blank.
+ */
 static char *ai_read_first_line(const char *path)
 {
- FILE *fp = fopen(path, "r");
+ WpeReadAsk ask = WPE_READ_ASK_CONFIG(AI_KEY_FILE_WHAT);
+ WpeReadOutcome o;
+ FILE *fp = wpe_read_stream_open(path, &ask, &o);
  char line[1024], *r = NULL;
  if (!fp) return NULL;
  if (fgets(line, sizeof line, fp)) {
