@@ -437,6 +437,19 @@ WPE_WRITE_RESULT FILE *wpe_write_stream_open(const char *path, WpeWriteOutcome *
    make can choose (the ./xwperc of a cloned project, its project list). */
 WPE_WRITE_RESULT FILE *wpe_write_stream_open_flags(const char *path, int flags,
                                                    WpeWriteOutcome *o);
+/* The stream of wpe_write_stream_open_flags for a file the caller holds:
+   @own is the file it read or wrote last (NULL or not known: it holds none
+   and the file at the name is the file).  When the name leads to another file
+   nothing is opened or cut: the first pass (@asked NULL) sets
+   o->ask_overwrite with that file in o->asked, and after a Yes the caller
+   calls again with a copy of that identity in @asked, as
+   wpe_write_save_text_ask.  A replacement that is a program, another user's
+   file or not a regular file is refused (o->other_file).  The close reports
+   the file it wrote in o->written. */
+WPE_WRITE_RESULT FILE *wpe_write_stream_open_own(const char *path, int flags,
+                                                 const WpeFileIdentity *own,
+                                                 const WpeFileIdentity *asked,
+                                                 WpeWriteOutcome *o);
 WPE_WRITE_RESULT int wpe_write_stream_close(FILE *fp, WpeWriteOutcome *o);
 
 /* The bytes of a copy, for the owner of names (we_fileop.c): the one byte

@@ -6362,6 +6362,145 @@ static void test_a_save_with_no_second_descriptor_keeps_the_window_its_file(void
  save_with_no_second_descriptor("no birth", 0);
 }
 
+/* ---- a stream written for a file the caller holds (the open project's list) ---- */
+
+/** Is the file the name leads to now the one the record is of? */
+static int name_leads_to(const char *name, const WpeFileIdentity *id)
+{
+ char p[512];
+ WpeSeen now;
+
+ path_of(p, sizeof p, name);
+ return(wpe_seen_look_name(p, 1, &now) == 0 && wpe_write_identity_is(id, &now));
+}
+
+/** Print a line into a stream and close it; the outcome of the close. */
+static int print_and_close(FILE *fp, const char *line, WpeWriteOutcome *o)
+{
+ fputs(line, fp);
+ return(wpe_write_stream_close(fp, o));
+}
+
+/* @scenario SC-read-owner-C1: the close of a stream says which file it wrote, from its descriptor. */
+static void test_a_stream_reports_the_file_it_wrote(void)
+{
+ WpeWriteOutcome o;
+ char p[512];
+ FILE *fp;
+
+ make_dir();
+ path_of(p, sizeof p, "new.prj");
+ fp = wpe_write_stream_open(p, &o);
+ chk_int("a new file opens", fp != NULL, 1);
+ if (fp == NULL)
+  return;
+ chk_int("the new file closes", print_and_close(fp, "a\n", &o), 0);
+ chk_int("the new file is known", o.written.known, 1);
+ chk_int("it is the file at the name", name_leads_to("new.prj", &o.written), 1);
+ put_file("old.prj", "old\n", 0644);
+ path_of(p, sizeof p, "old.prj");
+ fp = wpe_write_stream_open(p, &o);
+ chk_int("an old file opens", fp != NULL, 1);
+ if (fp == NULL)
+  return;
+ chk_int("the old file closes", print_and_close(fp, "b\n", &o), 0);
+ chk_int("it is the file at the name", name_leads_to("old.prj", &o.written), 1);
+}
+
+/* @scenario SC-read-owner-C2: a stream for a held file does not open when another file took the name. */
+static void test_a_stream_for_a_held_file_asks_when_another_file_took_the_name(void)
+{
+ WpeWriteOutcome o;
+ WpeFileIdentity own;
+ char p[512], buf[256];
+ FILE *fp;
+
+ make_dir();
+ put_file("p.prj", "mine\n", 0644);
+ chk_int("the held file's identity", wpe_write_identity_of_name(dir, "p.prj", &own), 1);
+ another_file_takes_the_name("p.prj", "theirs\n", 0644);
+ path_of(p, sizeof p, "p.prj");
+ fp = wpe_write_stream_open_own(p, 0, &own, NULL, &o);
+ chk_int("nothing is opened", fp == NULL, 1);
+ chk_int("the user is to be asked", o.ask_overwrite, 1);
+ chk_int("the file asked about is the one at the name", name_leads_to("p.prj", &o.asked), 1);
+ chk_has("the newcomer is not cut", get_file("p.prj", buf, sizeof buf), "theirs\n");
+ chk_int("no refusal is said instead", o.other_file, 0);
+}
+
+/* @scenario SC-read-owner-C3: after a Yes, a third file that took the name is refused. */
+static void test_a_yes_about_one_file_does_not_reach_a_third(void)
+{
+ WpeWriteOutcome o;
+ WpeFileIdentity own, asked;
+ char p[512], buf[256];
+ FILE *fp;
+
+ make_dir();
+ put_file("p.prj", "mine\n", 0644);
+ chk_int("the held file's identity", wpe_write_identity_of_name(dir, "p.prj", &own), 1);
+ another_file_takes_the_name("p.prj", "theirs\n", 0644);
+ path_of(p, sizeof p, "p.prj");
+ fp = wpe_write_stream_open_own(p, 0, &own, NULL, &o);
+ chk_int("the first pass asks", fp == NULL && o.ask_overwrite, 1);
+ asked = o.asked;
+ another_file_takes_the_name("p.prj", "third\n", 0644);
+ fp = wpe_write_stream_open_own(p, 0, &own, &asked, &o);
+ chk_int("the second pass opens nothing", fp == NULL, 1);
+ chk_int("another file", o.other_file, 1);
+ chk_int("it says the name changed while the user was asked", o.changed_while_asked, 1);
+ chk_has("the third file is not cut", get_file("p.prj", buf, sizeof buf), "third\n");
+}
+
+/* @scenario SC-read-owner-C4: a held file's replacement that is a program is refused with no question. */
+static void test_a_stream_for_a_held_file_refuses_a_program_that_took_the_name(void)
+{
+ WpeWriteOutcome o;
+ WpeFileIdentity own;
+ char p[512], buf[256];
+ FILE *fp;
+
+ make_dir();
+ if (!test_premise_special_bits(dir, S_ISUID, "a program took the project's name",
+                                "this user cannot set setuid in the test folder"))
+  return;
+ put_file("p.prj", "mine\n", 0644);
+ chk_int("the held file's identity", wpe_write_identity_of_name(dir, "p.prj", &own), 1);
+ another_file_takes_the_name("p.prj", "prog\n", 04755);
+ path_of(p, sizeof p, "p.prj");
+ fp = wpe_write_stream_open_own(p, 0, &own, NULL, &o);
+ chk_int("nothing is opened", fp == NULL, 1);
+ chk_int("refused as another file", o.other_file, 1);
+ chk_int("no question is asked", o.ask_overwrite, 0);
+ chk_has("the program is not cut", get_file("p.prj", buf, sizeof buf), "prog\n");
+}
+
+/* @scenario SC-read-owner-C5: the held file itself is written with no question, and reported. */
+static void test_a_stream_for_the_held_file_writes_it_and_reports_it(void)
+{
+ WpeWriteOutcome o;
+ WpeFileIdentity own;
+ char p[512], buf[256];
+ FILE *fp;
+
+ make_dir();
+ put_file("p.prj", "mine\n", 0644);
+ chk_int("the held file's identity", wpe_write_identity_of_name(dir, "p.prj", &own), 1);
+ path_of(p, sizeof p, "p.prj");
+ fp = wpe_write_stream_open_own(p, 0, &own, NULL, &o);
+ chk_int("the held file opens", fp != NULL, 1);
+ if (fp == NULL)
+  return;
+ chk_int("it closes", print_and_close(fp, "list\n", &o), 0);
+ chk_has("it holds the list", get_file("p.prj", buf, sizeof buf), "list\n");
+ chk_int("the report is the file at the name", name_leads_to("p.prj", &o.written), 1);
+ path_of(p, sizeof p, "gone.prj");
+ fp = wpe_write_stream_open_own(p, 0, &own, NULL, &o);
+ chk_int("a free name opens with no question", fp != NULL && !o.ask_overwrite, 1);
+ if (fp != NULL)
+  chk_int("and closes", print_and_close(fp, "x\n", &o), 0);
+}
+
 /* @scenario SC-chosen-names-29: a stream opened with NOFOLLOW is never led through a link. */
 static void test_a_stream_with_nofollow_is_not_led_through_a_link(void)
 {
@@ -6444,6 +6583,11 @@ static void test_the_legacy_folder_takes_a_new_private_note_and_no_link(void)
 int main(void)
 {
  WpeMouseChangeShape = stub_mouse_shape;
+ test_a_stream_reports_the_file_it_wrote();
+ test_a_stream_for_a_held_file_asks_when_another_file_took_the_name();
+ test_a_yes_about_one_file_does_not_reach_a_third();
+ test_a_stream_for_a_held_file_refuses_a_program_that_took_the_name();
+ test_a_stream_for_the_held_file_writes_it_and_reports_it();
  test_a_stream_with_nofollow_is_not_led_through_a_link();
  test_a_nofollow_stream_at_a_dangling_link_creates_nothing();
  test_the_legacy_folder_takes_a_new_private_note_and_no_link();

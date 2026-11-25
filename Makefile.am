@@ -1812,6 +1812,7 @@ EXTRA_DIST = \
   tests/test_mouse_tracking.py \
   tests/test_project_windows.py \
   tests/test_project_persist.py \
+  tests/test_project_hold.py \
   tests/test_window_views.py \
   tests/test_window_menu.py \
   tests/test_block.py \

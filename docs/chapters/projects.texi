@@ -171,6 +171,44 @@ Remove a file from the project.
 Edit project options (compiler, flags, etc.).
 @end table
 
+@section A project file that changed under the editor
+
+@cindex project file replaced
+@cindex checkout
+A checkout, @command{vim} or @command{sed -i} saves a file by writing a new
+one and renaming it over the old, and a link can be put at a name.  The
+project file's name then leads to another file than the one xwpe read when
+you opened the project.  xwpe does not read or write that file in silence.
+
+When a build, @samp{Install}, the options box or Add Item must read the
+project, xwpe says @samp{Cannot open project file ...: another file took the
+name} (or @samp{it changed or was replaced} when it cannot prove the file is
+another one) and asks @samp{Read the file that is there now as the project?}.
+@kbd{Enter} answers @samp{Yes}: that file is the project from then on, and
+nothing more is asked about it.  @samp{No} or @kbd{Esc} reads nothing: the
+operation stops and the project, its window and its settings stay as they
+were.  The next operation asks again, because you may have put the name right
+in the meantime.
+
+When xwpe must write the project's list (Add Item, Delete Item, Save in the
+options box) and the name leads to another file, it asks @samp{... was
+replaced on disk since the project was opened.  Write the project list over
+it?}.  Here @kbd{Enter} answers @samp{No}, because @samp{Yes} writes this
+project's list into a file that may be another project's, and that file is
+left as it was.  The project window stays marked as unsaved.
+
+A @samp{Yes} to the read question is about reading only.  Where a write
+follows in the same action (closing the project window, or a build with an
+unsaved project list), the write over that file is asked separately, and
+@kbd{Enter} on it answers @samp{No}.  Two @kbd{Enter} keys in a row therefore
+read the file that is there now and leave it as it is.
+
+Closing the project window asks the same two questions with a third answer:
+@samp{No} closes the window without writing (the list in it is lost and the
+file is left alone) and @samp{Cancel} keeps the window open.  A project closed
+to reading says why and stops; it never opens the options box on the
+compiler's defaults.
+
 @section The build cycle
 
 @cindex F9

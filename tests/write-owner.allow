@@ -194,7 +194,7 @@ we_ai_ui.c|r25a:ai_transcript_write|1|keep|the transcript name the user typed
 we_opt.c|r25a:e_opt_lines_store|1|keep|the options file the options came from; NOFOLLOW for the start folder's xwperc
 we_opt.c|r25a:e_save_opt|1|keep|the options file the options came from; NOFOLLOW for the start folder's xwperc
 we_prog.c|r25a:e_write_default_prj|1|keep|the project name the user typed in New Project
-we_prog.c|r25a:e_wrt_prj_fl|1|keep|the open project's file; NOFOLLOW when a start folder named it
+we_prog.c|r25a:e_prj_write_open|2|keep|the open project's file, held: one asked pass and one after a Yes; NOFOLLOW when a start folder named it
 # r25i: getenv("HOME") and getpwuid( outside we_places.c.  The home of a place
 # the editor keeps its own files in is asked of wpe_user_home; these are not
 # such places.

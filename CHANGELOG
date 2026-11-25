@@ -40,6 +40,22 @@ Bugs fixed in 1.6.x:
   so a payload of the wrong kind is a compile error again.  Rows:
   tests/test_window_kind.py.  Rules held by tests/check-window-kind.sh, which
   counts and carries its own selftest.
+* The open project is a file the editor remembers, and another file under its
+  name is no longer read or written in silence.  A checkout, vim or sed -i that
+  replaces p.prj, or a link put at its name, used to make Project Options, a
+  build, Install and Add or Delete Item read the other project's settings, and
+  Add or Delete wrote this project's list into the other project's file (a
+  link to another project lost its list that way).  Now the editor says
+  "another file took the name" and asks whether to read the file that is
+  there now as the project (Enter says Yes), and before it writes the list
+  into such a file it asks whether to write over it (Enter says No, and the
+  file is left as it was).  Closing a project window that cannot be written
+  has a No that closes it without writing, so a swapped project can still be
+  closed.  A project closed to reading no longer opens the options box on the
+  compiler defaults.  The assistant's conversation for a project follows the
+  file the editor read, and a relative project name is read from the folder of
+  its window.  The list of remembered answers to start commands drops its
+  oldest answers rather than grow past what the editor reads back.
 * The assistant's changeset review knows what became of every file the
   checkpoint saw, not only which names it listed.  A file of yours that a run
   renamed (alone, with its folder, or in a git workspace an untracked or

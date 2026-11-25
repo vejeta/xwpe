@@ -48,7 +48,7 @@ we_prog.c|e_make_prj_opt_read|2|keep|Options dialog: the style radio of a projec
 we_prog.c|e_prj_options_take|1|keep|Options dialog: the style of a project's compiler
 we_prog.c|e_project_options|1|keep|Options dialog: the style of a project's compiler
 we_prog.c|e_prj_setup|2|keep|the project's style: CMPSWTCH other sets it
-we_prog.c|e_wrt_prj_fl|1|keep|the project writer: CMPSWTCH
+we_prog.c|e_prj_print_list|1|keep|the project writer: CMPSWTCH
 we_prog.c|e_ini_prog|1|keep|the defaults: GNU for gcc, g++, gfortran and cobc, other for the rest
 we_prog.c|e_algol68_apply|2|keep|the toolchain's defaults: ga68 is GNU, a68g is other
 we_prog.c|e_copy_prog|2|keep|copying an entry copies its style

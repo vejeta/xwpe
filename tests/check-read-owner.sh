@@ -44,6 +44,15 @@
 #     is looked at through the folder that was read, never by a joined path.
 #  h. WPE_READ_KIND_PIPE: the user's decision is that only the load of a pipe
 #     may name it, and that load is not built yet.
+#  p. WPE_READ_ASK_PROJECT and WPE_READ_ASK_PROJECT_SEEN, anywhere but in
+#     e_prj_read_open and its two steps (e_prj_read_held, e_prj_read_asked),
+#     e_project_open_error and e_select_project: the open project is read by
+#     one opener, which asks for the file the editor holds.  No allow line.
+#  q. a call of a wpe_read_ face whose first argument is e_prog.project or a
+#     call of e_prj_open_path(, in the same functions' absence: a reader that
+#     takes the project by name, whatever form it asks with.  A local variable
+#     holding the path escapes it; the rows of test_project_hold.py are the net
+#     for that.  No allow line.
 # In we_read.c itself:
 #  i. a string that holds "Cannot", "not found", "it is" or "larger": the
 #     words are we_path.c's.
@@ -282,6 +291,22 @@ scan() {
       }
       count_word(m, "WPE_READ_UNBOUNDED|WPE_READ_ASK_SCAN|WPE_READ_ASK_SCAN_NOFOLLOW|WPE_READ_ASK_LOAD", "r22g")
     }
+    # clauses p and q: the open project is read by one opener.  p: the forms
+    # WPE_READ_ASK_PROJECT and WPE_READ_ASK_PROJECT_SEEN are named only in the
+    # functions of that opener and the two gates; q: no read owner face is
+    # given e_prog.project or a call of e_prj_open_path( as its path.  A local
+    # variable holding the path escapes q; the rows of test_project_hold.py are
+    # the net for that.
+    function note_project(s, m,   t, p, a) {
+      if (fn ~ /^(e_prj_read_open|e_prj_read_held|e_prj_read_asked|e_project_open_error|e_select_project)$/) return
+      count_word(m, "WPE_READ_ASK_PROJECT|WPE_READ_ASK_PROJECT_SEEN", "r22p")
+      t = s
+      while (match(t, /(^|[^A-Za-z0-9_.>])wpe_read_[a-z_0-9]+[ \t]*[(]/)) {
+        p = RSTART + RLENGTH - 1; a = nth_arg(t, p, 1)
+        if (a ~ /^e_prog[ \t]*\.[ \t]*project$/ || a ~ /^e_prj_open_path[ \t]*[(]/) note("r22q", 1)
+        t = substr(t, p + 1)
+      }
+    }
     # the clauses of we_read.c itself
     function note_owner(s, m,   t, p, e, lit, a, mode, name) {
       t = s
@@ -313,6 +338,7 @@ scan() {
       note_modes(s)
       note_opens(s, m)
       note_asks(s, m)
+      note_project(s, m)
       count_call(m, "opendir|scandir|nftw|ftw|fts_open|glob|opendir64|scandir64|nftw64|ftw64|fts_open64|glob64", "r22c")
       if (file != "we_fileop.c") count_call(m, "fdopendir", "r22c")
       count_call(m, "json_object_from_file|json_object_from_fd|gzopen|gzopen64|XrmGetFileDatabase", "r22e")
@@ -453,6 +479,15 @@ int fake_h(void)
  return(WPE_READ_KIND_PIPE);
 }
 
+int fake_reader(ECNT *cn)
+{
+ WpeReadAsk a = WPE_READ_ASK_PROJECT("project file");
+ WpeReadAsk b = WPE_READ_ASK_PROJECT_SEEN("project file", seen);
+ FILE *c = wpe_read_stream_open(e_prog.project, &cfg, &o);
+ char *d = wpe_read_text(e_prj_open_path(cn), &cfg, &n, &o);
+ return(0);
+}
+
 int fake_j(char *buf, int n)
 {
  FILE *a = fmemopen(buf, n, "r");
@@ -509,6 +544,18 @@ int quiet_stat_elsewhere(char *p)
 int e_find_files(char *p)
 {
  return(wpe_read_entry_look(d, p, &s) + wpe_seen_stat_of(p) + my_stat(p));
+}
+
+static FILE *e_prj_read_open(FENSTER *f)
+{
+ WpeReadAsk ask = WPE_READ_ASK_PROJECT("project file");
+ return(wpe_read_stream_open(e_prj_open_path(f->ed), &ask, &o));
+}
+
+int e_select_project(ECNT *cn, char *path)
+{
+ WpeReadAsk ask = WPE_READ_ASK_PROJECT("project file");
+ return(wpe_read_name_ok(path, &ask, &why));
 }
 
 int quiet_names(struct x *x)
@@ -582,6 +629,8 @@ EOF
     "r22f we_fake.c fake_f 2" \
     "r22g we_fake.c fake_g 7" \
     "r22h we_fake.c fake_h 1" \
+    "r22p we_fake.c fake_reader 2" \
+    "r22q we_fake.c fake_reader 2" \
     "r22j we_fake.c fake_j 4" \
     "r22n we_fake.c e_file_info_look 3" \
     "r22z we_fake.c fake_z 3" \
@@ -744,6 +793,10 @@ awk -F'|' -v kscan=$kscan -v nbobjs=" $(tr '\n' ' ' < "$WORK/notbuilt_objs")" '
         print "offender: " $1 " " $2 ": a read request is built by hand or by number (a WpeReadAsk filled in, a member assigned, a bound written as a digit), or it holds no bound (WPE_READ_UNBOUNDED, WPE_READ_ASK_SCAN, WPE_READ_ASK_LOAD) in a function the allow file does not list with its reason.  Use a WPE_READ_ASK_* form"
       else if (rule == "r22n")
         print "offender: " $1 " " $2 ": a File Manager listing function looks at an entry by a path (stat, lstat, access or a spelling of them).  The look of an entry is asked of the folder that was read, through wpe_read_entry_look or wpe_read_entry_look_target, so a name never lands on the working folder'"'"'s file of the same name.  No allow line"
+      else if (rule == "r22p")
+        print "offender: " $1 " " $2 ": WPE_READ_ASK_PROJECT or WPE_READ_ASK_PROJECT_SEEN is named outside e_prj_read_open (and its two steps), e_project_open_error and e_select_project.  The open project is read by one opener, which asks the read owner for the file the editor holds: call e_prj_read_open.  No allow line"
+      else if (rule == "r22q")
+        print "offender: " $1 " " $2 ": a read owner face is given e_prog.project or e_prj_open_path( as its path.  The open project is read by e_prj_read_open, which asks for the file the editor holds and asks the user when the name leads to another.  No allow line"
       else if (rule == "r22h")
         print "offender: " $1 " " $2 ": WPE_READ_KIND_PIPE is named outside the owner.  Only the load of a pipe may accept one, and it is not built yet.  No allow line"
       else if (rule == "r22i")

@@ -175,7 +175,7 @@
 #     where the user's home, state and configuration are is decided in
 #     we_places.c.  Strings are kept and comments blanked, names bounded by
 #     word.  Each clause has its own tag in the allow file (r25a to r25h):
-#     a. wpe_write_text(, wpe_write_stream_open( and _flags( appear outside
+#     a. wpe_write_text(, wpe_write_stream_open(, _flags( and _own( appear outside
 #        we_write.c only in the functions the allow file lists, each with how
 #        the user named the path.
 #     b. XDG_STATE_HOME, XDG_CONFIG_HOME, the piece .local/state and a ".config"
@@ -204,6 +204,21 @@
 #        It does not see a ?: whose "." is split across functions, a fallback
 #        to "." through a name with no place word in it (home, dir, base,
 #        state, config), nor getenv(MACRO) where the macro hides "HOME".
+# 26. The open project is a file the editor holds, and its list has one
+#     writer.  Strings are blanked, names bounded by word.  Each clause has
+#     its own tag (r26a to r26c) and no allow line:
+#     a. wpe_write_stream_open_own( appears outside we_write.c only in
+#        we_prog.c e_prj_write_open, which hands it the hold.
+#     b. no wpe_write_*( call, in any we_*.c, takes e_prog.project or a call
+#        of e_prj_open_path( as its path: the project's list is written by
+#        e_prj_write through e_prj_write_open.  A local variable holding the
+#        path escapes this scan; the rows H1 and H5 of test_project_hold.py
+#        are the net for that.
+#     c. in we_prog.c the identity of the hold (e_prj_hold.file) is the
+#        operand of & only, handed to wpe_write_identity_set, _forget or the
+#        read and write owners' asks, as rule 18 does for a window's file_id:
+#        an assignment or any other read is a second place that decides which
+#        object is the project.
 # Rule 3 (the companion names) and rule 7 (the crash handler's order) come
 # with the pass that moves them.
 #
@@ -543,6 +558,33 @@ scan() {
       t = m
       while (match(t, /<</)) { note("r15", 1); t = substr(t, RSTART + RLENGTH) }
     }
+    # rule 26 (the open project is held and written by one function), for the
+    # code of one statement, strings blanked.  r26a: the stream for a held
+    # file is opened only by e_prj_write_open; r26b: no write owner face is
+    # given the open project name; r26c: the identity of the hold is only
+    # ever the operand of an address-of.
+    function note26(m,   t, p, a, off, i) {
+      t = m
+      while (file != "we_write.c" && match(t, /(^|[^A-Za-z0-9_.>])wpe_write_stream_open_own[ \t]*[(]/)) {
+        if (!(file == "we_prog.c" && fn == "e_prj_write_open")) note("r26a", 1)
+        t = substr(t, RSTART + RLENGTH)
+      }
+      t = m
+      while (match(t, /(^|[^A-Za-z0-9_.>])wpe_write_[a-z_0-9]+[ \t]*[(]/)) {
+        p = RSTART + RLENGTH - 1; a = nth_arg(t, p, 1)
+        if (a ~ /^e_prog[ \t]*\.[ \t]*project$/ || a ~ /^e_prj_open_path[ \t]*[(]/) note("r26b", 1)
+        t = substr(t, p + 1)
+      }
+      off = 1
+      while (file == "we_prog.c" && (p = index(substr(m, off), "e_prj_hold.file")) > 0) {
+        p += off - 1; off = p + 15
+        if (p > 1 && substr(m, p - 1, 1) ~ /[A-Za-z0-9_]/) continue
+        if (substr(m, p + 15, 1) ~ /[A-Za-z0-9_]/) continue
+        i = p - 1
+        while (i >= 1 && substr(m, i, 1) ~ /[ \t]/) i--
+        if (i < 1 || substr(m, i, 1) != "&" || (i > 1 && substr(m, i - 1, 1) == "&")) note("r26c", 1)
+      }
+    }
     # rule 25 (the editors own places and the names it chooses), for one
     # statement: S has its strings kept and M has them blanked.  Clauses, each
     # its own tag:
@@ -569,7 +611,7 @@ scan() {
       while (match(t, /(^|[^A-Za-z0-9_.>])wpe_write_bytes[ \t]*[(]/)) { note("r25h", 1); t = substr(t, RSTART + RLENGTH) }
       if (file != "we_write.c") {
         t = m
-        while (match(t, /(^|[^A-Za-z0-9_.>])(wpe_write_text|wpe_write_stream_open|wpe_write_stream_open_flags)[ \t]*[(]/)) { note("r25a", 1); t = substr(t, RSTART + RLENGTH) }
+        while (match(t, /(^|[^A-Za-z0-9_.>])(wpe_write_text|wpe_write_stream_open|wpe_write_stream_open_flags|wpe_write_stream_open_own)[ \t]*[(]/)) { note("r25a", 1); t = substr(t, RSTART + RLENGTH) }
         t = m
         while (match(t, /(^|[^A-Za-z0-9_.>])(wpe_write_own_bytes|wpe_write_own_remove)[ \t]*[(]/)) {
           p = RSTART + RLENGTH - 1
@@ -679,6 +721,8 @@ scan() {
       m = s; gsub(/"([^"\\]|\\.)*"/, "\"\"", m)
       # rule 25: the editors own places and the names it chooses
       note25(s, m)
+      # rule 26: the open project is held, and its list has one writer
+      note26(m)
       # rule 24 (clauses a to d, f and g; e scans the tests): the identity of an object is judged in we_seen.c
       note24_inside(m)
       note24_everywhere(m)
@@ -1470,7 +1514,43 @@ EOF
 #define WPE_STATE_BELOW ".local/state"
 #define WPE_ENV "XDG_CONFIG_HOME"
 EOF
+  # rule 26: the open project is held and has one writer.  A stream for a
+  # held file opened anywhere but e_prj_write_open (a), a write owner face
+  # given the project's name (b), and the hold's identity read or assigned
+  # (c) are offences; the one function that may, and an address passed on,
+  # are not.
+  cat > "$WORK/we_fake_r26.c" <<'EOF'
+int fake_own(const char *p, WpeWriteOutcome *o)
+{
+ FILE *a = wpe_write_stream_open_own(p, 0, hold, NULL, o);
+ return(a != NULL);
+}
+int fake_named(ECNT *cn, WpeWriteOutcome *o)
+{
+ int a = wpe_write_text(e_prog.project, "x", o);
+ FILE *b = wpe_write_stream_open(e_prj_open_path(cn), o);
+ FILE *c = wpe_write_stream_open_flags(p, 0, o);
+ return(a);
+}
+EOF
+  mkdir "$WORK/r26p" || exit $BAD
+  cat > "$WORK/r26p/we_prog.c" <<'EOF'
+static FILE *e_prj_write_open(FENSTER *f, const char *path, WpeWriteOutcome *o)
+{
+ wpe_write_identity_forget(&e_prj_hold.file);
+ wpe_write_identity_set(&e_prj_hold.file, seen);
+ return(wpe_write_stream_open_own(path, 0, e_prj_hold_expect(path), NULL, o));
+}
+static int e_prj_hold_other(WpeSeen *s)
+{
+ *s = e_prj_hold.file;
+ e_prj_hold.file.known = 0;
+ return(e_prj_hold.file_extra + my_e_prj_hold.file);
+}
+EOF
   scan "$WORK/we_fake.c" | sort > "$WORK/fake.found"
+  scan "$WORK/we_fake_r26.c" >> "$WORK/fake.found"
+  scan "$WORK/r26p/we_prog.c" >> "$WORK/fake.found"
   scan "$WORK/we_fake_r25.c" >> "$WORK/fake.found"
   scan "$WORK/r25/we_places.c" >> "$WORK/fake.found"
   scan "$WORK/r25w/we_write.c" >> "$WORK/fake.found"
@@ -1555,7 +1635,9 @@ EOF
               "r25f we_fake_r25.c fake_resume 2" "r25g we_fake_r25.c fake_own 2" \
               "r25b we_fake_r25.c (preprocessor) 1" \
               "r25d we_write.c write_other 1" "r25d we_startcmd.c startcmd_other 1" \
-              "r25b we_fake_r25.h (preprocessor) 2"; do
+              "r25b we_fake_r25.h (preprocessor) 2" \
+              "r26a we_fake_r26.c fake_own 1" "r26b we_fake_r26.c fake_named 2" \
+              "r26c we_prog.c e_prj_hold_other 2"; do
     grep -qx "$want" "$WORK/fake.found" || {
       echo "check-write-owner: FAIL (selftest: the scan does not name \"$want\"; it found:)"
       cat "$WORK/fake.found"
@@ -1591,6 +1673,13 @@ EOF
   # function that asks for the state folder) and the shapes that are no offence
   if grep -Eq "^r25[a-i] we_places.c |^r25d we_write.c write_own_base |^r25a we_write.c |^r25g we_write.c |^r25d we_unix.c |^r25d we_startcmd.c startcmd_state_dir |^r25c we_fake_r25.c fake_no_getenv |^r25c we_fake_r25.c fake_plain_ternary |^r25i we_fake_r25.c fake_no_getenv |^r25f we_fake_r25.c wpe_ai_resume_id_take " "$WORK/fake.found"; then
     echo "check-write-owner: FAIL (selftest: an owner or a shape rule 25 allows was counted; it found:)"
+    cat "$WORK/fake.found"
+    exit $BAD
+  fi
+  # rule 26: the one function that opens the held stream, and the hold's
+  # identity passed by address, are no offence
+  if grep -Eq "^r26[abc] we_prog.c e_prj_write_open " "$WORK/fake.found"; then
+    echo "check-write-owner: FAIL (selftest: e_prj_write_open was counted by rule 26; it found:)"
     cat "$WORK/fake.found"
     exit $BAD
   fi
@@ -1805,6 +1894,12 @@ awk -F'|' '
         print "offender: " $1 " " $2 ": wpe_write_own_bytes or wpe_write_own_remove is called with a first argument that is not a WPE_OWN_ kind.  The owner judges its own folder; a variable there could carry a folder nobody judged.  No allow line"
       else if (rule == "r25i")
         print "offender: " $1 " " $2 ": getenv(\"HOME\") or getpwuid( outside we_places.c.  Where the user'"'"'s home is has one owner: ask wpe_user_home (or wpe_user_database_home when the database'"'"'s answer is wanted on purpose).  A use that is not a place of the editor'"'"'s own (the ~ of a path the user typed, the name of a file'"'"'s owner) is a line of the allow file with that reason"
+      else if (rule == "r26a")
+        print "offender: " $1 " " $2 ": wpe_write_stream_open_own is called outside e_prj_write_open (we_prog.c).  The open project'"'"'s list is written by one function that hands the write owner the file the editor holds.  No allow line"
+      else if (rule == "r26b")
+        print "offender: " $1 " " $2 ": a write owner face is given e_prog.project or e_prj_open_path( as its path.  The open project'"'"'s list is written by e_prj_write, which passes the hold and takes back the file written.  No allow line"
+      else if (rule == "r26c")
+        print "offender: " $1 " " $2 ": the hold'"'"'s identity (e_prj_hold.file) is read or assigned, not only passed by address.  It is set by wpe_write_identity_set and forgotten by wpe_write_identity_forget, so a second place cannot decide which object is the project.  No allow line"
       else if (rule == "r14")
         print "offender: " $1 " " $2 ": e_prog.project is written outside the one place that switches the project: go through e_select_project, or list the function with its reason"
       else

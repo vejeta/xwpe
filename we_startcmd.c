@@ -703,6 +703,45 @@ static int startcmd_folder_oldest(const startcmd_store *s, const char *folder)
  return -1;
 }
 
+static size_t startcmd_escaped_len(const char *text);
+
+/** The room of one record's fixed text: the answer word, three tabs and the
+    newline (the longer word is counted, so the sum never falls short). */
+#define STARTCMD_RECORD_FIXED_MAX (sizeof STARTCMD_WORD_YES - 1 + 3 + 1)
+
+/**
+ * startcmd_record_text_max - The most bytes one record takes in the store.
+ * @r: the record.
+ */
+static size_t startcmd_record_text_max(const startcmd_record *r)
+{
+ return STARTCMD_RECORD_FIXED_MAX + startcmd_escaped_len(r->key) +
+        startcmd_escaped_len(r->folder) + startcmd_escaped_len(r->command);
+}
+
+/**
+ * startcmd_fit_bound - Drop the oldest answers until the store's text fits
+ * what the next read accepts.
+ * @s: the store, oldest first.
+ *
+ * What the user gets: the answers he gave are still there at the next start.
+ * A command has no length of its own to stop it, so the count of records
+ * does not bound the text; a store written over the read bound would be
+ * refused whole when the editor starts and every command would be asked
+ * about again.  The newest answers are the ones kept.
+ */
+static void startcmd_fit_bound(startcmd_store *s)
+{
+ size_t total = strlen(WPE_STARTCMD_STORE_MAGIC) + 1;
+ int i;
+
+ for (i = 0; i < s->n; i++) total += startcmd_record_text_max(&s->rec[i]);
+ while (s->n > 0 && total > STARTCMD_STORE_MAX) {
+  total -= startcmd_record_text_max(&s->rec[0]);
+  startcmd_store_drop(s, 0);
+ }
+}
+
 /**
  * startcmd_store_put - Set the answer for a folder, key and text, newest last.
  * @s: the store; the rest as wpe_startcmd_remember.
@@ -723,6 +762,7 @@ static int startcmd_store_put(startcmd_store *s, const char *folder, const char 
  if (startcmd_store_add(s, answer, key, folder, text) < 0) return -1;
  while ((i = startcmd_folder_oldest(s, folder)) >= 0) startcmd_store_drop(s, i);
  while (s->n > WPE_STARTCMD_MAX_RECORDS) startcmd_store_drop(s, 0);
+ startcmd_fit_bound(s);
  return 0;
 }
 

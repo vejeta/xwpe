@@ -316,6 +316,36 @@ static void case_store_over_bound(void)
  drop_store();
 }
 
+#define LONG_COMMAND_BYTES  ((size_t)1 << 20)   /* a command of a mebibyte */
+#define LONG_COMMAND_COUNT  20                  /* together past the read bound */
+
+/* @scenario SC-read-owner-p3h-09 */
+/* A store the editor writes is never one it refuses to read: answers whose
+   commands together pass the read bound are written with the oldest dropped,
+   so the next start still reads the newer ones. */
+static void case_store_text_fits_the_bound(void)
+{
+ char *text = malloc(LONG_COMMAND_BYTES + 1);
+ struct stat st;
+ int i, failed = 0;
+ if (!text) { perror("malloc"); exit(2); }
+ drop_store();
+ for (i = 0; i < LONG_COMMAND_COUNT; i++) {
+  memset(text, 'a' + i % 26, LONG_COMMAND_BYTES);
+  text[LONG_COMMAND_BYTES] = '\0';
+  if (wpe_startcmd_remember(proj, "build/C", text, WPE_STARTCMD_YES) != 0) failed++;
+ }
+ expect_int("every answer was kept", failed, 0);
+ expect_int("the store fits what a read accepts", stat(store, &st) == 0 && (size_t)st.st_size <= STORE_BOUND_BYTES, 1);
+ memset(text, 'a' + (LONG_COMMAND_COUNT - 1) % 26, LONG_COMMAND_BYTES);
+ expect_int("the newest answer is read back", wpe_startcmd_check(proj, "build/C", text), WPE_STARTCMD_RUN);
+ expect_int("and the store is not refused", wpe_startcmd_last_store_state(), WPE_STARTCMD_STORE_OK);
+ memset(text, 'a', LONG_COMMAND_BYTES);
+ expect_int("the oldest was dropped to make room", wpe_startcmd_check(proj, "build/C", text), WPE_STARTCMD_ASK);
+ free(text);
+ drop_store();
+}
+
 /* An existing state folder others may read is made the user's alone. */
 static void case_dir_mode(void)
 {
@@ -792,6 +822,7 @@ int main(void)
  case_folder_cap();
  case_fifo();
  case_store_over_bound();
+ case_store_text_fits_the_bound();
  case_umask_folder();
  case_built_round_trip();
  case_built_changed();

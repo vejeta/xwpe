@@ -764,8 +764,15 @@ void e_say_path_refused(FENSTER *f, const char *what, const char *path, int err)
  e_say_read_refused(f, what, path, &o);
 }
 
-/*   message with selection        */
-int e_message(int sw, char *str, FENSTER *f)
+/**
+ * e_message_box - The message box: Ok, or Yes, No and Cancel, with a default.
+ * @sw: 0 for Ok alone, else the three buttons of a question; @str: the text;
+ * @f: the window it is shown over; @crsw: the key Enter answers with (AltO,
+ * AltY or AltN).
+ * Return: -1 when the box could not be made; for a question 'Y', 'N' or
+ * WPE_ESC (Cancel and Esc); for an Ok anything but 'N'.
+ */
+static int e_message_box(int sw, char *str, FENSTER *f, int crsw)
 {
  int i, ret, mxlen = 0, anz = 0;
  char **s;
@@ -797,7 +804,9 @@ int e_message(int sw, char *str, FENSTER *f)
  }
  else
  {
-  o->crsw = AltY;
+  o->crsw = crsw;
+  if (crsw == AltN)
+   o->bgsw = AltN;        /* the focus starts on No: Enter presses the focused button */
   e_add_bttstr(4, o->ye-o->ya-2, 0, AltY, "Yes", NULL, o);
   e_add_bttstr((o->xe-o->xa-2)/2, o->ye-o->ya-2, 0, AltN, "No", NULL, o);
   e_add_bttstr(o->xe-o->xa-9, o->ye-o->ya-2, -1, WPE_ESC, "Cancel", NULL, o);
@@ -805,6 +814,26 @@ int e_message(int sw, char *str, FENSTER *f)
  ret = e_opt_kst_message(o);
  freeostr(o);
  return(ret == WPE_ESC ? WPE_ESC : (ret == AltN ? 'N' : 'Y'));
+}
+
+/*   message with selection        */
+int e_message(int sw, char *str, FENSTER *f)
+{
+ return(e_message_box(sw, str, f, sw ? AltY : AltO));
+}
+
+/**
+ * e_message_default_no - A question whose Enter answers No.
+ * @str: the question; @f: the window it is shown over.
+ * Return: 'Y', 'N', or WPE_ESC for Cancel and Esc.
+ *
+ * For a question whose Yes writes into a file that is not the one the user
+ * opened: a hand that presses Enter without reading it leaves that file as
+ * it is.  The box is e_message's, only the default differs.
+ */
+int e_message_default_no(char *str, FENSTER *f)
+{
+ return(e_message_box(1, str, f, AltN));
 }
 
 /* The question a folder's command gets: its frame, and the room it takes. */

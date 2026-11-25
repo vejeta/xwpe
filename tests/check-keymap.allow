@@ -149,7 +149,9 @@ we_wind.c:e_close_window:* 3 dialog field editing
 we_wind.c:e_ed_zoom:* 1 dialog field editing
 we_wind.c:e_error_read_answer:* 1 dialog field editing
 we_wind.c:e_error_run:* 2 dialog field editing
-we_wind.c:e_message:* 11 dialog field editing
+we_wind.c:e_message:* 2 dialog field editing
+we_wind.c:e_message_box:* 10 dialog field editing
+we_wind.c:e_message_default_no:* 3 dialog field editing
 we_wind.c:e_opt_sec_box:* 13 dialog field editing
 we_wind.c:e_pr_line:* 3 dialog field editing
 we_wind.c:e_schr_lst_wsv:* 4 dialog field editing

@@ -3961,22 +3961,91 @@ static void write_stream_confirm_stays(FILE *fp, WpeWriteOutcome *o)
  */
 FILE *wpe_write_stream_open_flags(const char *path, int flags, WpeWriteOutcome *o)
 {
+ return(wpe_write_stream_open_own(path, flags, NULL, NULL, o));
+}
+
+/**
+ * write_stream_kind - What a stream written into a file is for.
+ * @own: the identity of the file the caller holds, or NULL.
+ * Return: a save of that file when the caller holds one, else a copy.
+ *
+ * A save is what makes the owner compare the file at the name with the
+ * caller's (write_purpose_for_target); a copy never compares.  With nothing
+ * held a project list or an options file stays a copy of what was there, as
+ * it always was, and not a replace: no special bit is kept for it.
+ */
+static WriteAimKind write_stream_kind(const WpeFileIdentity *own)
+{
+ if (own != NULL && own->known)
+  return(WRITE_AIM_SAVE);
+ return(WRITE_AIM_COPY);
+}
+
+/**
+ * write_stream_policy - What a stream does when the name leads to another file.
+ * @own: the file the caller holds, or NULL; @asked: the file the user said
+ * Yes about, or NULL on the first pass; @accepted: room for the policy.
+ * Return: the policy: a copy when nothing is held, a stop to ask on the first
+ * pass, and, after a Yes, the file the user was asked about and no other.
+ */
+static const WriteReplacedPolicy *write_stream_policy(const WpeFileIdentity *own,
+                                                      const WpeFileIdentity *asked,
+                                                      WriteReplacedPolicy *accepted)
+{
+ if (own == NULL || !own->known)
+  return(&write_replaced_as_copy);
+ if (asked == NULL)
+  return(&write_replaced_ask);
+ accepted->how = WRITE_REPLACED_ACCEPTED;
+ accepted->asked = *asked;
+ return(accepted);
+}
+
+/**
+ * wpe_write_stream_open_own - wpe_write_stream_open_flags for a file the caller holds.
+ * @path, @flags, @o: as for wpe_write_stream_open_flags; @own: the file the
+ * caller read or wrote last (the open project's), or NULL or not known for a
+ * file it holds none of; @asked: the file the user said Yes about, or NULL.
+ * Return: the stream, or NULL (the outcome says why).
+ *
+ * What the user gets: a project list is never poured into another project's
+ * file because a checkout, a rename or a link changed what the name leads
+ * to.  When the file at the name is not the one held, nothing is opened or
+ * cut: the first pass (@asked NULL) sets o->ask_overwrite with the file in
+ * o->asked, and the caller asks the user and, on Yes, calls again with that
+ * identity in @asked.  A replacement that is a program, another user's file
+ * or not a regular file is refused (o->other_file), and a third file that took
+ * the name while the box was up is refused (o->changed_while_asked).  With
+ * nothing held it is the plain stream face.
+ *
+ * It is a Save in the owner's terms, but the stream never gives special bits
+ * back (only write_run_finish does): a bit the file had is taken off at the
+ * open, as for a copy, and file_stays says so, so t.keep is cleared here.
+ */
+FILE *wpe_write_stream_open_own(const char *path, int flags, const WpeFileIdentity *own,
+                                const WpeFileIdentity *asked, WpeWriteOutcome *o)
+{
  WriteSource s;
  WriteAim aim;
  WriteTarget t;
  WriteBackup bk;
+ WriteReplacedPolicy accepted;
+ const WriteReplacedPolicy *policy = write_stream_policy(own, asked, &accepted);
 
+ /* the policy is built before the outcome is cleared: a caller that kept
+    the file it asked about in the outcome of the first pass still names it */
  memset(o, 0, sizeof *o);
  o->status = WPE_WRITE_FAILED;
  write_set_path(o, path);
  write_source_text(&s, "", 0);
- write_aim_make(&aim, WRITE_AIM_COPY, NULL, &write_replaced_as_copy, write_open_how_of(flags));
+ write_aim_make(&aim, write_stream_kind(own), own, policy, write_open_how_of(flags));
  wpe_write_guard_enter();
  if (write_run_open(&s, path, 0, &aim, &t, &bk, o) != 0)
  {
   wpe_write_guard_leave();
   return(NULL);
  }
+ t.keep = 0;
  write_stream_read_back(&t, o);
  o->status = WPE_WRITE_WRITTEN;
  return(t.fp);
@@ -4004,8 +4073,33 @@ FILE *wpe_write_stream_open(const char *path, WpeWriteOutcome *o)
 }
 
 /**
+ * write_stream_take_written - Record the file a stream wrote, from its own descriptor.
+ * @fp: the stream, still open; @o: receives written.
+ *
+ * What the user gets: the holder that asked for the write (the open project)
+ * finds its own file unchanged at its next read, and asks nothing about a
+ * file the editor itself just wrote.  The record is made after the last byte
+ * and before the close, from the descriptor and never from the name (a name
+ * swapped meanwhile must not become the holder's file), and forgotten when
+ * the object is not a regular file.  After a failed flush the file is cut
+ * short and still that object, so it is taken too.
+ */
+static void write_stream_take_written(FILE *fp, WpeWriteOutcome *o)
+{
+ WpeSeen final;
+
+ if (wpe_seen_look_fd(fileno(fp), &final) != 0)
+ {
+  wpe_seen_forget(&o->written);
+  return;
+ }
+ write_look_after_text(&o->written, -1, &final);
+}
+
+/**
  * wpe_write_stream_close - End a stream of wpe_write_stream_open, judged.
- * @fp: the stream, closed here; @o: the outcome of the open, updated.
+ * @fp: the stream, closed here; @o: the outcome of the open, updated, with
+ * the file that was written in o->written (the descriptor's own look).
  * Return: 0 when every byte reached the file, else -1.
  *
  * The file was emptied when it was opened, so a failure here leaves it cut
@@ -4024,6 +4118,7 @@ int wpe_write_stream_close(FILE *fp, WpeWriteOutcome *o)
   err = EIO;
  if (err == 0)
   write_stream_confirm_stays(fp, o);
+ write_stream_take_written(fp, o);
  if (fclose(fp) != 0 && err == 0)
   err = write_error_number(errno);
  wpe_write_guard_leave();

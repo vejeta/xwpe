@@ -176,7 +176,7 @@ COPY|we_prog.c|e_make_arg|2|sized|the destination is allocated at its sources' l
 COPY|we_prog.c|e_add_arg|1|sized|the destination is allocated at its sources' length just before
 COPY|we_prog.c|e_project_name|1|sized|the destination is allocated at its sources' length just before
 COPY|we_prog.c|e_select_project|1|sized|the destination is allocated at its sources' length just before
-COPY|we_prog.c|e_read_var|3|sized|the destination is allocated at its sources' length just before
+COPY|we_prog.c|e_prj_parse_vars|3|sized|the destination is allocated at its sources' length just before
 COPY|we_prog.c|e_install_text|2|sized|the destination is allocated at its sources' length just before
 COPY|we_prog.c|e_install_run|2|sized|the destination is allocated at its sources' length just before
 COPY|we_prog.c|e_prj_setup|8|sized|the destination is allocated at its sources' length just before

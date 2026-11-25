@@ -1534,4 +1534,16 @@ xwpe marks a pane by the intent that opened it and never by the name it
 carries, so your file stays writable and keeps its own text.  The reason: a
 file's name is yours to choose, and only the editor opens the editor's own
 windows.
+
+@item A project file that another file replaced
+The original read and rewrote whatever file held the project's name, so a
+checkout that replaced @file{p.prj}, or a link put at its name, made the
+options box show another project's settings and made Add Item write this
+project's list into the other project's file.  xwpe remembers which file it
+read as the project and asks before it reads another file under that name
+(@kbd{Enter} reads it) or writes the list into one (@kbd{Enter} leaves it
+alone).  A Yes to the read is never a Yes to the write: the two are asked
+separately, even in one action such as closing the window.  The reason: a project file is often replaced by a rename, so a flat
+refusal would make the editor unusable after every checkout, and a silent
+write loses another project's list.
 @end table

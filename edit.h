@@ -1060,6 +1060,7 @@ void e_pr_x_col_kasten(int xa, int ya, int x, int y, FENSTER *f, int sw);
 /*   we_wind.c   */
 int e_error(char *text, int sw, FARBE *f);
 int e_message(int sw, char *str, FENSTER *f);
+int e_message_default_no(char *str, FENSTER *f);
 /* The one box for a path the system or the read owner refused:
    "Cannot open <what> <path>: <reason>.", or "<What> not found: <path>." for
    a name that does not exist, at the path's own length.  The errno form is a

@@ -3505,11 +3505,17 @@ static unsigned long ws_hash(const char *s)
  * Return: 0 with the path, -1 when it does not fit.
  *
  * Resolved, so the same project reached by two names has one conversation.
+ * The file the editor read as the project decides it: a checkout that turns
+ * the project's name into a link to another project's file does not give
+ * this project the other one's conversation.  A project named and never
+ * read has no such file, and its own name is resolved as before.
  */
 static int ws_session_project_file(char *place, size_t sz)
 {
  char real[WPE_PATH_SIZE];
+ const char *held = e_prj_hold_place();
 
+ if (held != NULL) return wpe_path_copy(place, sz, held);
  if (realpath(e_prog.project, real)) return wpe_path_copy(place, sz, real);
  return wpe_path_copy(place, sz, e_prog.project);
 }

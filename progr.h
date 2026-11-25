@@ -197,6 +197,10 @@ int e_read_var(FENSTER *f, WpeReadOutcome *why);
 #define E_PRJ_READ_LOWMEM     (-2)
 /* The box for a project the owner refused to read, or the system did. */
 void e_prj_say_not_opened(FENSTER *f, const char *path, const WpeReadOutcome *why);
+/* The open project's file resolved when the editor read it, the place its
+   conversation is kept for; NULL when the editor holds no file as the open
+   project (a project named and never read). */
+const char *e_prj_hold_place(void);
 
 /*   we_progn.c  */
 

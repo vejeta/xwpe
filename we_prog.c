@@ -40,7 +40,28 @@ int e_make_library(char *library, char *ofile, FENSTER *f,
                    e_build_cont done, void *data);
 int e_p_exec(FENSTER *f, PIC *pic, e_build_cont done, void *data);
 struct dirfile **e_make_prj_opt(FENSTER *f);
-static struct dirfile **e_make_prj_opt_read(FENSTER *f, WpeReadOutcome *why);
+
+/** What the user answered when the project's file is not the one the editor
+    holds: write or read it (YES), leave it alone (NO), or keep things as
+    they are (CANCEL: Esc or the Cancel button). */
+typedef enum {
+ E_PRJ_ANSWER_YES,
+ E_PRJ_ANSWER_NO,
+ E_PRJ_ANSWER_CANCEL
+} PrjAnswer;
+
+/** A question about the project's file, as the caller shapes it: @closing
+    is set by the path that closes the project's window, whose No closes it
+    without writing; @answer receives what the user answered. */
+typedef struct {
+ int       closing;
+ PrjAnswer answer;
+} PrjAsk;
+
+static struct dirfile **e_make_prj_opt_read(FENSTER *f, WpeReadOutcome *why, PrjAsk *ask);
+static FILE *e_prj_read_open(FENSTER *f, WpeReadOutcome *why, PrjAsk *ask);
+static char *e_prj_open_path(ECNT *cn);
+static void e_prj_hold_forget(void);
 
 int wfildes[2], efildes[2];
 char *wfile = NULL, *efile = NULL;
@@ -6561,9 +6582,15 @@ int e_find_dirty_project_window(ECNT *cn)
  * does not look for a typo that is not there.  The path is named whatever its
  * length (a folder's Project key can make it far longer than a line buffer)
  * and the box wraps it, so the reason after a long path is not cut off.
+ *
+ * Says nothing for WPE_READ_OTHER_FILE: only e_prj_read_open gives that
+ * reason, and it has asked the user about the file (or said the sentence)
+ * before it returned, so a second box would repeat the question's answer.
  */
 void e_prj_say_not_opened(FENSTER *f, const char *path, const WpeReadOutcome *why)
 {
+ if (why->why == WPE_READ_OTHER_FILE)
+  return;
  if (path[0] == '\0' && wpe_read_outcome_missing(why))
  {
   e_message(0, "Project file not found", f);
@@ -6580,18 +6607,32 @@ void e_prj_say_not_opened(FENSTER *f, const char *path, const WpeReadOutcome *wh
  * path is set.
  *
  * Judged by a look at the name, so a pipe or a device under the project's
- * name is told from its kind and nothing waits.
+ * name is told from its kind and nothing waits.  The name is the open
+ * path (a relative project is the file in its window's folder, the editor
+ * being the one desktop), so a ChDir does not make a menu say "No project
+ * open" for a project that is there.  It gates by kind only: no byte is
+ * read through it and no question is asked, the readers ask.
  */
 static int e_project_open_error(WpeReadOutcome *why)
 {
  WpeReadAsk ask = WPE_READ_ASK_PROJECT("project file");
+ char *path;
+ int ret;
 
  if (e_prog.project[0] == '\0')
  {
   wpe_read_outcome_errno(why, ENOENT);
   return(-1);
  }
- return(wpe_read_name_ok(e_prog.project, &ask, why));
+ path = (WpeEditor != NULL) ? e_prj_open_path(WpeEditor) : WpeStrdup(e_prog.project);
+ if (path == NULL)
+ {
+  wpe_read_outcome_errno(why, ENOMEM);
+  return(-1);
+ }
+ ret = wpe_read_name_ok(path, &ask, why);
+ FREE(path);
+ return(ret);
 }
 
 /**
@@ -6623,19 +6664,23 @@ int e_open_project_file(ECNT *cn)
  WpeReadOutcome why;
  int refused;
 
+ /* The user just named this file and it was judged: whatever an earlier
+    open of a project of this name held (a checkout since) is not asked about. */
+ e_prj_hold_forget();
  refused = e_project_open_error(&why) != 0;
  if (refused)
   e_prj_say_not_opened(f, e_prog.project, &why);
  else
  {
   e__project = 1;
-  (void)e_make_prj_opt_read(f, &why);
+  (void)e_make_prj_opt_read(f, &why, NULL);
   refused = why.why != WPE_READ_DONE;
   if (refused)
    e__project = 0;
  }
  if (refused)
  {
+  e_prj_hold_forget();
   e_prog.project[0] = '\0';
   return(WPE_ESC);
  }
@@ -6763,6 +6808,334 @@ static char *e_prj_open_path(ECNT *cn)
  if (i == 0 || e_prog.project[0] == DIRC)
   return(WpeStrdup(e_prog.project));
  return(e_mkfilename(cn->f[i]->dirct, e_prog.project));
+}
+
+/* --- the project hold ----------------------------------------------------
+   The open project is a second holder of what a window already has with the
+   write owner: the file it read.  Every read of the project's bytes asks the
+   read owner for that object, and the one writer of the project's list hands
+   it to the write owner as the file the project owns.  A name that leads to
+   another file is asked about, never read or written in silence. */
+
+/** The file the editor read as the open project. */
+typedef struct {
+ WpeFileIdentity file;   /* the object; known 0: nothing is held */
+ char           *path;   /* the path it was read by (e_prj_open_path), malloc'd */
+ char           *place;  /* that path resolved when the hold was taken: the
+                            place of the project's conversation */
+ WpeFileIdentity before; /* known 1: the file the editor itself read or wrote
+                            before the user said Yes to reading another one
+                            under the name; the write that follows is judged
+                            against it, so a Yes to the read is never a Yes to
+                            the write */
+} PrjHold;
+
+static PrjHold e_prj_hold;
+
+/**
+ * e_prj_hold_forget - The editor holds no file as the open project.
+ *
+ * Used when the user names another project, closes it, or a project is
+ * refused, so nothing of the old project is compared with the new one.
+ */
+static void e_prj_hold_forget(void)
+{
+ wpe_write_identity_forget(&e_prj_hold.file);
+ wpe_write_identity_forget(&e_prj_hold.before);
+ if (e_prj_hold.path != NULL)
+  FREE(e_prj_hold.path);
+ if (e_prj_hold.place != NULL)
+  FREE(e_prj_hold.place);
+ e_prj_hold.path = NULL;
+ e_prj_hold.place = NULL;
+}
+
+/**
+ * e_prj_hold_expect - The file to ask the owners for when the project is read or written.
+ * @path: the project's path now (e_prj_open_path).
+ * Return: the held file, or NULL when nothing is held or the hold was taken
+ * by another path (the user named another project: it is forgotten here).
+ *
+ * The path is compared here and not where the project's name is assigned,
+ * so no assignment of e_prog.project can leave a stale hold behind.
+ */
+static const WpeFileIdentity *e_prj_hold_expect(const char *path)
+{
+ if (!wpe_seen_known(&e_prj_hold.file))
+  return(NULL);
+ if (e_prj_hold.path == NULL || strcmp(e_prj_hold.path, path) != 0)
+ {
+  e_prj_hold_forget();
+  return(NULL);
+ }
+ return(&e_prj_hold.file);
+}
+
+/**
+ * e_prj_hold_expect_write - The file the project's write is judged against.
+ * @path: the project's path now (e_prj_open_path).
+ * Return: the file the editor itself read or wrote last, or NULL when
+ * nothing is held.
+ *
+ * What the user gets: after a Yes to reading another project's file under
+ * the name, the list is still not written over it unasked; the write
+ * question is its own, with No as the default.
+ */
+static const WpeFileIdentity *e_prj_hold_expect_write(const char *path)
+{
+ const WpeFileIdentity *held = e_prj_hold_expect(path);
+
+ if (held != NULL && wpe_seen_known(&e_prj_hold.before))
+  return(&e_prj_hold.before);
+ return(held);
+}
+
+/**
+ * e_prj_hold_take - The editor now holds this file as the open project.
+ * @seen: the file the editor read or wrote (the owner's report, never a look
+ * at the name); @path: the path it was reached by.
+ *
+ * The first read takes the hold, a read of the same file refreshes it, the
+ * project's own write replaces it with what the write owner reports, and a
+ * Yes to the question replaces it with the file the user was asked about.
+ * The place is the path resolved now, so the conversation follows the file
+ * the editor holds.
+ */
+static void e_prj_hold_take(const WpeSeen *seen, const char *path)
+{
+ char real[WPE_PATH_SIZE];
+ char *kept_path, *kept_place;
+
+ if (!seen->known)
+ {
+  e_prj_hold_forget();
+  return;
+ }
+ kept_path = WpeStrdup(path);
+ kept_place = WpeStrdup(realpath(path, real) != NULL ? real : path);
+ e_prj_hold_forget();
+ if (kept_path == NULL || kept_place == NULL)
+ {
+  if (kept_path != NULL) FREE(kept_path);
+  if (kept_place != NULL) FREE(kept_place);
+  return;
+ }
+ wpe_write_identity_set(&e_prj_hold.file, seen);
+ e_prj_hold.path = kept_path;
+ e_prj_hold.place = kept_place;
+}
+
+/**
+ * e_prj_hold_place - The place the open project's conversation is kept for.
+ * Return: the project file resolved when the editor read it, or NULL when
+ * the editor holds no file as the open project.
+ *
+ * What the user gets: a checkout that turns the project's name into a link
+ * to another project does not give this project the other one's
+ * conversation; the place follows the file the editor holds.
+ */
+const char *e_prj_hold_place(void)
+{
+ char *path;
+ const WpeFileIdentity *held;
+
+ if (WpeEditor == NULL || (path = e_prj_open_path(WpeEditor)) == NULL)
+  return(NULL);
+ held = e_prj_hold_expect(path);
+ FREE(path);
+ if (held == NULL)
+  return(NULL);
+ return(e_prj_hold.place);
+}
+
+/**
+ * e_prj_answer_of - The answer a message box gave.
+ * @key: what e_message or e_message_default_no returned.
+ */
+static PrjAnswer e_prj_answer_of(int key)
+{
+ if (key == 'Y')
+  return(E_PRJ_ANSWER_YES);
+ if (key == 'N')
+  return(E_PRJ_ANSWER_NO);
+ return(E_PRJ_ANSWER_CANCEL);
+}
+
+/** What the box says about the close, after the question. */
+#define E_PRJ_CLOSE_READ_TAIL \
+ "No closes the project window without writing: its list is lost and the file is left as it is. " \
+ "Cancel keeps the window."
+#define E_PRJ_CLOSE_WRITE_TAIL \
+ "No closes the project window and leaves the file as it is: the list in the window is lost. " \
+ "Cancel keeps the window."
+
+/**
+ * e_prj_ask_read_other - Ask whether to read the file that took the project's name.
+ * @f: the window the box is shown over; @path: the project's path; @why: the
+ * read owner's refusal (WPE_READ_OTHER_FILE and whether it is only unsure);
+ * @closing: the project's window is being closed.
+ * Return: the user's answer; Enter says Yes (reading changes nothing on
+ * disk, and a build still asks before it runs the new project's commands).
+ *
+ * What the user sees: the read owner's own sentence ("another file took the
+ * name", or "it changed or was replaced" when the file is only not proven the
+ * one read) and one question.  A checkout, vim and sed -i save by renaming,
+ * so a flat refusal would make the editor unusable after each of them.
+ */
+static PrjAnswer e_prj_ask_read_other(FENSTER *f, const char *path, const WpeReadOutcome *why,
+                                      int closing)
+{
+ char *said = wpe_read_say_dup("project file", path, why);
+ const char *question;
+ char *text;
+ int key;
+
+ if (said == NULL)
+  return(E_PRJ_ANSWER_CANCEL);
+ if (why->unsure)
+  question = "Read it as the project?";
+ else
+  question = "Read the file that is there now as the project?";
+ if (closing)
+  text = wpe_fmt_dup("%s %s %s", said, question, E_PRJ_CLOSE_READ_TAIL);
+ else
+  text = wpe_fmt_dup("%s %s", said, question);
+ FREE(said);
+ if (text == NULL)
+  return(E_PRJ_ANSWER_CANCEL);
+ key = e_message(1, text, f);
+ FREE(text);
+ return(e_prj_answer_of(key));
+}
+
+/**
+ * e_prj_ask_write_other - Ask whether to write the project list into the file that took its name.
+ * @f: the window the box is shown over; @path: the project's path; @unsure:
+ * the file is only not proven the one read; @closing: the project's window
+ * is being closed.
+ * Return: the user's answer; Enter says No, because Yes writes this
+ * project's list into a file that may be another project's.
+ */
+static PrjAnswer e_prj_ask_write_other(FENSTER *f, const char *path, int unsure, int closing)
+{
+ const char *slash = strrchr(path, DIRC);
+ const char *name = (slash != NULL) ? slash + 1 : path;
+ char *text;
+ int key;
+
+ if (unsure && closing)
+  text = wpe_fmt_dup("%s was changed or replaced since the project was opened. "
+                     "Write the project list anyway? %s", name, E_PRJ_CLOSE_WRITE_TAIL);
+ else if (unsure)
+  text = wpe_fmt_dup("%s was changed or replaced since the project was opened. "
+                     "Write the project list anyway?", name);
+ else if (closing)
+  text = wpe_fmt_dup("%s was replaced on disk since the project was opened. "
+                     "Write the project list over it? %s", name, E_PRJ_CLOSE_WRITE_TAIL);
+ else
+  text = wpe_fmt_dup("%s was replaced on disk since the project was opened. "
+                     "Write the project list over it?", name);
+ if (text == NULL)
+  return(E_PRJ_ANSWER_CANCEL);
+ key = e_message_default_no(text, f);
+ FREE(text);
+ return(e_prj_answer_of(key));
+}
+
+/**
+ * e_prj_read_held - Open the project's file for reading, as the file the editor holds.
+ * @path: the project's path; @why: receives the outcome.
+ * Return: the stream, or NULL (WPE_READ_OTHER_FILE when the name leads to
+ * another file than the one held).
+ */
+static FILE *e_prj_read_held(const char *path, WpeReadOutcome *why)
+{
+ const WpeFileIdentity *held = e_prj_hold_expect(path);
+ WpeReadAsk ask = WPE_READ_ASK_PROJECT("project file");
+
+ if (held != NULL)
+  ask = WPE_READ_ASK_PROJECT_SEEN("project file", held);
+ return(wpe_read_stream_open(path, &ask, why));
+}
+
+/**
+ * e_prj_read_asked - Read the file the user said Yes about, and no other.
+ * @f: the window a refusal is said in; @path: the project's path; @asked: the
+ * file the user was asked about; @why: receives the outcome.
+ * Return: the stream, which became the held file, or NULL.
+ *
+ * A third file that took the name while the box was up is refused with its
+ * sentence and not asked about again: a Yes about one file is never an
+ * answer about another.
+ */
+static FILE *e_prj_read_asked(FENSTER *f, const char *path, const WpeSeen *asked,
+                              WpeReadOutcome *why)
+{
+ WpeReadAsk ask = WPE_READ_ASK_PROJECT_SEEN("project file", asked);
+ WpeFileIdentity before;
+ const WpeFileIdentity *held = e_prj_hold_expect(path);
+ FILE *fp;
+
+ wpe_write_identity_forget(&before);
+ if (held != NULL)
+  wpe_write_identity_set(&before, held);
+ e_prj_hold_forget();
+ fp = wpe_read_stream_open(path, &ask, why);
+ if (fp != NULL)
+ {
+  e_prj_hold_take(&why->seen, path);
+  if (wpe_seen_known(&before))
+   wpe_write_identity_set(&e_prj_hold.before, &before);
+ }
+ else if (why->why == WPE_READ_OTHER_FILE)
+  e_say_read_refused(f, "project file", path, why);
+ return(fp);
+}
+
+/**
+ * e_prj_read_open - Open the open project's file for reading: the file the
+ * editor read as the project, or the file the user said Yes about, and no other.
+ * @f: a window of the desktop; @why: receives the outcome; @ask: how a
+ * question is shaped and where its answer goes, or NULL.
+ * Return: the stream (closed with fclose), or NULL: @why says who refused,
+ * WPE_READ_OTHER_FILE when the user was asked and left the file alone or a
+ * third file took the name, which this function has already said.
+ *
+ * The one opener of the project's bytes.  The file is named by the open
+ * path (a relative project is the file in its window's folder, never the
+ * editor's working folder).  The first read takes the hold, a read of the
+ * same file refreshes it, and a name that now leads to another file is asked
+ * about once: the sentence of the read owner and a question, Yes reading the
+ * file that is there now (and holding it from then on), No leaving things as
+ * they are.  The next operation asks again, because the name may be put
+ * right meanwhile.
+ */
+static FILE *e_prj_read_open(FENSTER *f, WpeReadOutcome *why, PrjAsk *ask)
+{
+ char *path = e_prj_open_path(f->ed);
+ WpeSeen asked;
+ PrjAnswer answer;
+ FILE *fp;
+
+ if (path == NULL)
+ {
+  wpe_read_outcome_errno(why, ENOMEM);
+  return(NULL);
+ }
+ fp = e_prj_read_held(path, why);
+ if (fp != NULL)
+  e_prj_hold_take(&why->seen, path);
+ else if (why->why == WPE_READ_OTHER_FILE)
+ {
+  asked = why->seen;       /* the second read clears the outcome it is read into */
+  answer = e_prj_ask_read_other(f, path, why, ask != NULL && ask->closing);
+  if (ask != NULL)
+   ask->answer = answer;
+  if (answer == E_PRJ_ANSWER_YES)
+   fp = e_prj_read_asked(f, path, &asked, why);
+ }
+ FREE(path);
+ return(fp);
 }
 
 /**
@@ -6989,7 +7362,10 @@ int e_show_project(FENSTER *f)
   e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
  else
  {
-  e_make_prj_opt(f);
+  /* A project the user would not read, or that could not be read, was said
+     or asked once: no window opens on settings the editor made up. */
+  if (!e_make_prj_opt(f))
+   return(0);
   e_prj_ob_file(f);
  }
  return(0);
@@ -7003,6 +7379,7 @@ int e_cl_project(FENSTER *f)
     box said why. */
  if (e_prj_close_window(cn) == WPE_ESC)
   return(WPE_ESC);
+ e_prj_hold_forget();
  e__project = 0;
  e_pr_uul(cn->fb);
  return(0);
@@ -7025,7 +7402,8 @@ int e_p_add_item(FENSTER *f)
  {
   FLWND *fw;
 
-  e_make_prj_opt(f);
+  if (!e_make_prj_opt(f))
+   return(0);
   e_prj_ob_file(f);
   fw = e_window_list(cn->f[cn->mxedt]);
   fw->nf = wpe_listsel_sentinel_row(fw->df);
@@ -8172,30 +8550,22 @@ static void e_prj_value_drop_newline(char *value)
 }
 
 /**
- * e_read_var - Read the open project's variables into p_v.
- * @f: a window of the desktop; @why: receives the refusal, or NULL.
- * Return: 0 when read; E_PRJ_READ_NOT_OPENED when the read owner refused the
- * file (a pipe or a device under the name, a file over the project bound, the
- * system's refusal: @why says which, nothing was said); or E_PRJ_READ_LOWMEM
- * when memory ran out (the box was already shown).
+ * e_prj_parse_vars - Read the variables of a project stream into p_v.
+ * @f: a window of the desktop; @fp: the project's bytes, open and at their
+ * start (the caller closes it).
+ * Return: 0 when read, or E_PRJ_READ_LOWMEM when memory ran out (the box was
+ * already shown).
  *
- * A caller that tells the user the file was not opened hands @why to
- * e_prj_say_not_opened, so the box carries the real reason.
+ * The one parse of the project's variables.  It reads the stream it is given
+ * and opens nothing, so the caller that read the project once asks the user
+ * about the file once and parses that object, not a second open of the name.
  */
-int e_read_var(FENSTER *f, WpeReadOutcome *why)
+static int e_prj_parse_vars(FENSTER *f, FILE *fp)
 {
  struct proj_var **tmp;
- FILE *fp;
  char str[256], *sp1, *sp2, *stmp;
  int i;
- WpeReadAsk ask = WPE_READ_ASK_PROJECT("project file");
- WpeReadOutcome refused;
 
- if ((fp = wpe_read_stream_open(e_prog.project, &ask, &refused)) == NULL)
- {
-  if (why) *why = refused;
-  return(E_PRJ_READ_NOT_OPENED);
- }
  if (p_v)
  {
   for (i = 0; i < p_v_n; i++)
@@ -8212,7 +8582,7 @@ int e_read_var(FENSTER *f, WpeReadOutcome *why)
  }
  p_v_n = 0;
  if (!(p_v = MALLOC(sizeof(struct proj_var *))))
- {  fclose(fp);  e_error(e_msg[ERR_LOWMEM], 0, f->fb);  return(E_PRJ_READ_LOWMEM);  }
+ {  e_error(e_msg[ERR_LOWMEM], 0, f->fb);  return(E_PRJ_READ_LOWMEM);  }
  while (fgets(str, 256, fp))
  {
   for (i = 0; isspace(str[i]); i++);
@@ -8231,15 +8601,15 @@ int e_read_var(FENSTER *f, WpeReadOutcome *why)
   for (sp2++; isspace(*sp2) && *sp2 != '\n'; sp2++);
   p_v_n++;
   if (!(p_v = REALLOC(tmp = p_v, sizeof(struct proj_var *) * p_v_n)))
-  {  p_v = tmp;  fclose(fp);  e_error(e_msg[ERR_LOWMEM], 0, f->fb);  return(E_PRJ_READ_LOWMEM);  }
+  {  p_v = tmp;  e_error(e_msg[ERR_LOWMEM], 0, f->fb);  return(E_PRJ_READ_LOWMEM);  }
   if (!(p_v[p_v_n-1] = MALLOC(sizeof(struct proj_var))))
-  {  fclose(fp);  e_error(e_msg[ERR_LOWMEM], 0, f->fb);  return(E_PRJ_READ_LOWMEM);  }
+  {  e_error(e_msg[ERR_LOWMEM], 0, f->fb);  return(E_PRJ_READ_LOWMEM);  }
   p_v[p_v_n-1]->raw = NULL;
   if (!(p_v[p_v_n-1]->var = MALLOC((strlen(sp1)+1) * sizeof(char))))
-  {  fclose(fp);  e_error(e_msg[ERR_LOWMEM], 0, f->fb);  return(E_PRJ_READ_LOWMEM);  }
+  {  e_error(e_msg[ERR_LOWMEM], 0, f->fb);  return(E_PRJ_READ_LOWMEM);  }
   strcpy(p_v[p_v_n-1]->var, sp1);
   if (!(p_v[p_v_n-1]->string = MALLOC((strlen(sp2)+1) * sizeof(char))))
-  {  fclose(fp);  e_error(e_msg[ERR_LOWMEM], 0, f->fb);  return(E_PRJ_READ_LOWMEM);  }
+  {  e_error(e_msg[ERR_LOWMEM], 0, f->fb);  return(E_PRJ_READ_LOWMEM);  }
   strcpy(p_v[p_v_n-1]->string, sp2);
   while (e_prj_value_wants_more(p_v[p_v_n-1]->string))
   {
@@ -8249,7 +8619,7 @@ int e_read_var(FENSTER *f, WpeReadOutcome *why)
 		(strlen(p_v[p_v_n-1]->string)+strlen(str)+1) * sizeof(char))))
    {
     p_v[p_v_n-1]->string = stmp;
-    fclose(fp);  e_error(e_msg[ERR_LOWMEM], 0, f->fb);  return(E_PRJ_READ_LOWMEM);
+    e_error(e_msg[ERR_LOWMEM], 0, f->fb);  return(E_PRJ_READ_LOWMEM);
    }
    strcat(p_v[p_v_n-1]->string, str);
   }
@@ -8259,8 +8629,36 @@ int e_read_var(FENSTER *f, WpeReadOutcome *why)
   p_v[p_v_n-1]->raw = WpeStrdup(p_v[p_v_n-1]->string);
   p_v[p_v_n-1]->string = e_expand_var(p_v[p_v_n-1]->string, f);
  }
- fclose(fp);
  return(0);
+}
+
+/**
+ * e_read_var - Read the open project's variables into p_v.
+ * @f: a window of the desktop; @why: receives the refusal, or NULL.
+ * Return: 0 when read; E_PRJ_READ_NOT_OPENED when the project was not read (a
+ * pipe or a device under the name, a file over the project bound, the
+ * system's refusal, or another file than the one the editor read, which the
+ * user was asked about and left alone: @why says which); or
+ * E_PRJ_READ_LOWMEM when memory ran out (the box was already shown).
+ *
+ * A caller that tells the user the file was not opened hands @why to
+ * e_prj_say_not_opened, so the box carries the real reason, and says nothing
+ * for a file the user was asked about.
+ */
+int e_read_var(FENSTER *f, WpeReadOutcome *why)
+{
+ FILE *fp;
+ int ret;
+ WpeReadOutcome refused;
+
+ if ((fp = e_prj_read_open(f, &refused, NULL)) == NULL)
+ {
+  if (why) *why = refused;
+  return(E_PRJ_READ_NOT_OPENED);
+ }
+ ret = e_prj_parse_vars(f, fp);
+ fclose(fp);
+ return(ret);
 }
 
 static int e_install_run(FENSTER *f);
@@ -8456,11 +8854,10 @@ static int e_install_run(FENSTER *f)
  FILE *fp;
  int i, j, ret;
  e_install_list lines = {NULL, 0};
- WpeReadAsk ask = WPE_READ_ASK_PROJECT("project file");
  WpeReadOutcome why;
 
  if (!e__project) return(0);
- if ((fp = wpe_read_stream_open(e_prog.project, &ask, &why)) == NULL)
+ if ((fp = e_prj_read_open(f, &why, NULL)) == NULL)
  {
   e_prj_say_not_opened(f, e_prog.project, &why);
   return(WPE_ESC);
@@ -9865,34 +10262,42 @@ static struct dirfile **e_make_prj_opt_finish(struct dirfile *save_df)
 /**
  * e_make_prj_opt_read - Read the open project's lists and settings, and say who refused.
  * @f: a window of the desktop; @why: receives the read owner's outcome,
- * WPE_READ_DONE when the project was read.
+ * WPE_READ_DONE when the project was read; @ask: what the user is asked
+ * and what he answered, or NULL (see e_prj_read_open).
  * Return: the three project lists, as e_make_prj_opt.
  *
- * A project the owner refuses (a pipe, a device, a file over the bound, the
- * system's refusal) is said once in a box, and @why tells the caller that no
- * project was read, so it does not open a window on defaults.
+ * The project is opened once, before anything of the open project is torn
+ * down, and both parses (the variables, then the install lines) read that
+ * one stream.  A project the owner refuses (a pipe, a device, a file over
+ * the bound, the system's refusal) or that the user would not read (another
+ * file took the name) is said once in a box, and @why tells the caller that
+ * no project was read: the lists and the settings are left as they were, and
+ * the caller stops instead of opening a window or a box on defaults.
  */
-static struct dirfile **e_make_prj_opt_read(FENSTER *f, WpeReadOutcome *why)
+static struct dirfile **e_make_prj_opt_read(FENSTER *f, WpeReadOutcome *why, PrjAsk *ask)
 {
  int i, j, ret;
  char **tmp, *sp, *tp, text[256];
  FILE *fp;
  struct dirfile *save_df = NULL;
- WpeReadAsk ask = WPE_READ_ASK_PROJECT("project file");
 
  memset(why, 0, sizeof *why);
+ if ((fp = e_prj_read_open(f, why, ask)) == NULL)
+ {
+  e_prj_say_not_opened(f, e_prog.project, why);
+  return(e_p_df);
+ }
  i = e_find_dirty_project_window(f->ed);
  if (i > 0) {  save_df = e_p_df[0];  e_p_df[0] = NULL;  }
  if (e_p_df) freedfN(e_p_df, 3);
  e_p_df = MALLOC(3 * sizeof(struct dirfile *));
- if (!e_p_df) return(e_p_df);
+ if (!e_p_df) {  fclose(fp);  return(e_p_df);  }
  for (i = 0; i < 3; i++) e_p_df[i] = NULL;
  e_s_prog.comp_sw = 0;
- ret = e_read_var(f, why);
- if (ret == E_PRJ_READ_NOT_OPENED)
-  e_prj_say_not_opened(f, e_prog.project, why);
+ ret = e_prj_parse_vars(f, fp);
  if (ret)
  {
+  fclose(fp);
   if (e_s_prog.compiler) FREE(e_s_prog.compiler);
   e_s_prog.compiler = WpeStrdup("gcc");
   if (e_s_prog.comp_str) FREE(e_s_prog.comp_str);
@@ -9906,8 +10311,8 @@ static struct dirfile **e_make_prj_opt_read(FENSTER *f, WpeReadOutcome *why)
   e_prj_library_set("");
   return(e_make_prj_opt_finish(save_df));
  }
- if (!(e_p_df[1] = wpe_listsel_new_empty())) return(e_make_prj_opt_finish(save_df));
- if (!(e_p_df[2] = wpe_listsel_new_empty())) return(e_make_prj_opt_finish(save_df));
+ if (!(e_p_df[1] = wpe_listsel_new_empty())) {  fclose(fp);  return(e_make_prj_opt_finish(save_df));  }
+ if (!(e_p_df[2] = wpe_listsel_new_empty())) {  fclose(fp);  return(e_make_prj_opt_finish(save_df));  }
  for (i = 0; i < p_v_n; i++)
  {
   if (!strcmp(p_v[i]->var, "CMP"))
@@ -9964,10 +10369,10 @@ static struct dirfile **e_make_prj_opt_read(FENSTER *f, WpeReadOutcome *why)
    e_p_df[1]->anz++;
    if (!(e_p_df[1]->name = REALLOC(tmp =
 				e_p_df[1]->name, e_p_df[1]->anz * sizeof(char *))))
-   {  e_p_df[1]->anz--;  e_p_df[1]->name = tmp;  return(e_make_prj_opt_finish(save_df));  }
+   {  e_p_df[1]->anz--;  e_p_df[1]->name = tmp;  fclose(fp);  return(e_make_prj_opt_finish(save_df));  }
    if (!(e_p_df[1]->name[e_p_df[1]->anz-1] =
 			wpe_fmt_dup("%s=%s", p_v[i]->var, p_v[i]->string)))
-   {  e_p_df[1]->anz--;  return(e_make_prj_opt_finish(save_df));  }
+   {  e_p_df[1]->anz--;  fclose(fp);  return(e_make_prj_opt_finish(save_df));  }
   }
  }
  if (!e_s_prog.compiler)
@@ -9984,11 +10389,7 @@ static struct dirfile **e_make_prj_opt_read(FENSTER *f, WpeReadOutcome *why)
  }
  if (!e_s_prog.intstr)
   e_s_prog.intstr = WpeStrdup(cc_intstr);
- if ((fp = wpe_read_stream_open(e_prog.project, &ask, why)) == NULL)
- {
-  e_prj_say_not_opened(f, e_prog.project, why);
-  return(e_make_prj_opt_finish(save_df));
- }
+ rewind(fp);
  while ((tp = fgets(text, 256, fp)))
  {
   if (text[0] == '\t') continue;
@@ -10049,16 +10450,22 @@ static struct dirfile **e_make_prj_opt_read(FENSTER *f, WpeReadOutcome *why)
 /**
  * e_make_prj_opt - Read the open project's lists and settings.
  * @f: a window of the desktop.
- * Return: the three project lists, or NULL when memory ran out.
+ * Return: the three project lists, or NULL when memory ran out or the
+ * project was not read.
  *
- * A refused project is said in a box by the reader; the lists are then the
- * defaults, as for a project with nothing in it.
+ * A refused project, or one the user would not read because another file
+ * took the name, is said (or asked) once in a box by the reader and gives
+ * NULL: the settings and lists are left as they were, and the caller stops
+ * instead of working on defaults it would then write into the file.
  */
 struct dirfile **e_make_prj_opt(FENSTER *f)
 {
  WpeReadOutcome why;
+ struct dirfile **lists = e_make_prj_opt_read(f, &why, NULL);
 
- return(e_make_prj_opt_read(f, &why));
+ if (why.why != WPE_READ_DONE)
+  return(NULL);
+ return(lists);
 }
 
 int freedfN(struct dirfile **df, int n)
@@ -10114,37 +10521,50 @@ static void e_prj_say_write_refused(FENSTER *f, const WpeWriteOutcome *o)
 }
 
 /**
- * e_wrt_prj_fl - Write the open project's list and settings to its .prj.
- * @f: a window of the desktop.
- * Return: 0 when the file holds the project, -1 when not.
+ * e_prj_write_open - Open the project's file for the list, asking when it is another file.
+ * @f: a window of the desktop; @path: the project's file; @ask: how a
+ * question is shaped and where its answer goes, or NULL; @o: receives the
+ * outcome.
+ * Return: the stream, or NULL (the outcome says why; a user who was asked
+ * and did not say Yes leaves o->status WPE_WRITE_DECLINED and nothing was
+ * opened or cut).
  *
- * A file the system refuses is told with its reason (a read-only .prj, a
- * full disk) and "The project list is still in its window.", so the user
- * knows the edits are not lost.  The caller keeps the project window open
- * on -1.  Running out of memory for the path says so and writes nothing.
- * A link at the name of a project a start folder's xwperc named is refused
- * (e_prj_write_flags).
+ * What the user gets: a project list is written into the file the editor
+ * read as the project, or into one the user said Yes about, and into no
+ * other (a checkout, a rename or a link may have put another project's file
+ * under the name).  The first pass writes nothing when the name leads to
+ * another file; after a Yes the second pass writes only the file the user
+ * was asked about.
  */
-int e_wrt_prj_fl(FENSTER *f)
+static FILE *e_prj_write_open(FENSTER *f, const char *path, PrjAsk *ask, WpeWriteOutcome *o)
+{
+ FILE *fp = wpe_write_stream_open_own(path, e_prj_write_flags(), e_prj_hold_expect_write(path), NULL, o);
+ WpeFileIdentity asked;
+ PrjAnswer answer;
+
+ if (fp != NULL || !o->ask_overwrite)
+  return(fp);
+ asked = o->asked;           /* the second pass clears the outcome the file was named in */
+ answer = e_prj_ask_write_other(f, path, o->unsure, ask != NULL && ask->closing);
+ if (ask != NULL)
+  ask->answer = answer;
+ if (answer != E_PRJ_ANSWER_YES)
+ {
+  o->ask_overwrite = 0;
+  o->status = WPE_WRITE_DECLINED;
+  return(NULL);
+ }
+ return(wpe_write_stream_open_own(path, e_prj_write_flags(), e_prj_hold_expect_write(path), &asked, o));
+}
+
+/**
+ * e_prj_print_list - Print the open project's list and settings into its stream.
+ * @fp: the stream of the project's file, open for the write.
+ */
+static void e_prj_print_list(FILE *fp)
 {
  int i, len;
- FILE *fp;
- char *path;
- WpeWriteOutcome o;
 
- path = e_prj_open_path(f->ed);
- if (path == NULL)
- {
-  e_error(e_msg[ERR_LOWMEM], 0, f->fb);
-  return(-1);
- }
- fp = wpe_write_stream_open_flags(path, e_prj_write_flags(), &o);
- FREE(path);
- if (fp == NULL)
- {
-  e_prj_say_write_refused(f, &o);
-  return(-1);
- }
  fprintf(fp, "#\n# xwpe - project-file: %s\n", e_prog.project);
  fprintf(fp, "# created by xwpe version %s\n#\n", VERSION);
  for (i = 0; i < wpe_listsel_count(e_p_df[1], 1); i++)
@@ -10213,21 +10633,92 @@ int e_wrt_prj_fl(FENSTER *f)
   fprintf(fp, "\ninstall:\n");
  for (i = 0; i < wpe_listsel_count(e_p_df[2], 1); i++)
   fprintf(fp, "\t%s\n", wpe_listsel_entry(e_p_df[2], i, 1));
+}
+
+/**
+ * e_prj_write - Write the open project's list and settings to its .prj.
+ * @f: a window of the desktop; @ask: how a question about another file is
+ * shaped and where its answer goes, or NULL.
+ * Return: 0 when the file holds the project, -1 when not.
+ *
+ * The one writer of the project's file.  It hands the hold to the write
+ * owner as the file the project owns, and takes back the file the owner
+ * reports it wrote, so the editor's own save is never taken for another
+ * file by its next read.
+ */
+static int e_prj_write(FENSTER *f, PrjAsk *ask)
+{
+ FILE *fp;
+ char *path;
+ WpeWriteOutcome o;
+ int ret = 0;
+
+ path = e_prj_open_path(f->ed);
+ if (path == NULL)
+ {
+  e_error(e_msg[ERR_LOWMEM], 0, f->fb);
+  return(-1);
+ }
+ fp = e_prj_write_open(f, path, ask, &o);
+ if (fp == NULL)
+ {
+  if (o.status != WPE_WRITE_DECLINED)
+   e_prj_say_write_refused(f, &o);
+  FREE(path);
+  return(-1);
+ }
+ e_prj_print_list(fp);
  if (wpe_write_stream_close(fp, &o) != 0)
  {
   wpe_write_say(f, &o, WPE_WRITE_THEN_PROJECT_KEPT);
-  return(-1);
+  ret = -1;
  }
- return(0);
+ e_prj_hold_take(&o.written, path);
+ FREE(path);
+ return(ret);
+}
+
+/**
+ * e_wrt_prj_fl - Write the open project's list and settings to its .prj.
+ * @f: a window of the desktop.
+ * Return: 0 when the file holds the project, -1 when not.
+ *
+ * A file the system refuses is told with its reason (a read-only .prj, a
+ * full disk) and "The project list is still in its window.", so the user
+ * knows the edits are not lost.  The caller keeps the project window open
+ * on -1.  Running out of memory for the path says so and writes nothing.
+ * A link at the name of a project a start folder's xwperc named is refused
+ * (e_prj_write_flags).  When the name leads to another file than the one
+ * the editor read as the project the user is asked, and No leaves that file
+ * as it is (-1).
+ */
+int e_wrt_prj_fl(FENSTER *f)
+{
+ return(e_prj_write(f, NULL));
+}
+
+/**
+ * e_prj_update - Read the project's settings, then write its list.
+ * @f: a window of the desktop; @ask: as for e_prj_write.
+ * Return: 0 when the file holds the list, -1 when the project was not read
+ * or the list was not written (the user was told or asked).
+ *
+ * Stops at the first refusal: a project the user would not read, or could
+ * not be read, is never written over with settings the editor made up.
+ */
+static int e_prj_update(FENSTER *f, PrjAsk *ask)
+{
+ WpeReadOutcome why;
+ struct dirfile **lists = e_make_prj_opt_read(f, &why, ask);
+
+ if (why.why != WPE_READ_DONE || lists == NULL)
+  return(-1);
+ return(e_prj_write(f, ask));
 }
 
 int e_p_update_prj_fl(FENSTER *f)
 {
- if(!e_make_prj_opt(f))
-  return(-1);
- if(e_wrt_prj_fl(f))
-  return(-1);
- return(0);
+ return(e_prj_update(f, NULL));
 }
 
 /**
@@ -10261,13 +10752,27 @@ int e_prj_persist(FENSTER *f)
  * The window stays open on a failure, with the box already shown, so the
  * edits are not thrown away; fixing the file and closing again writes them.
  * Called by both close paths, so the list is written once per close.
+ *
+ * When the project's file is not the one the editor read (a checkout or a
+ * rename put another file under the name) the box has three answers: Yes
+ * reads or writes that file, No closes the window and leaves the file as it
+ * is (the list in the window is lost, and the box says so), Cancel keeps the
+ * window.  So a project that cannot be written is never one that cannot be
+ * closed.
  */
 int e_prj_save_before_close(FENSTER *f)
 {
+ PrjAsk ask = { 1, E_PRJ_ANSWER_YES };
+
  if (!f->save)
   return(0);
- if (e_p_update_prj_fl(f) != 0)
-  return(-1);
+ if (e_prj_update(f, &ask) != 0)
+ {
+  if (ask.answer != E_PRJ_ANSWER_NO)
+   return(-1);
+  f->save = 0;       /* No: the user chose to close without writing */
+  return(0);
+ }
  f->save = 0;
  return(0);
 }

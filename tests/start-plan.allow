@@ -82,7 +82,7 @@ we_prog.c|e_project_options|1|keep|Project-Options edits the values
 we_prog.c|e_run_c_options|4|keep|the Compiler dialog edits the values
 we_prog.c|e_prog_fields_of|1|keep|the Compiler dialog compares the values
 we_prog.c|e_prog_note_typed_compile|1|keep|a value the user typed counts as his
-we_prog.c|e_wrt_prj_fl|1|keep|the project file being written
+we_prog.c|e_prj_print_list|1|keep|the project file being written
 we_progn.c|e_program_opt|12|keep|Programming-Options edits the values
 we_progn.c|e_find_def|1|keep|the editor reads headers along IncludePath for its own header tracking
 we_term.c|WpeDllInit|1|keep|the console fills its shell slot
