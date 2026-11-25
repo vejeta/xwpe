@@ -625,6 +625,7 @@ test_interpose_LDFLAGS = $(TEST_EXPORT_DYNAMIC)
 check_PROGRAMS += test_seen
 test_seen_SOURCES = tests/test_seen.c tests/seen_rows.h tests/testdir.h we_seen.c we_fmt.c
 test_seen_CFLAGS = $(TEST_CFLAGS)
+test_seen_LDFLAGS = $(TEST_EXPORT_DYNAMIC)
 
 # The owner of "a file is read by a name the editor did not choose"
 # (we_read.c): every kind of object under a name, with the link policy, the

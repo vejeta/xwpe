@@ -192,4 +192,48 @@ static inline void *wpe_interpose_real(const char *cname, void *hook)
 /** The function behind the hook of this name, typed as the hook is. */
 #define WPE_REAL(hook) ((__typeof__(&(hook)))wpe_interpose_real(#hook, (void *)(hook)))
 
+/*
+ * The fortified twins.  Built with _FORTIFY_SOURCE, as the CI's compiler and
+ * a distribution's package build do, glibc turns a call whose buffer size it
+ * knows into a checked twin (read into __read_chk, readlink into
+ * __readlink_chk, ttyname_r into __ttyname_r_chk, open and openat without a
+ * mode into __open_2 and __openat_2).  The product then never reaches a hook
+ * of the plain name, and a row that depends on the hook passes or fails for
+ * the wrong reason ("a grown file" read whole: CI run 45582068519).
+ *
+ * A test that hooks one of these names places the matching WPE_HOOK_TWIN_*
+ * after its hook: the twin checks nothing more and passes to the hook, so the
+ * product reaches the hook whichever spelling it was compiled to.  Where the
+ * library has no such twin the macro is empty.  tests/check-interpose.sh
+ * refuses a hook of these names without its twin.
+ */
+#if defined(__GLIBC__)
+# define WPE_HOOK_TWIN_READ \
+ ssize_t __read_chk(int fd, void *buf, size_t n, size_t buflen); \
+ ssize_t __read_chk(int fd, void *buf, size_t n, size_t buflen) \
+ { (void)buflen; return(read(fd, buf, n)); }
+# define WPE_HOOK_TWIN_READLINK \
+ ssize_t __readlink_chk(const char *path, char *buf, size_t n, size_t buflen); \
+ ssize_t __readlink_chk(const char *path, char *buf, size_t n, size_t buflen) \
+ { (void)buflen; return(readlink(path, buf, n)); }
+# define WPE_HOOK_TWIN_TTYNAME_R \
+ int __ttyname_r_chk(int fd, char *buf, size_t n, size_t buflen); \
+ int __ttyname_r_chk(int fd, char *buf, size_t n, size_t buflen) \
+ { (void)buflen; return(ttyname_r(fd, buf, n)); }
+# define WPE_HOOK_TWIN_OPEN \
+ int __open_2(const char *path, int flags); \
+ int __open_2(const char *path, int flags) \
+ { return(open(path, flags)); }
+# define WPE_HOOK_TWIN_OPENAT \
+ int __openat_2(int dirfd, const char *path, int flags); \
+ int __openat_2(int dirfd, const char *path, int flags) \
+ { return(openat(dirfd, path, flags)); }
+#else
+# define WPE_HOOK_TWIN_READ
+# define WPE_HOOK_TWIN_READLINK
+# define WPE_HOOK_TWIN_TTYNAME_R
+# define WPE_HOOK_TWIN_OPEN
+# define WPE_HOOK_TWIN_OPENAT
+#endif
+
 #endif /* WPE_TEST_INTERPOSE_H */

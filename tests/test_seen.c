@@ -26,6 +26,7 @@
 
 #include "../we_seen.h"
 #include "seen_rows.h"
+#include "interpose.h"
 
 #define BASE_DEV   7
 #define BASE_INO   100
@@ -184,6 +185,8 @@ ssize_t readlink(const char *path, char *buf, size_t size)
   got--;
  return(got);
 }
+
+WPE_HOOK_TWIN_READLINK
 
 int fstat(int fd, struct stat *st)
 {

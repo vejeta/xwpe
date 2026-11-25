@@ -1202,15 +1202,7 @@ int open(const char *path, int flags, ...)
  return(open_hooked(path, flags, mode));
 }
 
-#ifdef __USE_FORTIFY_LEVEL
-#if __USE_FORTIFY_LEVEL > 0
-/** The fortified open with no mode: the same hook as open. */
-int __open_2(const char *path, int flags)
-{
- return(open_hooked(path, flags, 0));
-}
-#endif
-#endif
+WPE_HOOK_TWIN_OPEN
 
 /* ftruncate and fcntl, watched: an armed ftruncate fails with EPERM, and the
    Nth duplication of a descriptor (F_DUPFD_CLOEXEC) fails with EMFILE, so a

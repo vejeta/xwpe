@@ -90,6 +90,28 @@ scan_links() {
   done
 }
 
+# The hooks glibc's _FORTIFY_SOURCE can bypass, each with the twin macro of
+# tests/interpose.h that must follow it: "name TWIN_MACRO".
+FORTIFIED_HOOKS='read WPE_HOOK_TWIN_READ
+readlink WPE_HOOK_TWIN_READLINK
+ttyname_r WPE_HOOK_TWIN_TTYNAME_R
+open WPE_HOOK_TWIN_OPEN
+openat WPE_HOOK_TWIN_OPENAT'
+
+# scan_rule4 FILE NAME: rule 4, a test defines a hook of a name a fortified
+# build calls by its checked twin, and does not place that twin.  A fortified
+# product (the CI's compiler, a distribution's package build) never reaches
+# the plain hook, and the row tests nothing.
+scan_rule4() {
+  case $2 in test_*.c) ;; *) return 0 ;; esac
+  printf '%s\n' "$FORTIFIED_HOOKS" | while read -r hook twin; do
+    at=$(grep -n -E "^[a-z_]+[ *]+${hook}[[:space:]]*\(" "$1" | head -1)
+    [ -n "$at" ] || continue
+    grep -q -E "^[[:space:]]*${twin}[[:space:]]*\$" "$1" && continue
+    echo "$2:${at%%:*}: rule 4: hooks ${hook} and does not place ${twin} (a fortified build calls the checked twin and never reaches the hook)"
+  done
+}
+
 # scan_dir DIR MAKEFILE: every offence on stdout; the number of files read is
 # in $WORK/count.
 scan_dir() {
@@ -99,6 +121,7 @@ scan_dir() {
     n=$((n + 1))
     scan_rule1 "$f" "${f##*/}"
     scan_rule2 "$f" "${f##*/}"
+    scan_rule4 "$f" "${f##*/}"
   done
   scan_links "$1" "$2"
   echo "$n" > "$WORK/count"
@@ -136,6 +159,9 @@ selftest() {
   printf '%s\n' '#include "interpose.h"' '#include "linebuf.h"' 'int main(void) { return 0; }' > "$fx/test_bad_link.c"
   printf '%s\n' '#include "interpose.h"' '#include "linebuf.h"' 'int main(void) { return 0; }' > "$fx/test_good_link.c"
   printf '%s\n' 'static int helper(void) { return 0; }' > "$fx/helper.c"
+  printf '%s\n' '#include "linebuf.h"' 'ssize_t read(int fd, void *b, size_t n)' '{ return 0; }' 'int main(void) { return 0; }' > "$fx/test_bad_notwin.c"
+  printf '%s\n' '#include "linebuf.h"' 'ssize_t read(int fd, void *b, size_t n)' '{ return 0; }' 'WPE_HOOK_TWIN_READ' 'int main(void) { return 0; }' > "$fx/test_good_twin.c"
+  printf '%s\n' '#include "linebuf.h"' 'static ssize_t read_all(int fd)' '{ return 0; }' 'int main(void) { return 0; }' > "$fx/test_good_name.c"
   printf '%s\n' 'test_good_link_LDFLAGS = $(TEST_EXPORT_DYNAMIC)' 'test_bad_link_LDFLAGS =' > "$fx/Makefile.am"
   out=$(scan_dir "$fx" "$fx/Makefile.am")
   selftest_expect "a dlsym of a C spelling" "$out" "test_bad_dlsym.c:2: rule 1"
@@ -144,7 +170,9 @@ selftest() {
   selftest_expect "a test with a main and no line buffering" "$out" "test_bad_nobuf.c:2: rule 2"
   selftest_expect "a hooking test that does not link the export flag" "$out" \
     "test_bad_link.c:0: rule 3: hooks a function and test_bad_link_LDFLAGS does not name TEST_EXPORT_DYNAMIC"
-  for good in good_words.h interpose.h test_good_buf.c test_good_dog.c test_good_link.c helper.c; do
+  selftest_expect "a hook of read with no fortified twin" "$out" \
+    "test_bad_notwin.c:2: rule 4: hooks read and does not place WPE_HOOK_TWIN_READ"
+  for good in good_words.h interpose.h test_good_buf.c test_good_dog.c test_good_link.c helper.c test_good_twin.c test_good_name.c; do
     if printf '%s\n' "$out" | grep -q "^$good:"; then
       echo "FAIL: $good must pass, and the scan named it:"
       printf '%s\n' "$out" | grep "^$good:" | sed 's/^/    | /'

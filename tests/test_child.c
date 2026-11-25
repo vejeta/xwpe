@@ -140,6 +140,8 @@ int ttyname_r(int fd, char *buf, size_t n)
 	strcpy(buf, fake_tty_name);
 	return 0;
 }
+
+WPE_HOOK_TWIN_TTYNAME_R
 #endif /* HAVE_PTY_H */
 
 static void chk(const char *what, long got, long want)

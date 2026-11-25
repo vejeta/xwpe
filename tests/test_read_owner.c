@@ -113,15 +113,7 @@ int openat(int dirfd, const char *path, int flags, ...)
  return(openat_hooked(dirfd, path, flags, mode));
 }
 
-#ifdef __USE_FORTIFY_LEVEL
-#if __USE_FORTIFY_LEVEL > 0
-/** The fortified openat with no mode: the same hook. */
-int __openat_2(int dirfd, const char *path, int flags)
-{
- return(openat_hooked(dirfd, path, flags, 0));
-}
-#endif
-#endif
+WPE_HOOK_TWIN_OPENAT
 
 /* read, watched: the first read after it is armed makes the file longer first,
    the moment a file that grows while it is read can use. */
@@ -152,6 +144,8 @@ ssize_t read(int fd, void *buf, size_t n)
  }
  return(real(fd, buf, n));
 }
+
+WPE_HOOK_TWIN_READ
 
 /* ---- the objects ---------------------------------------------------------- */
 
