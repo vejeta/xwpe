@@ -20,6 +20,11 @@ Cannot reproduce:
      past the limit stays alive).
 
 Bugs fixed in 1.6.x:
+* A dialog opened over a read-only (locked) file or over the Help viewer was
+  placed as if that window were a narrow dock pane like Messages, and sat
+  centred on the screen instead of on the window.  It now sits on that window
+  like a dialog over any text window; only Messages, Watches, Stack and the
+  assistant pane are dock panes.
 * Two keys could take the editor down by reading one kind of window as
   another.  Alt-Q then U or N with the File Manager or the project list on top
   read that window's payload as a file's text and crashed.  A key pressed just

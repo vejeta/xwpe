@@ -1781,7 +1781,7 @@ static int write_source_fill(const WriteSource *s, FILE *fp)
 
  if (s->text != NULL)
   return(write_text_put(s->text, s->len, fp));
- b = f->b;
+ b = e_window_text(f);
  return(e_eol_write(fp, b, ya, xa, ye, xe, write_keeps_file_ending(f, b, xa, ya, xe, ye)) != 0);
 }
 
@@ -2896,7 +2896,7 @@ int wpe_write_copy(FENSTER *f, const char *path, WpeWriteOutcome *o)
   o->not_a_file = 1;
   return(-1);
  }
- write_source_window(&s, f, 0, 0, E_BUFFER_ROW_END(f->b), f->b->mxlines - 1);
+ write_source_window(&s, f, 0, 0, E_BUFFER_ROW_END(e_window_text(f)), e_window_text(f)->mxlines - 1);
  write_aim_make(&aim, WRITE_AIM_COPY, NULL, &write_replaced_as_copy, WRITE_OPEN_NEW);
  write_run(&s, path, 0, &aim, o);
  return(o->status == WPE_WRITE_WRITTEN ? 0 : -1);
@@ -3333,7 +3333,7 @@ static void write_window_pass(FENSTER *f, const char *path, const WriteReplacedP
  WriteSource s;
  WriteAim aim;
 
- write_source_window(&s, f, 0, 0, E_BUFFER_ROW_END(f->b), f->b->mxlines - 1);
+ write_source_window(&s, f, 0, 0, E_BUFFER_ROW_END(e_window_text(f)), e_window_text(f)->mxlines - 1);
  write_aim_make(&aim, WRITE_AIM_SAVE, &f->file_id, replaced, WRITE_OPEN_NAMED);
  write_run(&s, path, 1, &aim, o);
 }
@@ -3401,7 +3401,7 @@ static int write_window_file(FENSTER *f, int plain_save, WpeWriteOutcome *o)
   o->not_a_file = 1;
   return(-1);
  }
- if (!write_nul_confirmed(f, f->b))
+ if (!write_nul_confirmed(f, e_window_text(f)))
  {
   o->status = WPE_WRITE_DECLINED;
   return(-1);
@@ -3423,8 +3423,8 @@ static int write_window_file(FENSTER *f, int plain_save, WpeWriteOutcome *o)
   f->file_id = o->written;
   f->no_file = 0;                        /* a Save As gave the window a file */
   f->save = 0;
-  write_final_break_after(f, f->b);
-  f->b->nul_dropped = 0;                 /* the user knew, and the file is written */
+  write_final_break_after(f, e_window_text(f));
+  e_window_text(f)->nul_dropped = 0;                /* the user knew, and the file is written */
  }
  WpeMouseRestoreShape();
  return(o->status == WPE_WRITE_WRITTEN ? 0 : -1);

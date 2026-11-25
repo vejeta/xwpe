@@ -828,21 +828,21 @@ int e_read_help(char *str, FENSTER *f, int sw)
     state the reader was given, so the window still holds text and nothing
     else can read it as another kind's payload. */
  e_close_buffer(e_window_text(f));
- new_text = (BUFFER *) MALLOC(sizeof(BUFFER));
+ new_text = MALLOC(sizeof(BUFFER));
  if (new_text == NULL)
   e_error(e_msg[ERR_LOWMEM], 1, f->fb);
  if (!e_window_replace_text(f, new_text))
   e_error(e_msg[ERR_LOWMEM], 1, f->fb);
- e_buffer_init(f->b, f->ed, f, f->ed->maxcol, E_BUFFER_HISTORY_FULL);
- e_buffer_mark_view(f->b);
- if (f->b->mxlines != 1)
+ e_buffer_init(e_window_text(f),f->ed, f, f->ed->maxcol, E_BUFFER_HISTORY_FULL);
+ e_buffer_mark_view(e_window_text(f));
+ if (e_window_text(f)->mxlines != 1)
   e_error(e_msg[ERR_LOWMEM], 1, f->fb);
- f->b->fb = f->fb;
+ e_window_text(f)->fb = f->fb;
  if (str && str[0])
  {
   while ((ptmp = e_i_fgets(tstr, WPE_HELP_LINE_MAX, fp)) && !WpeStrcstr(tstr, str))
    ;
-  if (ptmp && !sw && e_help_set_first_row(f->b, tstr) != 0)
+  if (ptmp && !sw && e_help_set_first_row(e_window_text(f), tstr) != 0)
   {
    e_i_fclose(fp);
    return(2);
@@ -875,7 +875,7 @@ int e_read_help(char *str, FENSTER *f, int sw)
    wpe_help_lcat(tmp, sizeof tmp, help_end_mark);
    if ((ud_help->str = MALLOC((strlen(tmp)+1)*sizeof(char))) != NULL)
     strcpy(ud_help->str, tmp);
-   if (e_help_set_first_row(f->b, tstr) != 0)
+   if (e_help_set_first_row(e_window_text(f), tstr) != 0)
    {
     e_i_fclose(fp);
     return(2);
@@ -886,7 +886,7 @@ int e_read_help(char *str, FENSTER *f, int sw)
  {
   for(i = 0; tstr[i]; i++)
   if (tstr[i] == HFE)  {  e_i_fclose(fp);  return(0);  }
-  if (e_help_add_row(f->b, tstr) != 0)
+  if (e_help_add_row(e_window_text(f), tstr) != 0)
    break;
  }
  e_i_fclose(fp);
@@ -895,7 +895,7 @@ int e_read_help(char *str, FENSTER *f, int sw)
 
 int e_help_ret(FENSTER *f)
 {
- BUFFER *b = f->b;
+ BUFFER *b = e_window_text(f);
  int i;
  char str[WPE_HELP_LINE_SIZE];
  struct help_ud *next;
@@ -921,7 +921,7 @@ int e_help_ret(FENSTER *f)
 	 }
          if(ud_help->sw) e_read_info(str, f, ud_help->file);
 	 else e_read_help(str, f, 0);
-	 b = f->b; e_buffer_cursor_set(b, 0, 0);
+	 b = e_window_text(f); e_buffer_cursor_set(b, 0, 0);
 	 e_cursor(f, 1);
 	 e_schirm(f, 1);
 	 return(0);
@@ -943,7 +943,7 @@ int e_help_ret(FENSTER *f)
 	    ud_help = next;
 	 }
          e_read_info("Top", f, ud_help->file);
-	 b = f->b; e_buffer_cursor_set(b, 0, 0);
+	 b = e_window_text(f); e_buffer_cursor_set(b, 0, 0);
 	 e_cursor(f, 1);
 	 e_schirm(f, 1);
 	 return(0);
@@ -978,7 +978,7 @@ int e_help_last(FENSTER *f)
   else
    e_read_help(last->next->str, f, 0);
  }
- e_buffer_cursor_set(f->b, last->y, last->x);
+ e_buffer_cursor_set(e_window_text(f), last->y, last->x);
  e_cursor(f, 1);
  e_schirm(f, 1);
  ud_help = last->next;
@@ -1006,7 +1006,7 @@ int e_help_next(FENSTER *f, int sw)
       else
          return(e_error(sw ? "No Next Page" : "No Previous Page", 0, f->fb));
       e_read_info(last->str, f, last->file);
-      e_buffer_cursor_set(f->b, 0, 0);
+      e_buffer_cursor_set(e_window_text(f), 0, 0);
       e_cursor(f, 1);
       e_schirm(f, 1);
       return(0);
@@ -1022,7 +1022,7 @@ int e_help_next(FENSTER *f, int sw)
 	    last->next = ud_help;
 	    ud_help = last;
 	    e_read_help(ud_help->next ? ud_help->next->str : NULL, f, 1);
-            e_buffer_cursor_set(f->b, 0, 0);
+            e_buffer_cursor_set(e_window_text(f), 0, 0);
             e_cursor(f, 1);
             e_schirm(f, 1);
             return(0);
@@ -1107,7 +1107,7 @@ static int e_help_comp_add(char ***list, int *count, char *name)
 static int e_help_comp_collect(FENSTER *f, int mark, const char *what,
                                char ***list, int *count)
 {
- BUFFER *b = f->b;
+ BUFFER *b = e_window_text(f);
  int i, j, stop, closed;
  char *name;
 
@@ -1528,16 +1528,16 @@ int e_read_info(char *str, FENSTER *f, char *file)
       the kind's owner releases the old one and holds the new one, keeping
       the view state the reader was given. */
    e_close_buffer(e_window_text(f));
-   new_text = (BUFFER *) MALLOC(sizeof(BUFFER));
+   new_text = MALLOC(sizeof(BUFFER));
    if(new_text == NULL)
     e_error(e_msg[ERR_LOWMEM], 1, f->fb);
    if(!e_window_replace_text(f, new_text))
     e_error(e_msg[ERR_LOWMEM], 1, f->fb);
-   e_buffer_init(f->b, f->ed, f, f->ed->maxcol, E_BUFFER_HISTORY_FULL);
-   e_buffer_mark_view(f->b);
-   if (f->b->mxlines != 1)
+   e_buffer_init(e_window_text(f),f->ed, f, f->ed->maxcol, E_BUFFER_HISTORY_FULL);
+   e_buffer_mark_view(e_window_text(f));
+   if (e_window_text(f)->mxlines != 1)
     e_error(e_msg[ERR_LOWMEM], 1, f->fb);
-   f->b->fb = f->fb;
+   e_window_text(f)->fb = f->fb;
    while((ptmp = e_i_fgets(tstr, WPE_HELP_LINE_MAX, fp)) != NULL)
    {  if(!strncmp(tstr, "Indirect:", 9)) fp = e_info_jump(str, &path, fp);
       else if(!strncmp(tstr, "File:", 5) && strstr(tstr, fstr)) break;
@@ -1555,7 +1555,7 @@ int e_read_info(char *str, FENSTER *f, char *file)
    if(ptmp)
    {  if(!sw && !WpeStrnccmp(tstr, "* Menu:", 7)) sw = 1;
       wpe_help_line_insert(tstr, sizeof tstr, 0, help_head_mark, 1);
-      if(e_help_set_first_row(f->b, tstr) != 0)
+      if(e_help_set_first_row(e_window_text(f), tstr) != 0)
       {  e_i_fclose(fp);
          return(2);
       }
@@ -1580,7 +1580,7 @@ int e_read_info(char *str, FENSTER *f, char *file)
             bsw = e_mk_info_button(tstr, sizeof tstr, ptmp+5);
       }
       e_mk_info_mrk(tstr);
-      if (e_help_add_row(f->b, tstr) != 0)
+      if (e_help_add_row(e_window_text(f), tstr) != 0)
          break;
    }
    e_i_fclose(fp);
@@ -1779,7 +1779,7 @@ int e_topic_search(FENSTER *f)
 
  if (!DTMD_ISTEXT(f->ed->f[f->ed->mxedt]->dtmd))
   return(0);
- b = f->ed->f[f->ed->mxedt]->b;
+ b = e_window_text(f->ed->f[f->ed->mxedt]);
  y=b->b.y;
  x=b->b.x;
  if(!isalnum(wpe_row_byte(b, y, x)) && wpe_row_byte(b, y, x)!='_')

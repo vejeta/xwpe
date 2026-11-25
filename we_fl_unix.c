@@ -161,7 +161,7 @@ int WpeCreateFileManager(int sw, ECNT *cn, char *dirct)
 
   /* allocate the File Manager's lists, which the window holds through the
      kind's owner (e_window_hold_files) and never as a text buffer */
-  if((b = (FLBFFR *) MALLOC(sizeof(FLBFFR))) == NULL)
+  if((b = MALLOC(sizeof(FLBFFR))) == NULL)
     e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
 
   f->fb = cn->fb;
@@ -169,7 +169,6 @@ int WpeCreateFileManager(int sw, ECNT *cn, char *dirct)
   e_fm_centered_geometry(f);   /* centred, grows with the terminal (capped) */
   f->winnum = cn->curedt;
   f->dtmd = DTMD_FILEMANAGER;
-  f->ins = 1;
   f->save = 0;
   f->zoom = 0;
   f->ed = cn;
@@ -286,11 +285,11 @@ int WpeCreateFileManager(int sw, ECNT *cn, char *dirct)
   }
 
   /* window for files */
-  if((b->fw = (FLWND *) MALLOC(sizeof(FLWND))) == NULL)
+  if((b->fw = MALLOC(sizeof(FLWND))) == NULL)
     e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
 
   /* window for directory */
-  if((b->dw = (FLWND *) MALLOC(sizeof(FLWND))) == NULL)
+  if((b->dw = MALLOC(sizeof(FLWND))) == NULL)
     e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
 
 
@@ -372,7 +371,7 @@ static void e_fm_key_hint(FENSTER *f, int x, int y, char *text)
    first buttons, than the dir tree and file list */
 int WpeDrawFileManager(FENSTER * f)
 {
-  FLBFFR         *b = (FLBFFR *)f->b;
+  FLBFFR         *b = e_window_files(f);
   int             i, j;
   int             bx1 = 1, bx2 = 1, bx3 = 1, by = 4;
 
@@ -516,7 +515,7 @@ int WpeCallFileManager(int sw, FENSTER * f)
   for(i = f->ed->mxedt; i > 0; i--)
     if(f->ed->f[i]->dtmd == DTMD_FILEMANAGER)     /* check only file manager windows */
     {
-      b = (FLBFFR *)f->ed->f[i]->b;
+      b = e_window_files(f->ed->f[i]);
       /* open/new file manager and it is not in save mode */
       if(sw == 0 && b->sw == sw && f->ed->f[i]->save != 1)
         break;
@@ -1050,7 +1049,7 @@ int WpeHandleFileManager(ECNT * cn)
   FENSTER        *f = cn->f[cn->mxedt], *fe = NULL;
   WpeEolInfo      read_info;
   WpeReadOutcome  read_out;
-  FLBFFR         *b = (FLBFFR *) f->b;
+  FLBFFR         *b = e_window_files(f);
   BUFFER         *be = NULL;
   SCHIRM         *se = NULL;
   int             c = AltC, i, j;
@@ -1100,8 +1099,8 @@ int WpeHandleFileManager(ECNT * cn)
     if (DTMD_ISTEXT(cn->f[i]->dtmd))
     {
       fe = cn->f[i];
-      be = fe->b;
-      se = fe->s;
+      be = e_window_text(fe);
+      se = e_window_screen(fe);
       winnum = cn->edt[i];
       break;
     }
@@ -1654,8 +1653,8 @@ int WpeHandleFileManager(ECNT * cn)
             e_close_window(f);
             e_switch_window(winnum, fe);
             fe = cn->f[cn->mxedt];
-            be = fe->b;
-            se = fe->s;
+            be = e_window_text(fe);
+            se = e_window_screen(fe);
             f = cn->f[cn->mxedt];
             /* the buffer's style stands: the file's own is not kept */
             memset(&read_info, 0, sizeof(read_info));
@@ -1756,7 +1755,7 @@ int WpeHandleFileManager(ECNT * cn)
           {
             if(fe->c_sw)
               FREE(fe->c_sw);
-            fe->c_sw = e_sc_txt(NULL, fe->b);
+            fe->c_sw = e_sc_txt(NULL, e_window_text(fe));
           }
           e_rep_win_tree(f->ed);
         }
@@ -1865,7 +1864,7 @@ int WpeHandleFileManager(ECNT * cn)
         }
         else if(b->sw == 5) /* it is in project management */
         {
-          FLWND *fw = (FLWND *)cn->f[cn->mxedt - 1]->b;
+          FLWND *fw = e_window_list(cn->f[cn->mxedt - 1]);
           if (cold != AltN)
             WpeFileNameTake(f, filen, *(b->df->name + b->fw->nf));
           dirtmp = cn->f[cn->mxedt - 1]->dirct;
@@ -3470,7 +3469,7 @@ static int WpePrintMakeCopy(FENSTER *f)
  if (path == NULL)
   return(-1);
  f->ins = 0;
- rc = wpe_write_range(f, path, 0, 0, E_BUFFER_ROW_END(f->b), f->b->mxlines - 1, 0, &o);
+ rc = wpe_write_range(f, path, 0, 0, E_BUFFER_ROW_END(e_window_text(f)), e_window_text(f)->mxlines - 1, 0, &o);
  f->ins = window_ins;
  FREE(path);
  if (rc != 0)
@@ -3739,7 +3738,7 @@ int WpeGrepWindow(FENSTER * f)
   freeostr(o);
   if(ret != WPE_ESC)
   {
-    ret = e_data_first(2, f->ed, fd->dirct);
+    ret = e_data_first(WPE_LISTKIND_GREP, f->ed, fd->dirct);
     e_grep_say_bad_text(f, fd);
   }
   return(ret);
@@ -3781,7 +3780,7 @@ int WpeFindWindow(FENSTER * f)
   }
   freeostr(o);
   if(ret != WPE_ESC)
-    ret = e_data_first(3, f->ed, fd->dirct);
+    ret = e_data_first(WPE_LISTKIND_FOUND, f->ed, fd->dirct);
   return(ret);
 }
 
@@ -3984,7 +3983,7 @@ int e_ed_man(char *str, FENSTER * f)
       return(0);
     }
     f = f->ed->f[f->ed->mxedt];
-    b = f->b;
+    b = e_window_text(f);
     e_buffer_mark_view(b);
     f->ins = WPE_INS_READONLY;     /* a man page is closed whoever runs it */
     if(b->mxlines > 1 || !nstr[1])
@@ -3996,9 +3995,9 @@ int e_ed_man(char *str, FENSTER * f)
   }
   if(b->mxlines == 1 && wpe_row_len(b, 0) == 0)
   {
-    e_ins_nchar(f->b, f->s, "No manual entry for ", 0, 0, 20);
-    e_ins_nchar(f->b, f->s, hstr, b->b.x, b->b.y, strlen(hstr));
-    e_ins_nchar(f->b, f->s, ".", b->b.x, b->b.y, 1);
+    e_ins_nchar(e_window_text(f), e_window_screen(f), "No manual entry for ", 0, 0, 20);
+    e_ins_nchar(e_window_text(f), e_window_screen(f), hstr, b->b.x, b->b.y, strlen(hstr));
+    e_ins_nchar(e_window_text(f), e_window_screen(f), ".", b->b.x, b->b.y, 1);
   }
   for(i = 0; i < b->mxlines; i++)
     if(b->mxlines > 1 && wpe_row_len(b, i) == 0 && (i == 0 || wpe_row_len(b, i - 1) == 0))
@@ -4033,7 +4032,7 @@ int e_ed_man(char *str, FENSTER * f)
           break;
         }
         if(wpe_row_byte(b, i, j - 1) == 5)
-          e_del_nchar(b, f->s, j - 1, i, 1);
+          e_del_nchar(b, e_window_screen(f), j - 1, i, 1);
         for(j++; wpe_row_byte(b, i, j) > 0 && wpe_row_byte(b, i, j) != ',' && wpe_row_byte(b, i, j) != '.';
             j++);
         if(wpe_row_byte(b, i, bg) == 15)
@@ -4041,11 +4040,11 @@ int e_ed_man(char *str, FENSTER * f)
         else
         {
           cc = HFB;
-          e_ins_nchar(b, f->s, &cc, bg, i, 1);
+          e_ins_nchar(b, e_window_screen(f), &cc, bg, i, 1);
           j++;
         }
         cc = HED;
-        e_ins_nchar(b, f->s, &cc, j, i, 1);
+        e_ins_nchar(b, e_window_screen(f), &cc, j, i, 1);
         j++;
         if(wpe_row_byte(b, i, j) > 0)
           j++;
@@ -4187,6 +4186,7 @@ int e_data_first(int sw, ECNT *cn, char *nstr)
   int             i, j;
   struct dirfile *df = NULL;
   FLWND          *fw;
+  WpeListKind     kind;
 
   if(cn->mxedt >= MAXEDT)
   {
@@ -4210,7 +4210,7 @@ int e_data_first(int sw, ECNT *cn, char *nstr)
   wpe_write_copies_forget(&f->copies);
   f->no_file = 0;
   e_window_held_forget(f);   /* the kind's owner makes its block on first hold */
-  if((fw = (FLWND *) MALLOC(sizeof(FLWND))) == NULL)
+  if((fw = MALLOC(sizeof(FLWND))) == NULL)
     e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
   f->fb = cn->fb;
   cn->f[cn->mxedt] = f;
@@ -4218,7 +4218,7 @@ int e_data_first(int sw, ECNT *cn, char *nstr)
   f->e = e_set_pnt(f->a.x + 35, f->a.y + 18);
   f->winnum = cn->curedt;
   f->dtmd = DTMD_DATA;
-  f->ins = sw;
+  f->ins = 0;      /* the insert mode of text, which a list has none of: the kind is held below */
   f->save = 0;
   f->zoom = 0;
   f->ed = cn;
@@ -4235,45 +4235,45 @@ int e_data_first(int sw, ECNT *cn, char *nstr)
     strcpy(f->dirct, nstr);
   }
   WpeMouseChangeShape(WpeWorkingShape);
-  if(sw == 1)
+  if(sw == WPE_LISTKIND_FUNCTIONS)
   {
     f->datnam = "Function-Index";
     df = e_make_funct(nstr);
   }
-  else if(sw == 2)
+  else if(sw == WPE_LISTKIND_GREP)
   {
     f->datnam = "Grep";
     df = WpeSearchFiles(f, nstr, cn->fd.file, &cn->fd, NULL);
   }
-  else if(sw == 3)
+  else if(sw == WPE_LISTKIND_FOUND)
   {
     f->datnam = "Find";
     df = WpeSearchFiles(f, nstr, cn->fd.file, &cn->fd, NULL);
   }
-  else if(sw == 7)
+  else if(sw == WPE_LISTKIND_WINDOWS)
   {
     f->datnam = "Windows";
     df = e_make_win_list(f);
   }
 #ifdef PROG
-  else if(sw == 4)
+  else if(sw == WPE_LISTKIND_PROJECT_FILES)
   {
     f->datnam = WpeStrdup("Project");
     df = e_p_df[0];
   }
-  else if(sw == 5)
+  else if(sw == WPE_LISTKIND_PROJECT_VARIABLES)
   {
     f->datnam = "Variables";
     df = e_p_df[1];
   }
-  else if(sw == 6)
+  else if(sw == WPE_LISTKIND_PROJECT_INSTALL)
   {
     f->datnam = "Install";
     df = e_p_df[2];
   }
 #endif
   f->hlp_str = e_hlp_str[16 + sw];
-  if(sw < 4)
+  if(sw < WPE_LISTKIND_PROJECT_FILES)
   {
     f->blst = gblst;
     f->nblst = 4;
@@ -4303,7 +4303,8 @@ int e_data_first(int sw, ECNT *cn, char *nstr)
   fw->ia = fw->nf = fw->nxfo = fw->nyfo = 0;
   fw->srcha = fw->ja = 0;
 
-  if(cn->mxedt > 1 && (f->ins < 5 || f->ins == 7))
+  kind = e_window_list_kind(f);
+  if(cn->mxedt > 1 && (wpe_listsel_is_result_kind(kind) || kind == WPE_LISTKIND_PROJECT_FILES))
     e_ed_rahmen(cn->f[cn->mxedt - 1], 0);
   e_firstl(f, 1);
   e_data_schirm(f);
@@ -4313,7 +4314,8 @@ int e_data_first(int sw, ECNT *cn, char *nstr)
 int e_data_schirm(FENSTER * f)
 {
   int             i, j;
-  FLWND          *fw = (FLWND *) f->b;
+  FLWND          *fw = e_window_list(f);
+  WpeListKind     kind = e_window_list_kind(f);
 
   for(j = f->a.y + 1; j < f->e.y; j++)
     for(i = f->a.x + 1; i < f->e.x; i++)
@@ -4321,10 +4323,10 @@ int e_data_schirm(FENSTER * f)
 
   if(NUM_COLS_ON_SCREEN > 25)
   {
-    if(f->ins < 4 || f->ins == 7)
+    if(wpe_listsel_is_result_kind(kind))
       e_pr_str((f->e.x - 9), f->e.y - 4, "Show", f->fb->nz.fb, 0, -1,
                f->fb->ns.fb, f->fb->nt.fb);
-    else if(f->ins > 3)
+    else if(wpe_listsel_is_sealed_kind(kind))
     {
       e_pr_str((f->e.x - 9), f->e.y - 8, "Add", f->fb->nz.fb, 0, -1,
                f->fb->ns.fb, f->fb->nt.fb);
@@ -4332,7 +4334,7 @@ int e_data_schirm(FENSTER * f)
                f->fb->ns.fb, f->fb->nt.fb);
       e_pr_str((f->e.x - 9), f->e.y - 4, "Delete", f->fb->nz.fb, 0, -1,
                f->fb->ns.fb, f->fb->nt.fb);
-      if(f->ins == 4 && f->a.y < f->e.y - 10)
+      if(kind == WPE_LISTKIND_PROJECT_FILES && f->a.y < f->e.y - 10)
       {
         e_pr_str((f->e.x - 9), f->e.y - 10, "Options", f->fb->nz.fb,
                  0, -1, f->fb->ns.fb, f->fb->nt.fb);
@@ -4362,13 +4364,13 @@ int e_data_schirm(FENSTER * f)
   fw->ya = f->a.y + 3;
   fw->ye = f->e.y - 1;
 #ifdef PROG
-  if(f->ins == 4)
+  if(kind == WPE_LISTKIND_PROJECT_FILES)
     fw->df = e_p_df[0];
 #endif
-  if(f->ins == 1)
+  if(kind == WPE_LISTKIND_FUNCTIONS)
     e_pr_str(fw->xa, f->a.y + 2, "Functions:", f->fb->nt.fb, 0, 1,
              f->fb->nsnt.fb, f->fb->nt.fb);
-  else if(f->ins == 3)
+  else if(kind == WPE_LISTKIND_FOUND)
     e_pr_str(fw->xa, f->a.y + 2, "Directories:", f->fb->nt.fb, 0, 1,
              f->fb->nsnt.fb, f->fb->nt.fb);
   e_mouse_bar(fw->xe, fw->ya, fw->ye - fw->ya, 0, fw->f->fb->em.fb);
@@ -4382,8 +4384,8 @@ int e_data_schirm(FENSTER * f)
 
 /**
  * e_data_list_action - Tell what a key asks of a list window.
- * @ins: the window's kind (Function-Index, Grep, Find, Project, Variables,
- *       Install or Windows).
+ * @kind: the list window's kind (Function-Index, Grep, Find, Project,
+ *        Variables, Install or Windows).
  * @c: the key.
  *
  * Enter (or Alt-S) opens the entry of a Function-Index, Grep, Find or Window
@@ -4396,16 +4398,16 @@ int e_data_schirm(FENSTER * f)
  * Return: the action, WPE_LIST_NONE for any other key.
  */
 static enum wpe_list_action
-e_data_list_action(int ins, int c)
+e_data_list_action(WpeListKind kind, int c)
 {
-  if(ins < 4 || ins == 7)
+  if(wpe_listsel_is_result_kind(kind))
   {
     if(c == WPE_CR || c == AltS)
       return(WPE_LIST_OPEN);
     return(WPE_LIST_NONE);
   }
 #ifdef PROG
-  if(wpe_listsel_is_sealed_kind(ins))
+  if(wpe_listsel_is_sealed_kind(kind))
   {
     if(c == AltA || c == EINFG)
       return(WPE_LIST_ADD);
@@ -4413,11 +4415,11 @@ e_data_list_action(int ins, int c)
       return(WPE_LIST_DELETE);
     if(c == AltE || c == WPE_CR)
     {
-      if(ins == 4)
+      if(kind == WPE_LISTKIND_PROJECT_FILES)
         return(WPE_LIST_OPEN);
       return(WPE_LIST_EDIT);
     }
-    if(ins == 4 && c == AltO)
+    if(kind == WPE_LISTKIND_PROJECT_FILES && c == AltO)
       return(WPE_LIST_OPTIONS);
   }
 #endif
@@ -4427,13 +4429,14 @@ e_data_list_action(int ins, int c)
 int e_data_eingabe(ECNT * cn)
 {
   FENSTER        *f = cn->f[cn->mxedt];
-  FLWND          *fw = (FLWND *) f->b;
+  FLWND          *fw = e_window_list(f);
+  WpeListKind     kind = e_window_list_kind(f);   /* read once: f can be freed below */
   int             c = AltF;
   int             sealed;
   enum wpe_list_action action;
 
   fk_cursor(0);
-  if(f->ins == 7)
+  if(kind == WPE_LISTKIND_WINDOWS)
   {
     freedf(fw->df);
     fw->df = e_make_win_list(f);
@@ -4443,7 +4446,7 @@ int e_data_eingabe(ECNT * cn)
     if(f->dtmd != DTMD_DATA)
       return(0);
 #ifdef PROG
-    if(f->ins == 4)
+    if(kind == WPE_LISTKIND_PROJECT_FILES)
       fw->df = e_p_df[0];
 #endif
     if(c == AltF)
@@ -4452,9 +4455,9 @@ int e_data_eingabe(ECNT * cn)
     if(c == MBKEY)
       c = e_data_ein_mouse(f);
 #endif
-    action = e_data_list_action(f->ins, c);
-    sealed = wpe_listsel_is_sealed_kind(f->ins);
-    if(wpe_listsel_action_needs_entry(f->ins, action) &&
+    action = e_data_list_action(kind, c);
+    sealed = wpe_listsel_is_sealed_kind(kind);
+    if(wpe_listsel_action_needs_entry(kind, action) &&
        !wpe_listsel_has(fw->df, fw->nf, sealed))
     {
       e_error(E_DATA_NO_ENTRY_MSG, 0, f->fb);
@@ -4463,16 +4466,16 @@ int e_data_eingabe(ECNT * cn)
     }
     if((action == WPE_LIST_OPEN && !sealed) || action == WPE_LIST_ADD)
     {
-      if(f->ins == 1)
+      if(kind == WPE_LISTKIND_FUNCTIONS)
         e_ed_man(wpe_listsel_name(fw->df, fw->nf, sealed), f);
-      else if(f->ins == 2 && e_edit(f->ed, wpe_listsel_name(fw->df, fw->nf, sealed)) == 0)
+      else if(kind == WPE_LISTKIND_GREP && e_edit(f->ed, wpe_listsel_name(fw->df, fw->nf, sealed)) == 0)
         e_rep_search(f->ed->f[f->ed->mxedt]);   /* only in the window just opened */
-      else if(f->ins == 3)
+      else if(kind == WPE_LISTKIND_FOUND)
         e_edit(f->ed, wpe_listsel_name(fw->df, fw->nf, sealed));
-      else if(f->ins == 7)
+      else if(kind == WPE_LISTKIND_WINDOWS)
         e_switch_window(f->ed->edt[fw->df->anz - fw->nf], f);
 #ifdef PROG
-      else if(f->ins == 4)
+      else if(kind == WPE_LISTKIND_PROJECT_FILES)
       {
         /* WpeHandleFileManager runs its own internal loop until WPE_ESC,
            so call it ONCE (as e_p_add_item does). Wrapping it in
@@ -4480,24 +4483,24 @@ int e_data_eingabe(ECNT * cn)
            losing focus (the FM window is no longer active). */
         WpeCreateFileManager(5, f->ed, NULL);
         WpeHandleFileManager(f->ed);
-        e_p_df[e_project_list_slot((WpeListKind)f->ins)] = fw->df;
+        e_p_df[e_project_list_slot(kind)] = fw->df;
         c = AltF;
         f->save = 1;
       }
-      else if(f->ins > 4 && f->ins < 7)
+      else if(kind == WPE_LISTKIND_PROJECT_VARIABLES || kind == WPE_LISTKIND_PROJECT_INSTALL)
       {
-        e_p_add_df(fw, f->ins);
-        e_p_df[e_project_list_slot((WpeListKind)f->ins)] = fw->df;
+        e_p_add_df(fw, kind);
+        e_p_df[e_project_list_slot(kind)] = fw->df;
         c = AltF;
       }
 #endif
-      if(f->ins < 4 || f->ins == 7)
+      if(wpe_listsel_is_result_kind(kind))
         return(0);
     }
 #ifdef PROG
     else if(action == WPE_LIST_DELETE)
     {
-      e_p_del_df(fw, f->ins);
+      e_p_del_df(fw, kind);
       /* persist on each Delete, same as the menu path (#137).  A refusal
          was said by the writer and the window stays marked unsaved below,
          so closing it writes again. */
@@ -4507,7 +4510,7 @@ int e_data_eingabe(ECNT * cn)
     }
     else if(action == WPE_LIST_EDIT)
     {
-      e_p_edit_df(fw, f->ins);
+      e_p_edit_df(fw, kind);
       c = AltF;
       f->save = 1;
     }
@@ -4528,15 +4531,15 @@ int e_data_eingabe(ECNT * cn)
         c = WPE_ESC;
       else if(c == WPE_ESC)
         c = e_list_close_key(f);
-      if(f->ins == 7 && e_is_list_close_key(f, c))
+      if(kind == WPE_LISTKIND_WINDOWS && e_is_list_close_key(f, c))
       {
         e_close_window(f);   /* frees f: the Window list is gone */
         return(0);
       }
-      if(f->ins == 4 && e_is_list_close_key(f, c))
+      if(kind == WPE_LISTKIND_PROJECT_FILES && e_is_list_close_key(f, c))
       {
         FENSTER        *pf = f->ed->f[f->ed->mxedt];
-        FLWND          *fw = (FLWND *) pf->b;
+        FLWND          *fw = e_window_list(pf);
         /* Persist added/removed files to the .prj on close, otherwise the
            in-memory list is lost when the project window is reopened.  A
            file that refuses keeps the window open, with the box shown. */
@@ -4546,11 +4549,11 @@ int e_data_eingabe(ECNT * cn)
         e_close_window(pf);
         return(0);
       }
-      if(f->ins == 4 && (!e_tst_dfkt(f, c) || !e_prog_switch(f, c)))
+      if(kind == WPE_LISTKIND_PROJECT_FILES && (!e_tst_dfkt(f, c) || !e_prog_switch(f, c)))
         return(0);
-      if(f->ins > 4 && e_is_list_close_key(f, c))
+      if(kind > WPE_LISTKIND_PROJECT_FILES && e_is_list_close_key(f, c))
         return(c);
-      else if((f->ins < 4 || f->ins == 7) && !e_tst_dfkt(f, c))
+      else if(wpe_listsel_is_result_kind(kind) && !e_tst_dfkt(f, c))
         return(0);
       else
         c = AltF;
@@ -4561,7 +4564,7 @@ int e_data_eingabe(ECNT * cn)
 
 int e_get_funct_in(char *nstr, FENSTER * f)
 {
-  return(e_data_first(1, f->ed, nstr));
+  return(e_data_first(WPE_LISTKIND_FUNCTIONS, f->ed, nstr));
 }
 
 int e_funct_in(FENSTER * f)

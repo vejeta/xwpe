@@ -361,8 +361,6 @@ typedef struct FNST {
  int *c_sw;
  struct wpeSyntaxRule *c_st;
  struct CNT *ed;  /* parent control structure ??? */
- struct BFF *b;
- struct SCHRM *s;
  /* What this window holds, as the kind's owner records it (we_winkind.h).
     The block is opaque here on purpose: the three payloads are separate
     typed members of a struct only we_winkind.c may name, so no other file
@@ -573,16 +571,16 @@ void e_find_resume_check(BUFFER *b);
 /*            |                                   */
 /*            |  there's lots more in this struct */
 /*            |                                   */
-#define NUM_LINES_OFF_SCREEN_TOP	(f->s->c.y)
+#define NUM_LINES_OFF_SCREEN_TOP	(e_window_screen(f)->c.y)
 #define NUM_LINES_ON_SCREEN	(f->e.y - f->a.y)
 #define LINE_NUM_ON_SCREEN_BOTTOM	(NUM_LINES_ON_SCREEN + NUM_LINES_OFF_SCREEN_TOP - 1)
       
 /*this seems to include the scroll bar to the right*/
 /*it's values is always +1 to the actual visible columns*/
-#define NUM_COLS_ON_SCREEN_SAFE (((f->e.x - f->a.x) < (f->b->mx.x+1)) ? (f->e.x - f->a.x) : (f->b->mx.x+1))
+#define NUM_COLS_ON_SCREEN_SAFE (((f->e.x - f->a.x) < (e_window_text(f)->mx.x+1)) ? (f->e.x - f->a.x) : (e_window_text(f)->mx.x+1))
 #define NUM_COLS_ON_SCREEN	(f->e.x - f->a.x)
       
-#define NUM_COLS_OFF_SCREEN_LEFT	(f->s->c.x)
+#define NUM_COLS_OFF_SCREEN_LEFT	(e_window_screen(f)->c.x)
 #define COL_NUM_ON_SCREEN_RIGHT	(NUM_COLS_ON_SCREEN + NUM_COLS_OFF_SCREEN_LEFT - 1)
 
 /*(LINE_NUM_ON_SCREEN_BOTTOM,COL_NUM_ON_SCREEN_RIGHT)*/

@@ -138,8 +138,8 @@ void e_block_record_keep(Undo *rec, BUFFER *b, int x, int y)
  if (rec == NULL)
   return;
  e_buffer_record_at(rec, y, x);
- rec->a = b->f->s->mark_begin;
- rec->e = b->f->s->mark_end;
+ rec->a = e_window_screen(b->f)->mark_begin;
+ rec->e = e_window_screen(b->f)->mark_end;
  e_buffer_record_push(b, rec);
 }
 
@@ -200,7 +200,7 @@ static BUFFER *e_blk_shell_new(BUFFER *b)
  */
 static int e_blk_delete_into_shell_now(FENSTER *f)
 {
- BUFFER *b = f->b;
+ BUFFER *b = e_window_text(f);
  BUFFER *bn;
  Undo *rec = e_buffer_record_new('d');
  int r;
@@ -212,7 +212,7 @@ static int e_blk_delete_into_shell_now(FENSTER *f)
   e_buffer_record_free(rec);
   return(E_BLOCK_NOMEM);
  }
- rec->b = f->s->mark_begin;
+ rec->b = e_window_screen(f)->mark_begin;
  rec->u.pt = bn;
  r = e_move_block_covered(0, 0, b, bn, f, 0, NULL);
  if (r != E_BLOCK_MOVED)
@@ -276,7 +276,7 @@ static void e_blk_say_nothing_marked(FENSTER *f)
  */
 static int e_blk_refuse_unmarked(FENSTER *f, int changes_text)
 {
- if (!e_blk_marks_empty(f->s))
+ if (!e_blk_marks_empty(e_window_screen(f)))
   return(0);
  if (changes_text && wpe_window_locked_for_now(f))
  {
@@ -341,8 +341,8 @@ static int e_blk_delete_in_line(BUFFER *b, SCHIRM *s)
  */
 int e_block_delete_marked(FENSTER *f)
 {
- BUFFER *b = f->b;
- SCHIRM *s = f->s;
+ BUFFER *b = e_window_text(f);
+ SCHIRM *s = e_window_screen(f);
  int r = E_BLOCK_MOVED, in_line;
 
  if (e_blk_marks_empty(s) || wpe_window_locked_for_now(f))
@@ -369,7 +369,7 @@ int e_blck_del(FENSTER *f)
  if (wpe_window_locked_for_now(f))
   return(WPE_ESC);
  if (e_block_delete_marked(f) == E_BLOCK_NOMEM)
-  wpe_buffer_say_nomem(f->b, "the block deletion");
+  wpe_buffer_say_nomem(e_window_text(f), "the block deletion");
  return(0);
 }
 
@@ -385,7 +385,7 @@ int e_blck_dup(char *dup, FENSTER *f)
   return(0);
  if (wpe_window_locked_for_now(f))
   return(0);
- b = f->b;  s = f->s;
+ b = e_window_text(f);  s = e_window_screen(f);
  i=s->mark_end.x - s->mark_begin.x;
  /* Brian thinks that 80 characters is enough.  For the time being return
     nothing if longer than that. */
@@ -606,13 +606,13 @@ int e_edt_copy(FENSTER *f)
 int e_edt_copy_block(FENSTER *f)
 {
  BUFFER *b;
- BUFFER *b0 = f->ed->f[0]->b;
+ BUFFER *b0 = e_window_text(f->ed->f[0]);
  int i, save;
 
  f = e_blk_text_window(f, wpe_action_name(WPE_ACT_BLOCK_COPY));
  if (f == NULL)
   return(E_COPY_NOT_DONE);
- b = f->b;  save = f->save;
+ b = e_window_text(f);  save = f->save;
  /* The only window that must NOT be a copy source is the clipboard viewer
     itself (window 0): the code below frees window 0's lines and then copies
     from the source, so if the source IS window 0 that is a use-after-free.
@@ -621,7 +621,7 @@ int e_edt_copy_block(FENSTER *f)
     their text uncopyable. */
  if (b == b0)
   return(E_COPY_NOT_DONE);
- if (e_blk_marks_empty(f->s))
+ if (e_blk_marks_empty(e_window_screen(f)))
   return(E_COPY_NOTHING_MARKED);
  if (e_clip_clear(b0) != 0 ||
      e_copy_block_covered(0, 0, b, b0, f, 0, NULL) == E_BLOCK_NOMEM)
@@ -635,7 +635,7 @@ int e_edt_copy_block(FENSTER *f)
     OS clipboard got fragments.  e_block_to_text rejoins the wrap-continuations.
     Fall back to the clip buffer if serializing the selection fails. */
  {
-  char *bt = e_block_to_text(b, f->s);
+  char *bt = e_block_to_text(b, e_window_screen(f));
   if (bt) {
    int L = (int)strlen(bt);
    if (L > 0 && bt[L - 1] == '\n') L--;
@@ -666,10 +666,10 @@ void e_clip_pull_os_into_buffer(FENSTER *w0)
 
  if ((text = e_clip_os_get(&len)) == NULL)
   return;
- if (e_eol_replace_all(w0->b, text, E_BUFFER_STEP_NEW, E_EOL_NORMALIZE) == E_BUFFER_NOMEM)
-  wpe_buffer_say_nomem(w0->b, "the pasted text");
+ if (e_eol_replace_all(e_window_text(w0), text, E_BUFFER_STEP_NEW, E_EOL_NORMALIZE) == E_BUFFER_NOMEM)
+  wpe_buffer_say_nomem(e_window_text(w0), "the pasted text");
  free(text);
- e_buffer_block_all(w0->b);
+ e_buffer_block_all(e_window_text(w0));
 }
 
 /**
@@ -681,7 +681,7 @@ void e_clip_pull_os_into_buffer(FENSTER *w0)
  */
 static int e_clip_is_empty(FENSTER *w0)
 {
- BUFFER *b0 = w0->b;
+ BUFFER *b0 = e_window_text(w0);
 
  return(b0->mxlines <= 1 && wpe_row_len(b0, 0) == 0);
 }
@@ -702,7 +702,7 @@ static void e_clip_say_empty(FENSTER *f)
 int e_edt_einf(FENSTER *f)
 {
  BUFFER *b;
- BUFFER *b0 = f->ed->f[0]->b;
+ BUFFER *b0 = e_window_text(f->ed->f[0]);
  Undo *rec = NULL;
  POINT begin, end;
  int i;
@@ -722,7 +722,7 @@ int e_edt_einf(FENSTER *f)
  f = e_blk_text_window(f, wpe_action_name(WPE_ACT_EDIT_PASTE));
  if (f == NULL)
   return(0);
- b = f->b;
+ b = e_window_text(f);
  if (wpe_window_locked_for_now(f))
   return(0);
  if (e_clip_is_empty(f->ed->f[0]))
@@ -791,8 +791,8 @@ static POINT e_blk_move_undo_point(BUFFER *b, SCHIRM *s)
  */
 int e_block_move_marked(FENSTER *f)
 {
- BUFFER *b = f->b;
- POINT ka = e_blk_move_undo_point(b, f->s);
+ BUFFER *b = e_window_text(f);
+ POINT ka = e_blk_move_undo_point(b, e_window_screen(f));
  Undo *rec = NULL;
  int r, left_row;
 
@@ -813,7 +813,7 @@ int e_blck_move(FENSTER *f)
      e_blk_refuse_unmarked(f, 1))
   return(0);
  if (e_block_move_marked(f) == E_BLOCK_NOMEM)
-  wpe_buffer_say_nomem(f->b, "the block move");
+  wpe_buffer_say_nomem(e_window_text(f), "the block move");
  return(0);
 }
 
@@ -1469,7 +1469,7 @@ static int e_blk_plan_move(WpeBlockOp *op, int x)
 static int e_move_block_prepare(WpeBlockOp *op, int x, int y, BUFFER *bv, BUFFER *bz,
                                 FENSTER *f, int kind)
 {
- e_blk_op_begin(op, f->ed->f[f->ed->mxedt]->s, bv, bz, kind);
+ e_blk_op_begin(op, e_window_screen(f->ed->f[f->ed->mxedt]), bv, bz, kind);
  if (e_blk_is_empty(&op->k) || wpe_window_locked_for_now(f) || e_blk_cursor_inside(op, x, y))
   return(E_BLOCK_NOT_MOVED);
  op->y = y;
@@ -1746,7 +1746,7 @@ int e_blck_copy(FENSTER *f)
  f = e_blk_text_window(f, wpe_action_name(WPE_ACT_BLOCK_COPY));
  if (f == NULL)
   return(0);
- b = f->b;
+ b = e_window_text(f);
  if (e_blk_refuse_unmarked(f, 0))
   return(0);
  /* Block-Copy (Ctrl-K C / Block menu) duplicates the block at the cursor, which
@@ -1890,7 +1890,7 @@ static void e_blk_plan_copy(WpeBlockOp *op)
 static int e_copy_block_prepare(WpeBlockOp *op, int x, int y, BUFFER *bs, BUFFER *bd,
                                 int kind)
 {
- e_blk_op_begin(op, bs->f->s, bs, bd, kind);
+ e_blk_op_begin(op, e_window_screen(bs->f), bs, bd, kind);
  if (e_blk_is_empty(&op->k) || e_blk_copy_lands_inside(op, x, y))
   return(E_BLOCK_NOT_MOVED);
  op->y = y;
@@ -1973,7 +1973,7 @@ static int e_copy_block_covered(int x, int y, BUFFER *bs, BUFFER *bd, FENSTER *f
 static int e_paste_over_prepare(WpeBlockOp *op, BUFFER *bs, BUFFER *bd, const POINT *begin,
                                 const POINT *end)
 {
- e_blk_op_begin(op, bs->f->s, bs, bd, 0);
+ e_blk_op_begin(op, e_window_screen(bs->f), bs, bd, 0);
  op->step = E_BUFFER_STEP_NEW;
  if (e_blk_is_empty(&op->k))
   return(E_BLOCK_NOT_MOVED);
@@ -2002,7 +2002,7 @@ static int e_paste_over_prepare(WpeBlockOp *op, BUFFER *bs, BUFFER *bd, const PO
  */
 static int e_paste_over_selection(FENSTER *f, BUFFER *bs, const POINT *begin, const POINT *end)
 {
- BUFFER *bd = f->b;
+ BUFFER *bd = e_window_text(f);
  WpeBlockOp op;
  int r, fault;
 
@@ -2033,7 +2033,7 @@ int e_blck_hide(FENSTER *f)
  f = e_blk_text_window(f, wpe_action_name(WPE_ACT_BLOCK_HIDE));
  if (f == NULL)
   return(0);
- e_buffer_block_set(f->b, &origin, &origin);
+ e_buffer_block_set(e_window_text(f), &origin, &origin);
  e_schirm(f, 1);
  return(0);
 }
@@ -2052,9 +2052,9 @@ int e_blck_begin(FENSTER *f)
     independent markers, so Begin Mark sets only the begin and leaves the end
     untouched (classic Borland behaviour).  Toggle in Options -> Editor. */
  if (e_opt_block_wordstar(f->ed->edopt))
-  e_buffer_mark_from(f->b, E_BUFFER_MARK_BEGIN, E_BUFFER_POS_CURSOR);
+  e_buffer_mark_from(e_window_text(f), E_BUFFER_MARK_BEGIN, E_BUFFER_POS_CURSOR);
  else
-  e_buffer_block_open(f->b);
+  e_buffer_block_open(e_window_text(f));
  e_schirm(f, 1);
  return(0);
 }
@@ -2067,7 +2067,7 @@ int e_blck_end(FENSTER *f)
  f = e_blk_text_window(f, wpe_action_name(WPE_ACT_BLOCK_END));
  if (f == NULL)
   return(0);
- e_buffer_mark_from(f->b, E_BUFFER_MARK_END, E_BUFFER_POS_CURSOR);
+ e_buffer_mark_from(e_window_text(f), E_BUFFER_MARK_END, E_BUFFER_POS_CURSOR);
  e_schirm(f, 1);
  return(0);
 }
@@ -2080,7 +2080,7 @@ int e_blck_gt_beg(FENSTER *f)
  f = e_blk_text_window(f, wpe_action_name(WPE_ACT_BLOCK_GOTO_BEGIN));
  if (f == NULL)
   return(0);
- e_buffer_cursor_from(f->b, E_BUFFER_MARK_BEGIN);
+ e_buffer_cursor_from(e_window_text(f), E_BUFFER_MARK_BEGIN);
  e_schirm(f, 1);
  return(0);
 }
@@ -2093,7 +2093,7 @@ int e_blck_gt_end(FENSTER *f)
  f = e_blk_text_window(f, wpe_action_name(WPE_ACT_BLOCK_GOTO_END));
  if (f == NULL)
   return(0);
- e_buffer_cursor_from(f->b, E_BUFFER_MARK_END);
+ e_buffer_cursor_from(e_window_text(f), E_BUFFER_MARK_END);
  e_schirm(f, 1);
  return(0);
 }
@@ -2106,7 +2106,7 @@ int e_blck_mrk_all(FENSTER *f)
  f = e_blk_text_window(f, wpe_action_name(WPE_ACT_BLOCK_ALL));
  if (f == NULL)
   return(0);
- e_buffer_block_all(f->b);
+ e_buffer_block_all(e_window_text(f));
  e_schirm(f, 1);
  return(0);
 }
@@ -2119,7 +2119,7 @@ int e_blck_mrk_line(FENSTER *f)
  f = e_blk_text_window(f, wpe_action_name(WPE_ACT_BLOCK_LINE));
  if (f == NULL)
   return(0);
- e_buffer_block_line(f->b);
+ e_buffer_block_line(e_window_text(f));
  e_schirm(f, 1);
  return(0);
 }
@@ -2140,7 +2140,7 @@ int e_blck_mrk_word(FENSTER *f)
  f = e_blk_text_window(f, wpe_action_name(WPE_ACT_SELECT_WORD));
  if (f == NULL)
   return(0);
- e_select_word_at_cursor(f->b);
+ e_select_word_at_cursor(e_window_text(f));
  e_schirm(f, 1);
  return(0);
 }
@@ -2224,8 +2224,8 @@ int e_blck_changecase(FENSTER *f, int mode)
 
  f = e_blk_text_window(f, wpe_action_name(WPE_ACT_BLOCK_CASE));
  if (f == NULL) return(0);
- b = f->b;
- screen = f->s;
+ b = e_window_text(f);
+ screen = e_window_screen(f);
  n = screen->mark_end.y - screen->mark_begin.y + 1;
  if (screen->mark_begin.y < 0 || n <= 0 || screen->mark_end.y >= b->mxlines)
   return(0);
@@ -2416,8 +2416,8 @@ int e_blck_to_left(FENSTER *f)
 
  f = e_blk_text_window(f, wpe_action_name(WPE_ACT_BLOCK_UNINDENT));
  if(f == NULL) return(0);
- b = f->b;
- s = f->s;
+ b = e_window_text(f);
+ s = e_window_screen(f);
  if (e_blk_refuse_unmarked(f, 1))
   return(0);
  tstr = e_unindent_blanks(f->ed->tabn);
@@ -2457,8 +2457,8 @@ int e_blck_to_right(FENSTER *f)
  f = e_blk_text_window(f, wpe_action_name(WPE_ACT_BLOCK_INDENT));
  if (f == NULL)
   return(0);
- b = f->b;
- s = f->s;
+ b = e_window_text(f);
+ s = e_window_screen(f);
  if (e_blk_refuse_unmarked(f, 1))
   return(0);
  tstr = MALLOC((n+1)*sizeof(char));
@@ -2524,7 +2524,7 @@ int e_rep_search(FENSTER *f)
  f = e_blk_text_window(f, wpe_action_name(WPE_ACT_SEARCH_AGAIN));
  if (f == NULL)
   return(0);
- b = f->b;  s = f->s;
+ b = e_window_text(f);  s = e_window_screen(f);
  if (e_find_next(b, s, fd))
  {
   if (!(fd->sw & 1))
@@ -2754,7 +2754,7 @@ int e_goto_line(FENSTER *f)
  f = e_blk_text_window(f, wpe_action_name(WPE_ACT_GOTO_LINE));
  if (f == NULL)
   return(0);
- b = f->b;  s = f->s;
+ b = e_window_text(f);  s = e_window_screen(f);
  if ((num = e_num_kst("Goto Line Number", b->b.y+1, WPE_NUM(WPE_NUM_LINE), f, 0, AltG)) > 0)
   e_buffer_cursor_set_col(b, num - 1, b->clsv);
  else if (num == 0)
@@ -2800,7 +2800,7 @@ int e_find(FENSTER *f)
  f = e_blk_text_window(f, wpe_action_name(WPE_ACT_FIND));
  if (f == NULL)
   return(0);
- b = f->b;  s = f->s;
+ b = e_window_text(f);  s = e_window_screen(f);
  if (e_blck_dup(strTemp, f))
   strcpy(fd->search, strTemp);
  o->xa = 7;  o->ya = 3;  o->xe = 63;  o->ye = 18;
@@ -2911,7 +2911,7 @@ typedef struct {
 static void e_replace_show_hit(FENSTER *f, int y)
 {
  if (f->a.y < E_REPLACE_SCROLL_ROW)
-  f->s->c.y = y - 1;
+  e_window_screen(f)->c.y = y - 1;
  e_schirm(f, 1);
 }
 
@@ -2974,8 +2974,8 @@ static int e_replace_hit(BUFFER *b, FIND *fd, int x, int y)
  */
 static void e_replace_each(FENSTER *f, FIND *fd, int ret, EReplaceReport *r)
 {
- BUFFER *b = f->b;
- SCHIRM *s = f->s;
+ BUFFER *b = e_window_text(f);
+ SCHIRM *s = e_window_screen(f);
  int fault = e_buffer_test_fault_enter(E_BUFFER_FAULT_CHANGE_ALL);
  int c, found_y, hit_x, made;
 
@@ -3089,8 +3089,8 @@ static void e_change_all_pieces(BUFFER *b, SCHIRM *s, int top, void *plan)
  */
 static void e_change_all_whole(FENSTER *f, FIND *fd, EReplaceReport *r)
 {
- BUFFER *b = f->b;
- SCHIRM *s = f->s;
+ BUFFER *b = e_window_text(f);
+ SCHIRM *s = e_window_screen(f);
  WpeFindView before;
  EReplacePlan p;
  int y0, y1, made;
@@ -3166,7 +3166,7 @@ int e_replace(FENSTER *f)
  f = e_blk_text_window(f, wpe_action_name(WPE_ACT_REPLACE));
  if (f == NULL)
   return(0);
- b = f->b;  s = f->s;
+ b = e_window_text(f);  s = e_window_screen(f);
  if (e_blck_dup(strTemp, f))
   strcpy(fd->search, strTemp);
  o->xa = 7;  o->ya = 3;  o->xe = 67;  o->ye = 17;

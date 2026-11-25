@@ -578,7 +578,7 @@ test_lineend_CFLAGS = $(TEST_CFLAGS)
 # (private, counted as made only when whole), the restore after a write
 # that fails half way (by rename, through a link, with a hard link, one that
 # fails), the size limit as an outcome and SIGXFSZ put back.
-test_write_owner_SOURCES = tests/test_write_owner.c tests/seen_rows.h tests/testdir.h we_write.c we_places.c we_path.c we_seen.c we_fmt.c
+test_write_owner_SOURCES = tests/test_write_owner.c tests/seen_rows.h tests/testdir.h we_write.c we_places.c we_path.c we_seen.c we_fmt.c we_winkind.c
 test_write_owner_CFLAGS = $(TEST_CFLAGS)
 test_write_owner_LDFLAGS = $(TEST_EXPORT_DYNAMIC)
 
@@ -587,7 +587,7 @@ test_write_owner_LDFLAGS = $(TEST_EXPORT_DYNAMIC)
 # stubs: the atom (a copy is new, private, whole or absent, and one rename
 # puts it in place), the name that is not replaced, the sentence per step,
 # the wastebasket.
-test_fileop_SOURCES = tests/test_fileop.c we_fileop.c we_write.c we_path.c we_places.c we_read.c we_seen.c we_fmt.c
+test_fileop_SOURCES = tests/test_fileop.c we_fileop.c we_write.c we_path.c we_places.c we_read.c we_seen.c we_fmt.c we_winkind.c
 test_fileop_CFLAGS = $(TEST_CFLAGS)
 test_fileop_LDFLAGS = $(TEST_EXPORT_DYNAMIC)
 

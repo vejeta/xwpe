@@ -1730,9 +1730,9 @@ static void cr_chrome_vscrollbar(FENSTER *f, int ci_bg, int ci_fg)
 
  thumb_h = track_h;
  thumb_y = track_top;
- if (f->b && f->b->mxlines > 1)
-  cr_thumb_geometry(track_top, track_h, f->b->mxlines, ey - ay - 1,
-                    f->s->c.y, &thumb_y, &thumb_h);
+ if (e_window_text(f) && e_window_text(f)->mxlines > 1)
+  cr_thumb_geometry(track_top, track_h, e_window_text(f)->mxlines, ey - ay - 1,
+                    e_window_screen(f)->c.y, &thumb_y, &thumb_h);
  cr_chrome_thumb(bar_x, thumb_y, bar_w, thumb_h, ci_fg);
 }
 
@@ -1795,9 +1795,9 @@ static void cr_chrome_hscrollbar(FENSTER *f, int ci_bg, int ci_fg)
 
  thumb_w = track_w;
  thumb_x = track_left;
- if (f->b && f->b->mx.x > 1)
-  cr_thumb_geometry(track_left, track_w, f->b->mx.x, ex - ax - 1,
-                    f->s->c.x, &thumb_x, &thumb_w);
+ if (e_window_text(f) && e_window_text(f)->mx.x > 1)
+  cr_thumb_geometry(track_left, track_w, e_window_text(f)->mx.x, ex - ax - 1,
+                    e_window_screen(f)->c.x, &thumb_x, &thumb_w);
  cr_chrome_thumb(thumb_x, bar_y, thumb_w, bar_h, ci_fg);
 }
 
@@ -2018,11 +2018,11 @@ int wpe_chrome_hit_vthumb(int col, int row)
      as click-to-position instead. */
   thumb_h = track_h;
   thumb_y = track_top;
-  if (f->b && f->b->mxlines > ey - ay - 1)
+  if (e_window_text(f) && e_window_text(f)->mxlines > ey - ay - 1)
   {
    int row_px = row * fh;
-   cr_thumb_geometry(track_top, track_h, f->b->mxlines, ey - ay - 1,
-                     f->s->c.y, &thumb_y, &thumb_h);
+   cr_thumb_geometry(track_top, track_h, e_window_text(f)->mxlines, ey - ay - 1,
+                     e_window_screen(f)->c.y, &thumb_y, &thumb_h);
    if (row_px >= thumb_y && row_px < thumb_y + thumb_h)
     return 1;
   }
@@ -2056,11 +2056,11 @@ int wpe_chrome_hit_hthumb(int col, int row)
      there is no draggable thumb and the press must fall through to
      click-to-position, exactly as the drag handler (e_scroll_drag_h) expects. */
   cr_hscroll_track(f, &track_left, &track_w);
-  if (f->b && f->b->mx.x > ex - ax - 1 && track_w > 0)
+  if (e_window_text(f) && e_window_text(f)->mx.x > ex - ax - 1 && track_w > 0)
   {
    int thumb_w, thumb_x, col_px = col * fw;
-   cr_thumb_geometry(track_left, track_w, f->b->mx.x, ex - ax - 1,
-                     f->s->c.x, &thumb_x, &thumb_w);
+   cr_thumb_geometry(track_left, track_w, e_window_text(f)->mx.x, ex - ax - 1,
+                     e_window_screen(f)->c.x, &thumb_x, &thumb_w);
    if (col_px >= thumb_x && col_px < thumb_x + thumb_w)
     return 1;
   }

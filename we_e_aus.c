@@ -580,7 +580,7 @@ static int e_field_clipboard_len(int fetch_selection)
 {
  if (fetch_selection)
   e_clip_pull_os_into_buffer(WpeEditor->f[0]);
- return(wpe_row_len(WpeEditor->f[0]->b, 0));
+ return(wpe_row_len(e_window_text(WpeEditor->f[0]), 0));
 }
 
 /**
@@ -725,11 +725,11 @@ int e_schreib_leiste_lines(char *s, int x, int y, int n, int max, int ft,
       l = 0;
       jc = 0;
      }
-     len = e_field_paste_fit(wpe_row_bytes(WpeEditor->f[0]->b, 0, NULL), len, max - l);
+     len = e_field_paste_fit(wpe_row_bytes(e_window_text(WpeEditor->f[0]), 0, NULL), len, max - l);
      for (i = l; i >= jc; i--)
       tmp[i+len] = tmp[i];
      for (i = jc; i < jc + len; i++)
-      tmp[i] = wpe_row_byte(WpeEditor->f[0]->b, 0, i-jc);
+      tmp[i] = wpe_row_byte(e_window_text(WpeEditor->f[0]), 0, i-jc);
      jc += len;
      l += len;
     }
@@ -765,11 +765,11 @@ int e_schreib_leiste_lines(char *s, int x, int y, int n, int max, int ft,
     l = 0;
     jc = 0;
    }
-   len = e_field_paste_fit(wpe_row_bytes(WpeEditor->f[0]->b, 0, NULL), len, max - l);
+   len = e_field_paste_fit(wpe_row_bytes(e_window_text(WpeEditor->f[0]), 0, NULL), len, max - l);
    for (i = l; i >= jc; i--)
     tmp[i+len] = tmp[i];
    for (i = jc; i < jc + len; i++)
-    tmp[i] = wpe_row_byte(WpeEditor->f[0]->b, 0, i-jc);
+    tmp[i] = wpe_row_byte(e_window_text(WpeEditor->f[0]), 0, i-jc);
    jc += len;
    l += len;
   }

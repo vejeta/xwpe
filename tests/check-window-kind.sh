@@ -56,9 +56,14 @@
 #     as the readers move to the pane the owner holds, and a new one fails
 #     here.
 #  7. the payload is reached through the accessors: the count of accessor
-#     calls over the count of holds is printed as the evidence, and the uses
-#     of the two legacy fields the accessors still mirror are held at a
-#     ceiling.  They go down as the readers move over; a new one fails here.
+#     calls over the count of holds is printed as the evidence.  The window
+#     declares no member named b or s (the two fields that carried the text
+#     and its view state), so the compiler refuses a reader that goes around
+#     the owner, and this rule fails if either comes back.  A payload cast of
+#     the three kinds (a BUFFER, a list window or a File Manager's lists) is
+#     refused outright: with the accessors typed there is nothing to cast.
+#     What stays held at a ceiling is the number of DTMD_ISTEXT questions
+#     asked of the mode character.
 #
 # --list prints the ceiling lines the tree needs.  --selftest copies the tree
 # to a scratch folder, breaks one rule at a time, and asserts that each broken
@@ -89,9 +94,7 @@ done
 # The ceilings of rules 6 and 7, measured on the tree that introduced the
 # owner and only ever allowed to go down.  --list prints what the tree needs
 # now.
-CEIL_B_USES=947
-CEIL_S_USES=268
-CEIL_CASTS=25
+CEIL_CASTS=0
 CEIL_DTMD=32
 CEIL_DATNAM=73
 
@@ -379,6 +382,37 @@ check_no_pasted_name() {
 ACCESSOR_PAT='e_window_(is_text|text|screen|files|list|list_kind|pane|holds|top|top_except_pane|text_under|pane_find)\('
 HOLD_PAT='e_window_(hold_text|hold_files|hold_list|hold_dropdown|replace_text|set_pane)\('
 
+# A payload cast, in either of the two spellings a text rule can see: a cast
+# of an accessor's answer to any pointer type (the answer is already typed, so
+# a cast of it is a pun), and a cast to any of the payload types by name, with
+# the struct tags and the view-state type, and blanks anywhere inside the
+# parentheses.  What no text rule can catch: a cast through a typed variable
+# (a pointer of the wrong kind set from an accessor and cast on a later line)
+# and a typedef alias of a payload type declared in another file.  Those are
+# what the compiler's incompatible-pointer-types error, kept on by rule 1, is
+# for.
+# The insert mode written from a kind: a list's number stored where the typing
+# mode of text lives.  Text rules see the spellings a constructor would use (a
+# kind name, the parameter that carries it, a digit above the three typing
+# modes); a kind computed into a variable first is kept out by the owner,
+# which sets a window that is not text back to insert mode 0 when it holds
+# the payload, and by test_winkind.c, which poisons the mode before each hold.
+INS_KIND_PAT='(->|[.])ins[[:space:]]*=[[:space:]]*([^=;]*(WPE_LISTKIND|kind|[^A-Za-z0-9_]sw)|[2-79]([^0-9]|$))'
+CAST_ACCESSOR_PAT='[(][[:space:]]*[A-Za-z_][A-Za-z0-9_ ]*[*]+[[:space:]]*[)][[:space:]]*e_window_(text|screen|files|list)[(]'
+CAST_TYPE_PAT='[(][[:space:]]*(struct[[:space:]]+)?(BUFFER|BFF|FLWND|fl_wnd|FLBFFR|FLBFF|SCHIRM|SCHRM)[[:space:]]*[*]+[[:space:]]*[)]'
+
+# How many members named by the one letter the window used to carry (b for
+# the text, s for its view state) the window's own declaration has.  Only the
+# declaration of the window is read, so the same letter in another structure
+# (the text's cursor, a row's bytes) is not counted.
+window_members() {
+  awk -v letter="$2" '
+    /^typedef struct FNST *\{/ { inside = 1; next }
+    inside && /^\} *FENSTER;/ { inside = 0 }
+    inside && $0 ~ "[ \t*,]" letter "[ \t]*[;,[]" { n++ }
+    END { print n + 0 }' "$1/edit.h" 2>/dev/null
+}
+
 count_rule7() {
   dir=$1
   readers=$(product_readers "$dir")
@@ -386,17 +420,17 @@ count_rule7() {
   accessors=$(grep -h -E -o -e "$ACCESSOR_PAT" $readers 2>/dev/null | grep -c .)
   # shellcheck disable=SC2086
   holds=$(grep -h -E -o -e "$HOLD_PAT" $readers 2>/dev/null | grep -c .)
+  b_uses=$(window_members "$dir" b)
+  s_uses=$(window_members "$dir" s)
   # shellcheck disable=SC2086
-  b_uses=$(grep -h -E -o -e '->b\b' $readers 2>/dev/null | grep -c .)
-  # shellcheck disable=SC2086
-  s_uses=$(grep -h -E -o -e '->s\b' $readers 2>/dev/null | grep -c .)
-  # shellcheck disable=SC2086
-  casts=$(grep -h -E -o -e '\((BUFFER|FLWND|FLBFFR) \*\)' $readers 2>/dev/null |
-          grep -c .)
+  casts=$(grep -h -E -o -e "$CAST_TYPE_PAT" -e "$CAST_ACCESSOR_PAT" $readers \
+          2>/dev/null | grep -c .)
   # shellcheck disable=SC2086
   dtmd=$(grep -h -E -o -e 'DTMD_ISTEXT\(' $readers 2>/dev/null | grep -c .)
-  printf '%s %s %s %s %s %s\n' \
-    "$accessors" "$holds" "$b_uses" "$s_uses" "$casts" "$dtmd"
+  # shellcheck disable=SC2086
+  ins_kinds=$(grep -h -E -o -e "$INS_KIND_PAT" $readers 2>/dev/null | grep -c .)
+  printf '%s %s %s %s %s %s %s\n' \
+    "$accessors" "$holds" "$b_uses" "$s_uses" "$casts" "$dtmd" "$ins_kinds"
 }
 
 read_rule7() {
@@ -407,6 +441,7 @@ read_rule7() {
   R7_S=$4
   R7_CASTS=$5
   R7_DTMD=$6
+  R7_INS_KINDS=$7
 }
 
 check_accessors() {
@@ -415,18 +450,22 @@ check_accessors() {
 
   printf 'rule 7: the payload is reached through %s accessors over %s holds\n' \
     "$R7_ACCESSORS" "$R7_HOLDS"
-  printf 'rule 7: legacy field uses ->b %s (ceiling %s), ->s %s (ceiling %s), payload casts %s (ceiling %s), DTMD_ISTEXT %s (ceiling %s)\n' \
-    "$R7_B" "$CEIL_B_USES" "$R7_S" "$CEIL_S_USES" \
-    "$R7_CASTS" "$CEIL_CASTS" "$R7_DTMD" "$CEIL_DTMD"
+  printf 'rule 7: members b and s declared by the window: %s and %s (none allowed), payload casts %s (ceiling %s), DTMD_ISTEXT %s (ceiling %s)\n' \
+    "$R7_B" "$R7_S" "$R7_CASTS" "$CEIL_CASTS" "$R7_DTMD" "$CEIL_DTMD"
 
+  printf 'rule 7: insert mode written from a kind: %s (none allowed)\n' \
+    "$R7_INS_KINDS"
+  if [ "$R7_INS_KINDS" -gt 0 ]; then
+    say_problem "rule 7: $R7_INS_KINDS write(s) of a list's kind into a window's insert mode: the kind is held beside the rows (e_window_hold_list) and the insert mode is the typing mode of text"
+  fi
   if [ "$R7_ACCESSORS" -eq 0 ]; then
     say_problem "rule 7: no product file asks the owner anything: the accessors are the only way to reach a payload"
   fi
-  if [ "$R7_B" -gt "$CEIL_B_USES" ]; then
-    say_problem "rule 7: ->b is used $R7_B times, over its ceiling of $CEIL_B_USES: a new reader of the legacy field belongs on an accessor"
+  if [ "$R7_B" -gt 0 ]; then
+    say_problem "rule 7: the window declares a member b again: the text is asked of the owner, and a member beside it is a second way to reach it"
   fi
-  if [ "$R7_S" -gt "$CEIL_S_USES" ]; then
-    say_problem "rule 7: ->s is used $R7_S times, over its ceiling of $CEIL_S_USES"
+  if [ "$R7_S" -gt 0 ]; then
+    say_problem "rule 7: the window declares a member s again: the view state is asked of the owner, and a member beside it is a second way to reach it"
   fi
   if [ "$R7_CASTS" -gt "$CEIL_CASTS" ]; then
     say_problem "rule 7: $R7_CASTS payload cast(s), over the ceiling of $CEIL_CASTS: a cast of a window's payload is the pun the owner exists to end"
@@ -438,8 +477,6 @@ check_accessors() {
 
 list_ceilings() {
   read_rule7 "$SRCDIR"
-  printf 'CEIL_B_USES=%s\n' "$R7_B"
-  printf 'CEIL_S_USES=%s\n' "$R7_S"
   printf 'CEIL_CASTS=%s\n' "$R7_CASTS"
   printf 'CEIL_DTMD=%s\n' "$R7_DTMD"
   printf 'CEIL_DATNAM=%s\n' "$(count_titles "$SRCDIR")"
@@ -525,7 +562,7 @@ selftest() {
   # and reaches a member through a cast of the legacy field, so no `held_`
   # appears in it for rule 2 to see and no header for the old rule 4 to scan.
   plant_and_expect "the block defined in a .c file and a member read through it" "rule 4" \
-    sh -c 'printf "\nstruct wpe_window_held { FLWND *planted; };\nvoid planted_cast_reader(FENSTER *f){ (void)((struct wpe_window_held *)f->b)->planted; }\n" >> "$0/we_wind.c"'
+    sh -c 'printf "\nstruct wpe_window_held { FLWND *planted; };\nvoid planted_cast_reader(FENSTER *f){ (void)((struct wpe_window_held *)e_window_list(f))->planted; }\n" >> "$0/we_wind.c"'
 
   plant_and_expect "a stack write the owner is not told about" "rule 5" \
     sh -c 'printf "\nvoid planted_push(ECNT *cn){ (cn->mxedt)++; }\n" >> "$0/we_wind.c"'
@@ -542,8 +579,32 @@ selftest() {
   plant_and_expect "a window title compared against a pane's name" "rule 6" \
     sh -c 'printf "\nint planted_is_pane(FENSTER *f){ return strcmp(f->datnam, STRIP_WINDOW_MESSAGES); }\n" >> "$0/we_wind.c"'
 
-  plant_and_expect "new readers of the legacy fields" "rule 7" \
-    sh -c 'i=0; while [ $i -lt 60 ]; do printf "\nvoid planted_cast_%s(FENSTER *f){ (void)(FLWND *)f->b; (void)f->s; (void)DTMD_ISTEXT(f->dtmd); }\n" "$i" >> "$0/we_wind.c"; i=$((i+1)); done'
+  plant_and_expect "the window's text member declared again" "rule 7" \
+    sh -c 'awk "{ print } /^typedef struct FNST *\\{/ { print \" struct BFF *b;\" }" "$0/edit.h" > "$0/edit.h.planted" && mv "$0/edit.h.planted" "$0/edit.h"'
+
+  plant_and_expect "the window's view-state member declared again" "rule 7" \
+    sh -c 'awk "{ print } /^typedef struct FNST *\\{/ { print \" struct SCHRM *s;\" }" "$0/edit.h" > "$0/edit.h.planted" && mv "$0/edit.h.planted" "$0/edit.h"'
+
+  plant_and_expect "a payload cast" "rule 7" \
+    sh -c 'printf "\nvoid planted_cast(FENSTER *f){ (void)(FLWND *)e_window_list(f); }\n" >> "$0/we_wind.c"'
+
+  plant_and_expect "a cast to a struct tag" "rule 7" \
+    sh -c 'printf "\nvoid planted_tag(void *p){ (void)(struct BFF *)p; (void)(struct fl_wnd *)p; }\n" >> "$0/we_wind.c"'
+
+  plant_and_expect "a cast to the view-state type" "rule 7" \
+    sh -c 'printf "\nvoid planted_view(void *p){ (void)(SCHIRM *)p; (void)(struct SCHRM *)p; }\n" >> "$0/we_wind.c"'
+
+  plant_and_expect "a cast spelled with blanks inside" "rule 7" \
+    sh -c 'printf "\nvoid planted_blanks(void *p){ (void)( FLBFF  * )p; (void)(BUFFER*)p; }\n" >> "$0/we_wind.c"'
+
+  plant_and_expect "an accessor's answer cast to any pointer type" "rule 7" \
+    sh -c 'printf "\nvoid planted_alias(FENSTER *f){ (void)(struct planted_alias *)e_window_text(f); (void)(SCHIRM *)e_window_screen(f); }\n" >> "$0/we_wind.c"'
+
+  plant_and_expect "a list's kind written into the insert mode" "rule 7" \
+    sh -c 'printf "\nvoid planted_ins(FENSTER *f, int sw){ f->ins = sw; }\nvoid planted_ins2(FENSTER *f){ f->ins = WPE_LISTKIND_WINDOWS; }\n" >> "$0/we_wind.c"'
+
+  plant_and_expect "new questions asked of the mode character" "rule 7" \
+    sh -c 'i=0; while [ $i -lt 60 ]; do printf "\nvoid planted_mode_%s(FENSTER *f){ (void)DTMD_ISTEXT(f->dtmd); }\n" "$i" >> "$0/we_wind.c"; i=$((i+1)); done'
 
   # The compiler's own canary, and the one member read no count can see: a
   # file outside we_winkind.c that names a member of the block must not

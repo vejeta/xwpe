@@ -481,7 +481,7 @@ char *wpe_ai_open_windows_block(FENSTER *f, char *buf, size_t n)
 
 static char *ws_window_text(FENSTER *w)
 {
- BUFFER *b = w->b;
+ BUFFER *b = e_window_text(w);
  size_t cap = 4096, len = 0;
  char *t = malloc(cap);
  int y;
@@ -1908,9 +1908,11 @@ static void ws_free_changes(ws_change *c, int n)
  */
 static void ws_window_take_text(FENSTER *w, const char *text)
 {
- if (e_eol_replace_all(w->b, text, E_BUFFER_STEP_NEW, E_EOL_ROWS) == E_BUFFER_NOMEM)
-  wpe_buffer_say_nomem(w->b, "the new text");
- e_buffer_cursor_set(w->b, w->b->b.y, w->b->b.x);
+ BUFFER *b = e_window_text(w);
+
+ if (e_eol_replace_all(b, text, E_BUFFER_STEP_NEW, E_EOL_ROWS) == E_BUFFER_NOMEM)
+  wpe_buffer_say_nomem(b, "the new text");
+ e_buffer_cursor_set(b, b->b.y, b->b.x);
  w->save++;
 }
 
@@ -2420,7 +2422,7 @@ BUFFER *wpe_ai_open_window_buffer(FENSTER *f, const char *path)
  const char *full = ws_absolute_path(path, abs, sizeof abs);
  FENSTER *w = ws_find_window(f, full);
  if (!w) return NULL;
- return w->b;
+ return e_window_text(w);
 }
 
 /**

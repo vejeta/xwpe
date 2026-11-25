@@ -4,10 +4,7 @@
 #include <string.h>
 
 #include "we_listsel.h"
-
-/* The window kinds that keep a project list: Files, Variables, Install. */
-#define LISTSEL_KIND_PROJECT_FIRST 4
-#define LISTSEL_KIND_PROJECT_LAST  6
+#include "we_winkind.h"   /* the list kinds, named once: enums and macros only */
 
 /* Where the sentinel stands when there is one. */
 static int listsel_ends_in_sentinel(const struct dirfile *df)
@@ -48,16 +45,33 @@ static char *listsel_copy(const char *text)
 
 /**
  * wpe_listsel_is_sealed_kind - Tell whether a window kind keeps a sealed list.
- * @ins: the window's kind (FENSTER.ins).
+ * @kind: the list window's kind, a WpeListKind (e_window_list_kind).
  *
  * The three project lists end in a blank row where the cursor stands to add;
  * the search, index and window lists do not.
  *
  * Return: 1 for the Files, Variables and Install lists, 0 otherwise.
  */
-int wpe_listsel_is_sealed_kind(int ins)
+int wpe_listsel_is_sealed_kind(int kind)
 {
-  return(ins >= LISTSEL_KIND_PROJECT_FIRST && ins <= LISTSEL_KIND_PROJECT_LAST);
+  return(kind >= WPE_LISTKIND_PROJECT_FIRST && kind <= WPE_LISTKIND_PROJECT_LAST);
+}
+
+/**
+ * wpe_listsel_is_result_kind - Tell whether a list window only shows results.
+ * @kind: the list window's kind, a WpeListKind (e_window_list_kind).
+ *
+ * The Function-Index, the Grep and Find hits and the Windows list have a Show
+ * button and no Add, Edit or Delete; the project lists are the other way
+ * round.  One answer here keeps the paint, the mouse and the keys of a list
+ * window agreeing on which buttons exist.
+ *
+ * Return: 1 for the four result lists, 0 for a project list or no list.
+ */
+int wpe_listsel_is_result_kind(int kind)
+{
+  return(kind == WPE_LISTKIND_FUNCTIONS || kind == WPE_LISTKIND_GREP ||
+         kind == WPE_LISTKIND_FOUND || kind == WPE_LISTKIND_WINDOWS);
 }
 
 /**
@@ -138,7 +152,7 @@ int wpe_listsel_sentinel_row(const struct dirfile *df)
 
 /**
  * wpe_listsel_action_needs_entry - Tell whether an action reads the selected entry.
- * @ins: the window's kind; @a: what the key asked.
+ * @kind: the list window's kind (a WpeListKind); @a: what the key asked.
  *
  * Opening the highlighted file, match or window needs one, and the user is
  * told "No entry in this list" when there is none. Adding, and editing on
@@ -146,9 +160,9 @@ int wpe_listsel_sentinel_row(const struct dirfile *df)
  *
  * Return: 1 when the action needs a real entry under the cursor.
  */
-int wpe_listsel_action_needs_entry(int ins, enum wpe_list_action a)
+int wpe_listsel_action_needs_entry(int kind, enum wpe_list_action a)
 {
-  (void)ins;
+  (void)kind;
   return(a == WPE_LIST_OPEN);
 }
 

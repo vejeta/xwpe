@@ -2270,7 +2270,7 @@ void e_ed_rahmen(FENSTER *f, int sw)
       maximize/close button. */
    if (f->dtmd == DTMD_DATA ||
        (f->dtmd == DTMD_FILEMANAGER &&
-        (((FLBFFR *)f->b)->prj_sel || ((FLBFFR *)f->b)->sw == 5)))
+        (e_window_files(f)->prj_sel || e_window_files(f)->sw == 5)))
     e_clear_titlebar_buttons(f);
    else
     /* File-manager dialogs (Open / Save As / search) are fixed-size: a close
@@ -2369,7 +2369,7 @@ static void e_render_window_content(FENSTER *f)
  }
  if (f->dtmd == DTMD_FILEDROPDOWN)
  {
-  e_pr_file_window((FLWND*)f->b, 1, 0, f->fb->er.fb, f->fb->ez.fb,
+  e_pr_file_window(e_window_list(f), 1, 0, f->fb->er.fb, f->fb->ez.fb,
     f->fb->frft.fb);
   return;
  }
@@ -2378,12 +2378,12 @@ static void e_render_window_content(FENSTER *f)
 #ifdef PROG
  if (f->c_sw)
   for (j = NUM_LINES_OFF_SCREEN_TOP;
-       j < f->b->mxlines && j < LINE_NUM_ON_SCREEN_BOTTOM; j++)
+       j < e_window_text(f)->mxlines && j < LINE_NUM_ON_SCREEN_BOTTOM; j++)
    e_pr_c_line(j, f);
  else
 #endif
   for (j = NUM_LINES_OFF_SCREEN_TOP;
-       j < f->b->mxlines && j < LINE_NUM_ON_SCREEN_BOTTOM; j++)
+       j < e_window_text(f)->mxlines && j < LINE_NUM_ON_SCREEN_BOTTOM; j++)
    e_pr_line(j, f);
  for (; j < LINE_NUM_ON_SCREEN_BOTTOM; j++)
   e_blk(NUM_COLS_ON_SCREEN - 1, f->a.x + 1,
@@ -2432,7 +2432,7 @@ int e_schirm(FENSTER *f, int sw)
  else if (f->dtmd == DTMD_DATA)
   return(e_data_schirm(f));
  else if (f->dtmd == DTMD_FILEDROPDOWN)
-  return(e_pr_file_window((FLWND*)f->b, 1, sw, f->fb->er.fb, f->fb->ez.fb,
+  return(e_pr_file_window(e_window_list(f), 1, sw, f->fb->er.fb, f->fb->ez.fb,
     f->fb->frft.fb));
 #ifdef WPE_AI
  wpe_ai_pane_before_paint(f);   /* the AI pane's rows at its present width */
@@ -2442,11 +2442,11 @@ int e_schirm(FENSTER *f, int sw)
 
 #ifdef PROG
  if (f->c_sw)
-  for (j = NUM_LINES_OFF_SCREEN_TOP; j < f->b->mxlines && j < LINE_NUM_ON_SCREEN_BOTTOM ; j++ )
+  for (j = NUM_LINES_OFF_SCREEN_TOP; j < e_window_text(f)->mxlines && j < LINE_NUM_ON_SCREEN_BOTTOM ; j++ )
    e_pr_c_line(j, f);
  else
 #endif
-  for (j = NUM_LINES_OFF_SCREEN_TOP; j < f->b->mxlines && j < LINE_NUM_ON_SCREEN_BOTTOM ; j++ )
+  for (j = NUM_LINES_OFF_SCREEN_TOP; j < e_window_text(f)->mxlines && j < LINE_NUM_ON_SCREEN_BOTTOM ; j++ )
    e_pr_line(j, f);
  for (; j < LINE_NUM_ON_SCREEN_BOTTOM ; j++ )
   e_blk((NUM_COLS_ON_SCREEN - 1), f->a.x + 1, j - NUM_LINES_OFF_SCREEN_TOP + f->a.y + 1, f->fb->et.fb);
@@ -2515,7 +2515,7 @@ int e_size_move(FENSTER *f)
    if (f->pic == NULL)  e_error(e_msg[ERR_LOWMEM], 1, f->fb);
    if (f->dtmd == DTMD_FILEDROPDOWN)
    {
-    FLWND *fw = (FLWND*) f->b;
+    FLWND *fw = e_window_list(f);
     fw->xa = f->a.x+1; fw->xe = f->e.x;
     fw->ya = f->a.y+1; fw->ye = f->e.y;
    }
@@ -2691,17 +2691,17 @@ int e_close_window(FENSTER *f)
      to save stays open, and a window left holding nothing would paint and
      take keys through a payload it no longer has. */
   FLWND *fw = e_window_list(f);
-  int swt = f->ins;
+  WpeListKind swt = e_window_list_kind(f);   /* before the release: the window is gone after */
 
 #ifdef PROG
   /* A project list the file refuses stays in its window; the box said why. */
-  if (swt == 4 && e_prj_save_before_close(f) != 0)
+  if (swt == WPE_LISTKIND_PROJECT_FILES && e_prj_save_before_close(f) != 0)
    return(WPE_ESC);
 #endif
   (void)e_window_release_list(f);   /* the close is certain now */
   if (f->dirct)
    FREE(f->dirct);
-  if (swt == 7)
+  if (swt == WPE_LISTKIND_WINDOWS)
    freedf(fw->df);
   FREE(fw);
   (cn->mxedt)--;
@@ -2714,7 +2714,7 @@ int e_close_window(FENSTER *f)
    e_window_drop(f);
    FREE(f);
   }
-  if (cn->mxedt > 0 && (swt < 5 || swt == 7))
+  if (cn->mxedt > 0 && (wpe_listsel_is_result_kind(swt) || swt == WPE_LISTKIND_PROJECT_FILES))
   {
    f = cn->f[cn->mxedt];
    e_ed_rahmen(f, 1);
@@ -2772,15 +2772,15 @@ int e_close_window(FENSTER *f)
    FREE(f->c_sw);
    f->c_sw = NULL;
   }
-  if (f && f->s != NULL)
+  if (f && e_window_screen(f) != NULL)
   {
    /* s->brp -- the per-screen breakpoint-line array, MALLOCed in e_edit and
       grown by e_brk_schirm/e_breakpoint -- is owned by the SCHIRM and must be
       freed with it, else every window close (editor and Messages alike) leaks
       it (valgrind: definitely lost at e_brk_schirm we_debug.c:1748). */
-   if (f->s->brp != NULL)
-    FREE(f->s->brp);
-   FREE(f->s);
+   if (e_window_screen(f)->brp != NULL)
+    FREE(e_window_screen(f)->brp);
+   FREE(e_window_screen(f));
   }
  }
  (cn->mxedt)--;
@@ -3203,7 +3203,7 @@ static void e_pr_help_cell(FENSTER *f, int y, int j, int ch, int frb)
  */
 static int e_pr_help_within(FENSTER *f, int y, int i, int j, int stop)
 {
- return i < wpe_row_len(f->b, y) && wpe_row_byte(f->b, y, i) != stop &&
+ return i < wpe_row_len(e_window_text(f), y) && wpe_row_byte(e_window_text(f), y, i) != stop &&
    j < COL_NUM_ON_SCREEN_RIGHT;
 }
 
@@ -3218,9 +3218,9 @@ static int e_pr_help_within(FENSTER *f, int y, int i, int j, int stop)
  */
 static void e_pr_help_link(FENSTER *f, int y, int *ip, int *jp)
 {
- SCHIRM *s = f->s;
+ SCHIRM *s = e_window_screen(f);
  int i = *ip, j = *jp, frb;
- int mark = wpe_row_byte(f->b, y, i);
+ int mark = wpe_row_byte(e_window_text(f), y, i);
 #ifdef NEWSTYLE
  int k = (mark != HBB) ? j : -1;
 #endif
@@ -3232,7 +3232,7 @@ static void e_pr_help_link(FENSTER *f, int y, int *ip, int *jp)
  else
   frb = s->fb->hb.fb;
  for (i++; e_pr_help_within(f, y, i, j, HED); i++, j++)
-  e_pr_help_cell(f, y, j, wpe_row_byte(f->b, y, i), frb);
+  e_pr_help_cell(f, y, j, wpe_row_byte(e_window_text(f), y, i), frb);
  j--;
 #ifdef NEWSTYLE
  if (WpeIsXwin() && k >= 0)
@@ -3251,7 +3251,7 @@ static void e_pr_help_link(FENSTER *f, int y, int *ip, int *jp)
 static void e_pr_help_end_page(FENSTER *f, int y, int j)
 {
  for (; j < COL_NUM_ON_SCREEN_RIGHT; j++)
-  e_pr_help_cell(f, y, j, ' ', f->s->fb->hh.fb);
+  e_pr_help_cell(f, y, j, ' ', e_window_screen(f)->fb->hh.fb);
 }
 
 /**
@@ -3269,14 +3269,14 @@ static void e_pr_help_file_link(FENSTER *f, int y, int frb, int *ip, int *jp)
  int i = *ip, j = *jp, k = j;
 
  for (i++; e_pr_help_within(f, y, i, j, ':'); i++, j++)
-  e_pr_help_cell(f, y, j, wpe_row_byte(f->b, y, i), f->s->fb->hb.fb);
+  e_pr_help_cell(f, y, j, wpe_row_byte(e_window_text(f), y, i), e_window_screen(f)->fb->hb.fb);
 #ifdef NEWSTYLE
  if (WpeIsXwin())
   e_make_xrect(f->a.x-NUM_COLS_OFF_SCREEN_LEFT+k+1, y-NUM_LINES_OFF_SCREEN_TOP+f->a.y+1,
     f->a.x-NUM_COLS_OFF_SCREEN_LEFT+j, y-NUM_LINES_OFF_SCREEN_TOP+f->a.y+1, 0);
 #endif
  for (; e_pr_help_within(f, y, i, j, HED); i++, j++)
-  e_pr_help_cell(f, y, j, wpe_row_byte(f->b, y, i), frb);
+  e_pr_help_cell(f, y, j, wpe_row_byte(e_window_text(f), y, i), frb);
  for (i++; e_pr_help_within(f, y, i, j, HED); i++, j++)
   e_pr_help_cell(f, y, j, ' ', frb);
  for (; e_pr_help_within(f, y, i, j, '.'); i++, j++)
@@ -3289,8 +3289,8 @@ static void e_pr_help_file_link(FENSTER *f, int y, int frb, int *ip, int *jp)
 /*   write a line (screen content)     */
 void e_pr_line(int y, FENSTER *f)
 {
- BUFFER *b = f->b;
- SCHIRM *s = f->s;
+ BUFFER *b = e_window_text(f);
+ SCHIRM *s = e_window_screen(f);
  int i, j, k, frb;
  /* The colour this line's plain text paints in: the editor text entry, or
     in the AI pane the entry of the role that wrote the line. */
@@ -3830,12 +3830,13 @@ int e_list_all_win(FENSTER *f)
  int i;
 
  for (i = f->ed->mxedt; i > 0; i--)
-  if (f->ed->f[i]->dtmd == DTMD_DATA && f->ed->f[i]->ins == 7)
+  if (f->ed->f[i]->dtmd == DTMD_DATA &&
+      e_window_list_kind(f->ed->f[i]) == WPE_LISTKIND_WINDOWS)
   {
    e_switch_window(f->ed->edt[i], f);
    return(0);
   }
- return(e_data_first(7, f->ed, NULL));
+ return(e_data_first(WPE_LISTKIND_WINDOWS, f->ed, NULL));
 }
 
 #ifdef NEWSTYLE

@@ -264,8 +264,8 @@ int e_buffer_closed(BUFFER *b)
 static int *buffer_brp(BUFFER *b)
 {
 #ifdef DEBUGGER
- if (buffer_keeps_history(b) && b->f->s != NULL)
-  return(b->f->s->brp);
+ if (buffer_keeps_history(b) && e_window_screen(b->f) != NULL)
+  return(e_window_screen(b->f)->brp);
 #endif
  return(NULL);
 }
@@ -481,7 +481,7 @@ static int buffer_marks(BUFFER *b, POINT **m)
  SCHIRM *s;
  int n = 0;
 
- if (b->f == NULL || (s = b->f->s) == NULL)
+ if (b->f == NULL || (s = e_window_screen(b->f)) == NULL)
   return(0);
  m[n++] = &s->mark_begin;
  m[n++] = &s->mark_end;
@@ -764,7 +764,7 @@ static POINT *buffer_mark_at(BUFFER *b, int which)
 {
  SCHIRM *s;
 
- if (b->f == NULL || (s = b->f->s) == NULL)
+ if (b->f == NULL || (s = e_window_screen(b->f)) == NULL)
   return(NULL);
  if (which == E_BUFFER_MARK_BEGIN)
   return(&s->mark_begin);
@@ -836,8 +836,8 @@ static void buffer_mark_pull_inside(BUFFER *b, POINT *p)
    only e_buffer_block_open sets it, after its own write. */
 static void buffer_block_close(BUFFER *b)
 {
- if (b->f != NULL && b->f->s != NULL)
-  b->f->s->block_open = 0;
+ if (b->f != NULL && e_window_screen(b->f) != NULL)
+  e_window_screen(b->f)->block_open = 0;
 }
 
 /**
@@ -851,14 +851,14 @@ static void buffer_block_close(BUFFER *b)
 void e_buffer_block_open(BUFFER *b)
 {
  e_buffer_block_between(b, E_BUFFER_POS_CURSOR, E_BUFFER_POS_CURSOR);
- if (b->f != NULL && b->f->s != NULL)
-  b->f->s->block_open = 1;
+ if (b->f != NULL && e_window_screen(b->f) != NULL)
+  e_window_screen(b->f)->block_open = 1;
 }
 
 /** e_buffer_block_is_open - Did Ctrl-K B start the block and nothing ended it? */
 int e_buffer_block_is_open(BUFFER *b)
 {
- return(b->f != NULL && b->f->s != NULL && b->f->s->block_open);
+ return(b->f != NULL && e_window_screen(b->f) != NULL && e_window_screen(b->f)->block_open);
 }
 
 /**
@@ -1168,7 +1168,7 @@ void e_buffer_marker_set(BUFFER *b, int n)
 {
  SCHIRM *s;
 
- if (b->f == NULL || (s = b->f->s) == NULL || n < 0 || n >= BUFFER_MARKER_COUNT)
+ if (b->f == NULL || (s = e_window_screen(b->f)) == NULL || n < 0 || n >= BUFFER_MARKER_COUNT)
   return;
  e_buffer_pos_set(b, &s->pt[n], b->b.y, b->b.x);
  buffer_marker_highlight(b);
@@ -1185,7 +1185,7 @@ void e_buffer_marker_goto(BUFFER *b, int n)
 {
  SCHIRM *s;
 
- if (b->f == NULL || (s = b->f->s) == NULL || n < 0 || n >= BUFFER_MARKER_COUNT)
+ if (b->f == NULL || (s = e_window_screen(b->f)) == NULL || n < 0 || n >= BUFFER_MARKER_COUNT)
   return;
  e_buffer_cursor_set(b, s->pt[n].y, s->pt[n].x);
  buffer_marker_highlight(b);
@@ -1198,7 +1198,7 @@ void e_buffer_marker_unset(BUFFER *b, int n)
 {
  SCHIRM *s;
 
- if (b->f == NULL || (s = b->f->s) == NULL || n < 0 || n >= BUFFER_MARKER_COUNT)
+ if (b->f == NULL || (s = e_window_screen(b->f)) == NULL || n < 0 || n >= BUFFER_MARKER_COUNT)
   return;
  s->pt[n].y = BUFFER_POS_UNSET;
  s->pt[n].x = BUFFER_POS_UNSET;
@@ -1267,7 +1267,7 @@ void e_buffer_block_lend(BUFFER *b, const BUFFER *from)
 {
  POINT *mb = buffer_mark_at(b, E_BUFFER_MARK_BEGIN);
  POINT *me = buffer_mark_at(b, E_BUFFER_MARK_END);
- const SCHIRM *sf = (from->f != NULL) ? from->f->s : NULL;
+ const SCHIRM *sf = e_window_screen(from->f);
 
  if (mb == NULL || me == NULL || sf == NULL)
   return;
@@ -1297,7 +1297,7 @@ static void buffer_row_points_set(BUFFER *b, int y)
 
  if (b->b.y == y)
   e_buffer_pos_set(b, &b->b, b->b.y, b->b.x);
- if (b->f == NULL || (s = b->f->s) == NULL)
+ if (b->f == NULL || (s = e_window_screen(b->f)) == NULL)
   return;
  for (i = 0; i < BUFFER_FOLLOW_COUNT; i++)
  {
@@ -1325,7 +1325,7 @@ void e_buffer_markers_settle(BUFFER *b)
  SCHIRM *s;
  int n;
 
- if (b->f == NULL || (s = b->f->s) == NULL)
+ if (b->f == NULL || (s = e_window_screen(b->f)) == NULL)
   return;
  for (n = 0; n < BUFFER_MARKER_COUNT; n++)
   if (s->pt[n].y >= 0)
@@ -1747,7 +1747,7 @@ static int buffer_shell_complete(BUFFER *shell)
  if (shell->mxlines != 1)
   return(0);
 #ifdef DEBUGGER
- if (shell->f->s->brp == NULL)
+ if (e_window_screen(shell->f)->brp == NULL)
   return(0);
 #endif
  return(1);
@@ -1787,7 +1787,7 @@ BUFFER *e_buffer_shell_new(BUFFER *like, int width)
   return(NULL);
  }
  shell->fb = like->fb;
- shell->f->s->fb = like->fb;
+ e_window_screen(shell->f)->fb = like->fb;
  return(shell);
 }
 
@@ -1829,12 +1829,12 @@ void e_buffer_shell_free(BUFFER *shell)
  e_buffer_history_drop(shell);
  if (shell->f != NULL)
  {
-  if (shell->f->s != NULL)
+  if (e_window_screen(shell->f) != NULL)
   {
 #ifdef DEBUGGER
-   free(shell->f->s->brp);
+   free(e_window_screen(shell->f)->brp);
 #endif
-   free(shell->f->s);
+   free(e_window_screen(shell->f));
   }
   e_window_drop(shell->f);
   free(shell->f);
@@ -1861,7 +1861,7 @@ void e_buffer_record_free(Undo *rec)
  else if (rec->type == 'r' || rec->type == 's')
   free(rec->u.pt);
  else if (rec->type == 'd')
-  e_buffer_shell_free((BUFFER *) rec->u.pt);
+  e_buffer_shell_free(rec->u.pt);
  free(rec->brk);
  free(rec);
 }
@@ -2058,10 +2058,11 @@ static int buffer_brp_reserve(BUFFER *b, int extra)
 
  if (extra <= 0 || buffer_brp(b) == NULL)
   return(E_BUFFER_OK);
- tmp = buffer_realloc(b->f->s->brp, (size_t)(b->f->s->brp[0] + extra + 1) * sizeof(int));
+ tmp = buffer_realloc(e_window_screen(b->f)->brp,
+                      (size_t)(e_window_screen(b->f)->brp[0] + extra + 1) * sizeof(int));
  if (tmp == NULL)
   return(E_BUFFER_NOMEM);
- b->f->s->brp = tmp;
+ e_window_screen(b->f)->brp = tmp;
 #endif
  return(E_BUFFER_OK);
 }
@@ -2332,10 +2333,10 @@ static void buffer_splice_commit(BUFFER *b, int y, int n_del, STRING *lines, int
   m->rec->n_new = n_ins;
   if (no_changed)
    m->rec->flags |= E_UNDO_EMPTIED;
-  if (b->f != NULL && b->f->s != NULL)
+  if (b->f != NULL && e_window_screen(b->f) != NULL)
   {
-   m->rec->a = b->f->s->mark_begin;
-   m->rec->e = b->f->s->mark_end;
+   m->rec->a = e_window_screen(b->f)->mark_begin;
+   m->rec->e = e_window_screen(b->f)->mark_end;
   }
  }
  if (out != NULL && nbrk_out != NULL)
@@ -3860,13 +3861,13 @@ int e_buffer_txn_rewrite(WpeBufferTxn *t, BUFFER *b, int y, int n_del, BUFFER *s
 static void buffer_replay_view_back(BUFFER *b, Undo *rec)
 {
  e_buffer_cursor_set(b, rec->b.y, rec->b.x);
- if (b->f != NULL && b->f->s != NULL)
+ if (b->f != NULL && e_window_screen(b->f) != NULL)
  {
   buffer_block_close(b);
-  b->f->s->mark_begin = rec->a;
-  b->f->s->mark_end = rec->e;
-  buffer_point_settle(b, &b->f->s->mark_begin);
-  buffer_point_settle(b, &b->f->s->mark_end);
+  e_window_screen(b->f)->mark_begin = rec->a;
+  e_window_screen(b->f)->mark_end = rec->e;
+  buffer_point_settle(b, &e_window_screen(b->f)->mark_begin);
+  buffer_point_settle(b, &e_window_screen(b->f)->mark_end);
  }
 }
 
@@ -5539,7 +5540,7 @@ static int buffer_replay_on_a_shell(WpeBufferTxn *t, BUFFER *b, const Undo *rec,
  }
  buffer_shell_seed(shell, v, &rec->b, top, n);
  e_buffer_step_begin(shell);
- wpe_buffer_replay_on_shell(shell, shell->f->s, rec, top);
+ wpe_buffer_replay_on_shell(shell, e_window_screen(shell->f), rec, top);
  e_buffer_step_end(shell);
  if (shell->refusals > 0)
  {
@@ -6217,8 +6218,8 @@ static void buffer_marks_inside(BUFFER *b)
 void e_buffer_marks_inside(BUFFER *b)
 {
  buffer_marks_inside(b);
- if (b->f != NULL && b->f->s != NULL)
-  buffer_mark_pull_inside(b, &b->f->s->ks);
+ if (b->f != NULL && e_window_screen(b->f) != NULL)
+  buffer_mark_pull_inside(b, &e_window_screen(b->f)->ks);
  e_buffer_markers_settle(b);
 }
 
@@ -6377,8 +6378,10 @@ void e_buffer_init(BUFFER *b, struct CNT *cn, struct FNST *f, int mx_x, int hist
  {
   f->save = 0;
 #ifdef DEBUGGER
-  if (f->s != NULL && f->s->brp == NULL && (f->s->brp = buffer_malloc(sizeof(int))) != NULL)
-   f->s->brp[0] = 0;
+  SCHIRM *screen = e_window_screen(f);
+
+  if (screen != NULL && screen->brp == NULL && (screen->brp = buffer_malloc(sizeof(int))) != NULL)
+   screen->brp[0] = 0;
 #endif
  }
  if ((b->bf = buffer_malloc(MAXLINES * sizeof(STRING))) == NULL)

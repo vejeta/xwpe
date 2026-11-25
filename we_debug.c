@@ -1175,7 +1175,7 @@ static void e_d_messages_insert_char(BUFFER *b, int last, int c)
 
 static void e_d_messages_append_char(FENSTER *mf, int c)
 {
- BUFFER *b = mf->b;
+ BUFFER *b = e_window_text(mf);
  int last = b->mxlines - 1;
 
  if (c == '\r')
@@ -1197,7 +1197,7 @@ static void e_d_messages_append_char(FENSTER *mf, int c)
 
 static void e_d_pty_ensure_own_line(FENSTER *mf)
 {
- BUFFER *b = mf->b;
+ BUFFER *b = e_window_text(mf);
  int last = b->mxlines - 1;
 
  if (e_d_async.pty_owns_last_line)
@@ -3229,8 +3229,8 @@ static void e_d_activate_messages_window(void)
 
 static void e_d_messages_place_cursor(FENSTER *mf)
 {
- BUFFER *b = mf->b;
- SCHIRM *s = mf->s;
+ BUFFER *b = e_window_text(mf);
+ SCHIRM *s = e_window_screen(mf);
  int last = b->mxlines - 1;
  int row, col;
 
@@ -4521,7 +4521,7 @@ int e_remove_all_watches(FENSTER *f)
 int e_delete_watches(FENSTER *f)
 {
  ECNT *cn = f->ed;
- BUFFER *b = cn->f[cn->mxedt]->b;
+ BUFFER *b = e_window_text(cn->f[cn->mxedt]);
  int n;
 
  f = cn->f[cn->mxedt];
@@ -4550,7 +4550,7 @@ int e_make_watches(FENSTER *f)
   return(0);
  if ((f->ed->mxedt > 0) && (strcmp(f->datnam, "Watches") == 0))
  { /* sets y=number of watch we're inserting */
-  for(y = 0; y < e_d_nwtchs && e_d_nrwtchs[y] < f->b->b.y; y++)
+  for(y = 0; y < e_d_nwtchs && e_d_nrwtchs[y] < e_window_text(f)->b.y; y++)
    ;
  }
  else
@@ -4596,7 +4596,7 @@ int e_make_watches(FENSTER *f)
 
 int e_edit_watches(FENSTER *f)
 {
- BUFFER *b = f->ed->f[f->ed->mxedt]->b;
+ BUFFER *b = e_window_text(f->ed->f[f->ed->mxedt]);
  char str[128];
  int l;
 
@@ -4956,7 +4956,7 @@ static int e_d_watches_show_values(ECNT *cn, char **values, int sw)
 
  if (iw <= 0)
   return(iw);
- b = cn->f[iw]->b;
+ b = e_window_text(cn->f[iw]);
  e_d_watches_buffer_clear(b);
  for (l = 0; l < e_d_nwtchs; l++)
   e_d_watch_put_value(b, l, e_d_watch_answer_at(values, l));
@@ -4988,7 +4988,7 @@ int e_d_p_watches(FENSTER *f, int sw)
  iw = e_d_watches_window_take(cn);
  if (iw <= 0)
   return(iw);
- b = cn->f[iw]->b;
+ b = e_window_text(cn->f[iw]);
  e_d_watches_buffer_clear(b);
 
  /* The debugger is asked only at a stop (above).  With a session that runs
@@ -5183,7 +5183,7 @@ static const char *e_d_stack_rows_find(int first)
  */
 static void e_d_stack_put_row(FENSTER *f, char *str, int *pi, int *pj)
 {
- BUFFER *b = f->b;
+ BUFFER *b = e_window_text(f);
  int i = *pi, j = *pj, k = 0, l;
 
  e_d_stack_rows_keep(str, i);
@@ -5251,7 +5251,7 @@ static void e_d_stack_put_row(FENSTER *f, char *str, int *pi, int *pj)
  */
 static void e_d_stack_show_end(ECNT *cn, int is, int rows, int sw)
 {
- BUFFER *b = cn->f[is]->b;
+ BUFFER *b = e_window_text(cn->f[is]);
 
  if (rows < b->mxlines)
   e_buffer_delete_lines(b, rows, b->mxlines - rows, E_BUFFER_STEP_NEW);
@@ -5465,7 +5465,7 @@ int e_make_stack(FENSTER *f)
 {
    char file[E_D_LINE_MAX], *tmpstr;
    int i, line = 0, dif;
-   BUFFER *b = f->ed->f[f->ed->mxedt]->b;
+   BUFFER *b = e_window_text(f->ed->f[f->ed->mxedt]);
    if (e_d_refuse_while_running(f))
       return(0);
    if (e_d_frames_backend())
@@ -5525,7 +5525,7 @@ int e_brk_schirm(FENSTER *f)
  int i;
  int n;
 
- SCHIRM *s = f->s;
+ SCHIRM *s = e_window_screen(f);
  s->brp= REALLOC(s->brp, sizeof(int));
  s->brp[0]=0;
  for(i=0;i<e_d_nbrpts;i++)
@@ -6147,7 +6147,7 @@ int e_remove_breakpoints(FENSTER *f)
   e_d_breakpoints_changed(cn);
  for (i = cn->mxedt; i >= 0; i--)
   if (DTMD_ISTEXT(cn->f[i]->dtmd))
-   cn->f[i]->s->brp[0] = 0;
+   e_window_screen(cn->f[i])->brp[0] = 0;
  e_d_brk_list_free();
  e_rep_win_tree(cn);
  return(0);
@@ -6458,9 +6458,9 @@ static void e_d_brk_margin_row_drop(BUFFER *b, int row)
  int *brp;
  int i, k;
 
- if (b->f == NULL || b->f->s == NULL || b->f->s->brp == NULL)
+ if (b->f == NULL || e_window_screen(b->f) == NULL || e_window_screen(b->f)->brp == NULL)
   return;
- brp = b->f->s->brp;
+ brp = e_window_screen(b->f)->brp;
  for (i = 1, k = 1; i <= brp[0]; i++)
   if (brp[i] != row)
    brp[k++] = brp[i];
@@ -6595,8 +6595,8 @@ void wpe_buffer_lines_moved(BUFFER *b, int y, int n_del, int n_ins,
 int e_make_breakpoint(FENSTER *f, int sw)
 {
  ECNT *cn = f->ed;
- SCHIRM *s = cn->f[cn->mxedt]->s;
- BUFFER *b = cn->f[cn->mxedt]->b;
+ SCHIRM *s = e_window_screen(cn->f[cn->mxedt]);
+ BUFFER *b = e_window_text(cn->f[cn->mxedt]);
  int i;
 
  if (e_d_start_refused(f))
@@ -11038,7 +11038,7 @@ static int e_d_dap_watches_fill(FENSTER *f, char **values, int nvalues,
   iw = cn->mxedt;
  }
  f = cn->f[iw];
- b = cn->f[iw]->b;
+ b = e_window_text(cn->f[iw]);
  e_d_watches_buffer_clear(b);
  for (l = 0; l < e_d_nwtchs; l++)
  {
@@ -11479,8 +11479,8 @@ static void e_d_start_wait_line_drop(void)
  if (!e_d_start.wait_row)
   return;
  e_d_start.wait_row = 0;
- if (mf && mf->b->mxlines > 0)
-  e_buffer_delete_lines(mf->b, mf->b->mxlines - 1, 1, E_BUFFER_STEP_NEW);
+ if (mf && e_window_text(mf)->mxlines > 0)
+  e_buffer_delete_lines(e_window_text(mf), e_window_text(mf)->mxlines - 1, 1, E_BUFFER_STEP_NEW);
 }
 
 /**
@@ -11536,7 +11536,7 @@ static void e_d_start_wait_line_put(void)
  if (!mf || e_d_start.wait_row)
   return;
  e_d_start_wait_text(line, sizeof line, (long)(time(NULL) - e_d_start.start));
- e_view_append(mf->b, line);
+ e_view_append(e_window_text(mf), line);
  e_d_start.wait_row = 1;
 }
 
@@ -12729,7 +12729,7 @@ static void e_d_dap_start_close_messages(ECNT *cn)
  FENSTER *top = cn->f[cn->mxedt];
  int i;
 
- if (!e_d_start.opened_messages || !mf || !e_d_messages_empty(mf->b))
+ if (!e_d_start.opened_messages || !mf || !e_d_messages_empty(e_window_text(mf)))
   return;
  e_d_start.opened_messages = 0;
  i = e_d_window_index(cn, mf);
@@ -15499,8 +15499,8 @@ static void e_d_a68g_goto(FENSTER *f, int line)
  if (i != cn->mxedt)
   e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
  f = cn->f[cn->mxedt];
- b = f->b;
- s = f->s;
+ b = e_window_text(f);
+ s = e_window_screen(f);
  if (line >= 1 && line <= b->mxlines)
  {
   s->da.y = line - 1;
@@ -16637,7 +16637,7 @@ static int e_d_p_frames(ECNT *cn, int is, int sw)
  */
 static void e_d_frames_put_in_window(ECNT *cn, int is, int sw)
 {
- e_d_stack_window_fill(cn->f[is]->b);
+ e_d_stack_window_fill(e_window_text(cn->f[is]));
  fk_cursor(1);
  if (sw && is != cn->mxedt)
   e_switch_window(cn->edt[is], cn->f[cn->mxedt]);
@@ -16776,7 +16776,7 @@ static int e_d_frame_line(const e_d_frame *fr)
  */
 static int e_d_frame_show(FENSTER *f)
 {
- BUFFER *b = f->ed->f[f->ed->mxedt]->b;
+ BUFFER *b = e_window_text(f->ed->f[f->ed->mxedt]);
  int index = e_d_stack_row_frame(b);
  e_d_frame fr;
 
@@ -18018,7 +18018,7 @@ int e_d_goto_func(FENSTER *f, int flag)
  FENSTER *top = cn->f[cn->mxedt];
 
  if (flag == E_D_GOTO_CURSOR &&
-     e_d_act_deferred(E_D_ACT_GOTO, top, top->b->b.y + 1))
+     e_d_act_deferred(E_D_ACT_GOTO, top, e_window_text(top)->b.y + 1))
   return(0);
  if (flag == E_D_GOTO_FINISH && e_d_act_deferred(E_D_ACT_FINISH, top, 0))
   return(0);
@@ -18026,7 +18026,7 @@ int e_d_goto_func(FENSTER *f, int flag)
   return(0);
  if (flag == E_D_GOTO_CURSOR)
   e_d_goto_take_target(top);
- return(e_d_goto_run(f, flag, top->b->b.y + 1));
+ return(e_d_goto_run(f, flag, e_window_text(top)->b.y + 1));
 }
 
 int e_d_goto_cursor(FENSTER *f)
@@ -18218,12 +18218,12 @@ static int e_d_show_source(char *file, int line, FENSTER *f, int asked)
    e_d_say_source_refused(f, file, open_err, asked);
    return(WPE_ESC);
   }
-  b = cn->f[cn->mxedt]->b;
-  s = cn->f[cn->mxedt]->s;
+  b = e_window_text(cn->f[cn->mxedt]);
+  s = e_window_screen(cn->f[cn->mxedt]);
  }
  f = cn->f[cn->mxedt];
- b = cn->f[cn->mxedt]->b;
- s = cn->f[cn->mxedt]->s;
+ b = e_window_text(cn->f[cn->mxedt]);
+ s = e_window_screen(cn->f[cn->mxedt]);
  s->da.y = line - 1;
  s->da.x = 0;
  e_buffer_cursor_set(b, line - 1, 0);
@@ -28306,7 +28306,7 @@ int e_d_delbreak(FENSTER *f)
 
  for (i = cn->mxedt; i >= 0; i--)
   if (DTMD_ISTEXT(cn->f[i]->dtmd))
-   cn->f[i]->s->da.y = -1;
+   e_window_screen(cn->f[i])->da.y = -1;
  e_rep_win_tree(cn);
  e_refresh();
  return(0);
@@ -28657,7 +28657,7 @@ static e_lsp_text_index *g_lsp_synced_ix = NULL;
  */
 static e_lsp_units e_lsp_units_at(FENSTER *f, int y, int x)
 {
- BUFFER *b = f->b;
+ BUFFER *b = e_window_text(f);
 
  return(e_lsp_units_of(wpe_row_bytes(b, y, NULL), wpe_row_len(b, y), x,
    e_lsp_position_encoding(g_lsp)));
@@ -29147,9 +29147,9 @@ static void e_lsp_inlay_fetch(FENSTER *f)
  e_lsp_fetch_ticket *t;
  int last;
 
- if (!g_lsp || !f || !f->b)
+ if (!g_lsp || !f || !e_window_text(f))
   return;
- last = f->b->mxlines - 1;
+ last = e_window_text(f)->mxlines - 1;
  if (last < 0)
   last = 0;
  t = e_lsp_fetch_ticket_new();
@@ -29723,7 +29723,7 @@ static void e_lsp_on_show_text(const char *title, const char *body, void *ud)
    latter as a terminfo capability.) */
 static char *e_lsp_buffer_text(FENSTER *f)
 {
- BUFFER *b = f->b;
+ BUFFER *b = e_window_text(f);
  const char **lns;
  char *body;
  int y, n = b->mxlines;
@@ -30677,8 +30677,8 @@ static e_lsp_ask_t *e_lsp_ask_begin(FENSTER *f, int kind)
  a->kind = kind;
  a->seq = ++e_lsp_ask_seq;
  snprintf(a->path, sizeof a->path, "%s", g_lsp_file);
- a->y = f->b->b.y;
- a->x = f->b->b.x;
+ a->y = e_window_text(f)->b.y;
+ a->x = e_window_text(f)->b.x;
  a->n = -1;
  return(a);
 }
@@ -30955,7 +30955,7 @@ static int e_lsp_ask_still_true(const e_lsp_ask_t *a, FENSTER *w,
   return(0);
  if (!cursor_too)
   return(1);
- return(w->b->b.y == a->y && w->b->b.x == a->x);
+ return(e_window_text(w)->b.y == a->y && e_window_text(w)->b.x == a->x);
 }
 
 /**
@@ -31536,7 +31536,7 @@ static int e_lsp_symbol_col(FENSTER *f);
  */
 static e_lsp_units e_lsp_symbol_units(FENSTER *f)
 {
- return(e_lsp_units_at(f, f->b->b.y, e_lsp_symbol_col(f)));
+ return(e_lsp_units_at(f, e_window_text(f)->b.y, e_lsp_symbol_col(f)));
 }
 static int e_lsp_ui_dispatch(FENSTER *f, int c);   /* run the Alt-Q action `c` */
 void e_lsp_after_bulk_edit(FENSTER *f);            /* re-sync after a whole-buffer edit */
@@ -31547,7 +31547,7 @@ void e_lsp_after_bulk_edit(FENSTER *f);            /* re-sync after a whole-buff
    target for the error message.  The jump happens when the answer comes. */
 static int e_lsp_ui_jump(FENSTER *f, int which, const char *what)
 {
- BUFFER *b = f->b;
+ BUFFER *b = e_window_text(f);
  e_lsp_ask_t *a;
 
  if (e_lsp_ensure(f) < 0)
@@ -31721,8 +31721,8 @@ static int e_lsp_is_prefix_key(FENSTER *f, int k)
 static int e_lsp_cursor_popup(FENSTER *f, const char *title, const char *text,
                               const char *hint)
 {
- BUFFER *b = f->b;
- SCHIRM *s = f->s;
+ BUFFER *b = e_window_text(f);
+ SCHIRM *s = e_window_screen(f);
  char *tln[LSP_TIP_MAXLINES];
  int n, w, i, c, cx, cy, xa, ya, xe, ye;
  PIC *pic;
@@ -31780,7 +31780,7 @@ static int e_lsp_cursor_popup(FENSTER *f, const char *title, const char *text,
 /* AltQ H -- show the type/documentation of the symbol under the cursor. */
 static int e_lsp_ui_hover(FENSTER *f)
 {
- BUFFER *b = f->b;
+ BUFFER *b = e_window_text(f);
  e_lsp_ask_t *a;
 
  { const char *tp = getenv("XWPE_UI_TRACE");
@@ -31857,7 +31857,7 @@ static int e_lsp_ident_at(const BUFFER *b, int y, int x)
    on an identifier at all, the column is returned unchanged. */
 static int e_lsp_symbol_col(FENSTER *f)
 {
- BUFFER *b = f->b;
+ BUFFER *b = e_window_text(f);
  int y = b->b.y;
  int x = b->b.x;
 
@@ -32001,9 +32001,9 @@ static int e_lsp_pick(FENSTER *f, const char *title, const char *const *labels,
    autocomplete -- instead of parked in the corner.  Mirrors fk_locate's mapping
    of buffer coords to screen coords. */
 static int e_lsp_cursor_screen_x(FENSTER *f)
-{  return(f->a.x + f->b->b.x - f->s->c.x + 1);  }
+{  return(f->a.x + e_window_text(f)->b.x - e_window_screen(f)->c.x + 1);  }
 static int e_lsp_cursor_screen_y(FENSTER *f)
-{  return(f->a.y + f->b->b.y - f->s->c.y + 1);  }
+{  return(f->a.y + e_window_text(f)->b.y - e_window_screen(f)->c.y + 1);  }
 
 /* AltQ C -- offer completion candidates for the word under the cursor in a
    navigable popup (the dialog radio list); insert the chosen one, replacing the
@@ -32011,7 +32011,7 @@ static int e_lsp_cursor_screen_y(FENSTER *f)
    selects, Esc cancels) -- no bespoke popup. */
 static int e_lsp_ui_complete(FENSTER *f)
 {
- BUFFER *b = f->b;
+ BUFFER *b = e_window_text(f);
  e_lsp_ask_t *a;
 
  if (e_lsp_ensure(f) < 0)
@@ -32034,8 +32034,8 @@ static int e_lsp_ui_complete(FENSTER *f)
  */
 static void e_lsp_complete_show(FENSTER *f, const e_lsp_ask_t *a)
 {
- BUFFER *b = f->b;
- SCHIRM *s = f->s;
+ BUFFER *b = e_window_text(f);
+ SCHIRM *s = e_window_screen(f);
  const e_lsp_completion_item *items = a->items;
  const char *labels[E_LSP_ASK_ITEMS_MAX];
  char insbuf[256];
@@ -32088,7 +32088,7 @@ static void e_lsp_complete_show(FENSTER *f, const e_lsp_ask_t *a)
    comes when the server answers (e_lsp_signature_show). */
 static int e_lsp_ui_signature(FENSTER *f)
 {
- BUFFER *b = f->b;
+ BUFFER *b = e_window_text(f);
  e_lsp_ask_t *a;
 
  if (e_lsp_ensure(f) < 0)
@@ -32174,7 +32174,7 @@ static int e_lsp_diag_pick(int cy, int cx, int dir)
    other key dismisses. */
 static int e_lsp_ui_jump_diag(FENSTER *f, int dir)
 {
- BUFFER *b = f->b;
+ BUFFER *b = e_window_text(f);
 
  if (g_diag_nactive == 0)
  {  e_error("No problems reported in this file.", 0, f->fb);  return(0);  }
@@ -32220,7 +32220,7 @@ static int e_lsp_ui_prev_problem(FENSTER *f) { return(e_lsp_ui_jump_diag(f, -1))
 /* AltQ R -- list every reference to the symbol under the cursor in Messages. */
 static int e_lsp_ui_references(FENSTER *f)
 {
- BUFFER *b = f->b;
+ BUFFER *b = e_window_text(f);
  e_lsp_ask_t *a;
 
  if (e_lsp_ensure(f) < 0)
@@ -32321,7 +32321,7 @@ static void e_lsp_hierarchy_show(FENSTER *f, const e_lsp_ask_t *a)
    without leaving xwpe.  Shared body for the two menu actions below. */
 static int e_lsp_ui_call_hierarchy(FENSTER *f, int outgoing)
 {
- BUFFER *b = f->b;
+ BUFFER *b = e_window_text(f);
  e_lsp_ask_t *a;
 
  if (e_lsp_ensure(f) < 0)
@@ -32350,7 +32350,7 @@ static int e_lsp_ui_callees(FENSTER *f)  {  return(e_lsp_ui_call_hierarchy(f, 1)
    extends it).  Shared body for the two menu actions below. */
 static int e_lsp_ui_type_hierarchy(FENSTER *f, int subtypes)
 {
- BUFFER *b = f->b;
+ BUFFER *b = e_window_text(f);
  e_lsp_ask_t *a;
 
  if (e_lsp_ensure(f) < 0)
@@ -32394,7 +32394,7 @@ static int e_lsp_range_covers(const e_lsp_ask_range *r, int sl, int sc, int el, 
    mouse drag sets it (s->mark_begin/mark_end), so Copy/Cut act on it normally. */
 static int e_lsp_ui_expand_selection(FENSTER *f)
 {
- BUFFER *b = f->b;
+ BUFFER *b = e_window_text(f);
  e_lsp_ask_t *a;
 
  if (e_lsp_ensure(f) < 0)
@@ -32448,7 +32448,7 @@ static int e_lsp_selection_pick(const e_lsp_ask_t *a, SCHIRM *s)
  */
 static void e_lsp_selection_show(FENSTER *f, const e_lsp_ask_t *a)
 {
- SCHIRM *s = f->s;
+ SCHIRM *s = e_window_screen(f);
  const e_lsp_ask_range *r;
  int chosen;
 
@@ -32464,8 +32464,8 @@ static void e_lsp_selection_show(FENSTER *f, const e_lsp_ask_t *a)
   return;
  }
  r = &a->rows[chosen].range;
- e_buffer_mark_set(f->b, E_BUFFER_MARK_BEGIN, r->start_line, r->start_x);
- e_buffer_mark_set(f->b, E_BUFFER_MARK_END, r->end_line, r->end_x);
+ e_buffer_mark_set(e_window_text(f), E_BUFFER_MARK_BEGIN, r->start_line, r->start_x);
+ e_buffer_mark_set(e_window_text(f), E_BUFFER_MARK_END, r->end_line, r->end_x);
  e_schirm(f, 1);
  e_cursor(f, 0);
 }
@@ -32476,7 +32476,7 @@ static void e_lsp_selection_show(FENSTER *f, const e_lsp_ask_t *a)
    identifier clears the highlight. */
 static int e_lsp_ui_highlight(FENSTER *f)
 {
- BUFFER *b = f->b;
+ BUFFER *b = e_window_text(f);
  e_lsp_ask_t *a;
  char word[256];
 
@@ -32776,8 +32776,8 @@ static int e_lsp_ui_code_actions(FENSTER *f)
  if (!a)
   return(-1);
  return(e_lsp_ask_sent(f, a, e_lsp_code_actions_async(g_lsp, g_lsp_file,
-                                                      f->b->b.y,
-                                                      e_lsp_units_at(f, f->b->b.y, f->b->b.x),
+                                                      e_window_text(f)->b.y,
+                                                      e_lsp_units_at(f, e_window_text(f)->b.y, e_window_text(f)->b.x),
                                                       E_LSP_ROWS_MAX,
                                                       e_lsp_actions_told, a)));
 }
@@ -32876,8 +32876,8 @@ static void e_lsp_edit_show(FENSTER *f, const e_lsp_ask_t *a)
  */
 static void e_lsp_replace_buffer(FENSTER *f, const char *newtext)
 {
- if (e_eol_replace_all(f->b, newtext, E_BUFFER_STEP_NEW, E_EOL_ROWS) == E_BUFFER_NOMEM)
-  wpe_buffer_say_nomem(f->b, "the new text");
+ if (e_eol_replace_all(e_window_text(f), newtext, E_BUFFER_STEP_NEW, E_EOL_ROWS) == E_BUFFER_NOMEM)
+  wpe_buffer_say_nomem(e_window_text(f), "the new text");
  e_window_show_replaced_text(f);
  e_lsp_after_bulk_edit(f);          /* tell the server the buffer changed, so its
                                        diagnostics re-publish for the fixed text
@@ -32887,7 +32887,7 @@ static void e_lsp_replace_buffer(FENSTER *f, const char *newtext)
 /* The identifier under the cursor (for the rename default), or "" . */
 static void e_lsp_word_at_cursor(FENSTER *f, char *out, size_t osz)
 {
- BUFFER *b = f->b;
+ BUFFER *b = e_window_text(f);
  int y = b->b.y;
  int len = 0;
  int a = b->b.x, e = b->b.x, n;
@@ -32916,7 +32916,7 @@ static void e_lsp_word_at_cursor(FENSTER *f, char *out, size_t osz)
    method, then format only it. */
 static int e_lsp_ui_format(FENSTER *f)
 {
- SCHIRM *s = f->s;
+ SCHIRM *s = e_window_screen(f);
  e_lsp_range r;
  e_lsp_ask_t *a;
  int rc;
@@ -32971,7 +32971,7 @@ static void e_lsp_format_show(FENSTER *f, const e_lsp_ask_t *a)
 /* AltQ N -- rename the symbol under the cursor across the workspace. */
 static int e_lsp_ui_rename(FENSTER *f)
 {
- BUFFER *b = f->b;
+ BUFFER *b = e_window_text(f);
  char newname[256];
  e_lsp_ask_t *a;
  int dret;

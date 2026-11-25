@@ -92,6 +92,12 @@ static void test_queries(void)
   chk_int("project kinds", wpe_listsel_is_sealed_kind(4) + wpe_listsel_is_sealed_kind(5) +
                            wpe_listsel_is_sealed_kind(6), 3);
   chk_int("search kinds are not sealed", wpe_listsel_is_sealed_kind(2) + wpe_listsel_is_sealed_kind(7), 0);
+  chk_int("result kinds are the index, the two searches and the windows",
+          wpe_listsel_is_result_kind(1) + wpe_listsel_is_result_kind(2) +
+          wpe_listsel_is_result_kind(3) + wpe_listsel_is_result_kind(7), 4);
+  chk_int("a project list and a non-list are not result kinds",
+          wpe_listsel_is_result_kind(4) + wpe_listsel_is_result_kind(5) +
+          wpe_listsel_is_result_kind(6) + wpe_listsel_is_result_kind(0), 0);
   free_list(df);
 }
 

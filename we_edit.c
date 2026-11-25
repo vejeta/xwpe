@@ -388,7 +388,7 @@ void e_line_make_hard_empty(BUFFER *b, int y)
  */
 static int e_edit_read_file(FENSTER *f, FILE *fp)
 {
- BUFFER *b = f->b;
+ BUFFER *b = e_window_text(f);
  int history = b->history, r;
  POINT end;
  WpeEolInfo info;
@@ -414,9 +414,9 @@ static void e_edit_say_nul_dropped(FENSTER *f)
 {
  char line[E_NUL_SAY_MAX];
 
- if (f->b->nul_dropped <= 0 || f->dtmd == DTMD_HELP)
+ if (e_window_text(f)->nul_dropped <= 0 || f->dtmd == DTMD_HELP)
   return;
- e_eol_nul_sentence(f->b->nul_dropped, line, sizeof line);
+ e_eol_nul_sentence(e_window_text(f)->nul_dropped, line, sizeof line);
  e_status_say_until_key(f, line);
 }
 
@@ -432,14 +432,16 @@ static void e_edit_say_nul_dropped(FENSTER *f)
  */
 static void e_edit_drop_window(ECNT *cn, FENSTER *f)
 {
- e_close_buffer(f->b);
+ SCHIRM *screen = e_window_screen(f);
+
+ e_close_buffer(e_window_text(f));
  if (f->c_sw != NULL)
   FREE(f->c_sw);
 #ifdef DEBUGGER
- if (f->s->brp != NULL)
-  FREE(f->s->brp);
+ if (screen->brp != NULL)
+  FREE(screen->brp);
 #endif
- FREE(f->s);
+ FREE(screen);
  if (f->datnam != NULL)
   FREE(f->datnam);
  if (f->dirct != NULL)
@@ -488,7 +490,7 @@ static int e_edit_read_refused(ECNT *cn, FENSTER *f, FILE *fp, int ftype)
   e_edit_refuse_file(cn, f, fp);
   return(1);
  }
- wpe_buffer_say_nomem(f->b, "reading the file");
+ wpe_buffer_say_nomem(e_window_text(f), "reading the file");
  return(0);
 }
 
@@ -523,7 +525,7 @@ static int e_edit_reads_file(int ftype)
  */
 static void e_edit_drop_fresh_line(FENSTER *f)
 {
- BUFFER *b = f->b;
+ BUFFER *b = e_window_text(f);
 
  if (b->mxlines > 1 && wpe_row_byte(b, b->mxlines - 1, 0) == '\0')
   e_buffer_delete_lines(b, b->mxlines - 1, 1, E_BUFFER_STEP_COVERED);
@@ -657,20 +659,20 @@ static int e_edit_open(ECNT *cn, char *filename, int view, int *err)
  f->fb = cn->fb;
  cn->f[cn->mxedt] = f;
 
- new_text = (BUFFER *)MALLOC(sizeof(BUFFER));
+ new_text = MALLOC(sizeof(BUFFER));
  if (new_text == NULL)
   e_error(e_msg[ERR_LOWMEM], 1, f->fb);
- new_screen = (SCHIRM *)MALLOC(sizeof(SCHIRM));
+ new_screen = MALLOC(sizeof(SCHIRM));
  if (new_screen == NULL)
   e_error(e_msg[ERR_LOWMEM], 1, f->fb);
  if (!e_window_hold_text(f, new_text, new_screen))
   e_error(e_msg[ERR_LOWMEM], 1, f->fb);
- f->s->block_open = 0;
+ e_window_screen(f)->block_open = 0;
 #ifdef DEBUGGER
- f->s->brp = NULL;
+ e_window_screen(f)->brp = NULL;
 #endif
- e_buffer_init(f->b, cn, f, cn->maxcol, E_BUFFER_HISTORY_FULL);
- if (f->b->mxlines != 1)
+ e_buffer_init(e_window_text(f), cn, f, cn->maxcol, E_BUFFER_HISTORY_FULL);
+ if (e_window_text(f)->mxlines != 1)
   e_error(e_msg[ERR_LOWMEM], 1, f->fb);
 #ifdef PROG
  for (i = cn->mxedt-1;
@@ -740,7 +742,7 @@ static int e_edit_open(ECNT *cn, char *filename, int view, int *err)
  f->hlp_str = e_hlp_str[0];
  f->blst = eblst;
  f->nblst = 7;
- f->b->fb = f->fb;
+ e_window_text(f)->fb = f->fb;
  f->fd.dirct = NULL;
  if (WpeIsProg())
   e_add_synt_tl(filename, f);
@@ -758,20 +760,20 @@ static int e_edit_open(ECNT *cn, char *filename, int view, int *err)
  {
   f->flg = 0;
  }
- f->s->c = e_set_pnt(0, 0);
- e_buffer_mark_set(f->b, E_BUFFER_MARK_ANCHOR, 0, 0);
- e_buffer_mark_set(f->b, E_BUFFER_MARK_BEGIN, 0, 0);
- e_buffer_mark_set(f->b, E_BUFFER_MARK_END, 0, 0);
- e_buffer_mark_set(f->b, E_BUFFER_MARK_FIND_A, 0, 0);
- e_buffer_mark_set(f->b, E_BUFFER_MARK_FIND_E, 0, 0);
- e_buffer_mark_unset(f->b, E_BUFFER_MARK_AUTO_INDENT);
- f->s->fb = f->fb;
+ e_window_screen(f)->c = e_set_pnt(0, 0);
+ e_buffer_mark_set(e_window_text(f), E_BUFFER_MARK_ANCHOR, 0, 0);
+ e_buffer_mark_set(e_window_text(f), E_BUFFER_MARK_BEGIN, 0, 0);
+ e_buffer_mark_set(e_window_text(f), E_BUFFER_MARK_END, 0, 0);
+ e_buffer_mark_set(e_window_text(f), E_BUFFER_MARK_FIND_A, 0, 0);
+ e_buffer_mark_set(e_window_text(f), E_BUFFER_MARK_FIND_E, 0, 0);
+ e_buffer_mark_unset(e_window_text(f), E_BUFFER_MARK_AUTO_INDENT);
+ e_window_screen(f)->fb = f->fb;
 #ifdef DEBUGGER
- f->s->da.y = -1;
+ e_window_screen(f)->da.y = -1;
 #endif
  f->dirct = path;
  for (i = 0; i < E_MARKERS; i++)
-  e_buffer_marker_unset(f->b, i);
+  e_buffer_marker_unset(e_window_text(f), i);
  if (cn->mxedt == 0)    /*  Clipboard  */
  {
   cn->curedt=0;
@@ -781,8 +783,8 @@ static int e_edit_open(ECNT *cn, char *filename, int view, int *err)
 #ifdef UNIX
   f->filemode = 0600;
 #endif
-  e_buffer_mark_view(f->b);
-  e_line_make_hard_empty(f->b, 0);
+  e_buffer_mark_view(e_window_text(f));
+  e_line_make_hard_empty(e_window_text(f), 0);
   e_window_set_pane(f, WPE_PANE_CLIPBOARD);
   return(0);
  }
@@ -874,7 +876,7 @@ static int e_edit_open(ECNT *cn, char *filename, int view, int *err)
  if (ftype == 0 && !e_give_debug_bar(f))
   e_use_editor_bar(f, f->blst);
  if (ftype != 0)
-  e_buffer_mark_view(f->b);       /* Help, Messages, Watches and Stack */
+  e_buffer_mark_view(e_window_text(f));       /* Help, Messages, Watches and Stack */
  if (!view && e_edit_reads_file(ftype))
  {
   fp = fopen(complete_fname, "rb");
@@ -930,7 +932,7 @@ static int e_edit_open(ECNT *cn, char *filename, int view, int *err)
    }
    if (e_window_pane(f) == WPE_PANE_MESSAGES)
    {
-    e_buffer_mark_view(f->b);    /* compiler lines appended later stay one row each */
+    e_buffer_mark_view(e_window_text(f));    /* compiler lines appended later stay one row each */
     e_make_error_list(f);
     f->ins = WPE_INS_READONLY;
    }
@@ -939,9 +941,9 @@ static int e_edit_open(ECNT *cn, char *filename, int view, int *err)
  }
  else
  {
-  e_line_make_hard_empty(f->b, 0);
+  e_line_make_hard_empty(e_window_text(f), 0);
   if (ftype == E_EDIT_A_FILE)
-   e_eol_buffer_fresh(f->b, cn);        /* a new file takes the default style */
+   e_eol_buffer_fresh(e_window_text(f), cn);       /* a new file takes the default style */
  }
 #ifdef PROG
  if (ftype == 2)
@@ -973,7 +975,7 @@ static int e_edit_open(ECNT *cn, char *filename, int view, int *err)
   else
   {
    e_p_w_buffer = e_window_text(f);
-/*  e_ins_nchar(f->b, f->s, "No Watches", 0, 0, 10);*/
+/*  e_ins_nchar(e_window_text(f), e_window_screen(f), "No Watches", 0, 0, 10);*/
   }
  }
 #endif
@@ -1290,8 +1292,8 @@ static void e_backspace_at_row_start(FENSTER *f, BUFFER *b, SCHIRM *s)
 /*   keyboard output routine */
 int e_eingabe(ECNT *e)
 {
- BUFFER *b = e->f[e->mxedt]->b;
- SCHIRM *s = e->f[e->mxedt]->s;
+ BUFFER *b = e_window_text(e->f[e->mxedt]);
+ SCHIRM *s = e_window_screen(e->f[e->mxedt]);
  FENSTER *f = e->f[e->mxedt];
  int ret, c = 0;
  unsigned char cc;
@@ -1327,9 +1329,9 @@ int e_eingabe(ECNT *e)
   else
   {
    if (f->save > f->ed->maxchg) e_autosave(f);
-   e_buffer_depth_check(f->b);
-   e_buffer_marks_inside(f->b);   /* no mark or Shift anchor past a row's end */
-   e_find_resume_check(f->b);     /* a cursor that left a search hit no longer goes on from it */
+   e_buffer_depth_check(e_window_text(f));
+   e_buffer_marks_inside(e_window_text(f));   /* no mark or Shift anchor past a row's end */
+   e_find_resume_check(e_window_text(f));   /* a cursor that left a search hit no longer goes on from it */
    wpe_closed_key_wait();         /* a refusal said while waiting always says */
    c = e_getch();
    /* A build that ended while the editor waited for this key may have put
@@ -1345,8 +1347,8 @@ int e_eingabe(ECNT *e)
    }
    c = e_fold_key(c);
    f = e->f[e->mxedt];
-   b = f->b;
-   s = f->s;
+   b = e_window_text(f);
+   s = e_window_screen(f);
    /* The next refusal may say its line again; the rest of a paste that was
       refused keeps the line said for it on the row. */
    if (!wpe_closed_key_read())
@@ -1539,8 +1541,8 @@ weiter:
   f = e->f[e->mxedt];
   if (e->mxedt > 0 && DTMD_ISTEXT(f->dtmd))
   {
-   b = f->b;
-   s = f->s;
+   b = e_window_text(f);
+   s = e_window_screen(f);
    e_auto_indent_key_done(e, &indent_step);
    e_buffer_mark_from(b, E_BUFFER_MARK_ANCHOR, E_BUFFER_POS_CURSOR);
    e_cursor(f, 1);
@@ -1696,7 +1698,7 @@ static void e_cursor_word_right(BUFFER *b)
  */
 static void e_cursor_screen_bottom_end(FENSTER *f)
 {
- BUFFER *b = f->b;
+ BUFFER *b = e_window_text(f);
  int y = b->mxlines - 1;
 
  if (LINE_NUM_ON_SCREEN_BOTTOM < b->mxlines)
@@ -1760,8 +1762,8 @@ static int e_key_is_delete_char_letter(int c, int edopt)
  */
 static int e_cursor_letter_deletes(FENSTER *f, int action)
 {
- BUFFER *b = f->b;
- SCHIRM *s = f->s;
+ BUFFER *b = e_window_text(f);
+ SCHIRM *s = e_window_screen(f);
 
  if (action != WPE_ACT_DELETE_WORD_RIGHT && action != WPE_ACT_DELETE_TO_EOL &&
      action != WPE_ACT_DELETE_LINE)
@@ -1813,8 +1815,8 @@ static int e_cursor_letter_key(int c, int edopt)
 int e_tst_cur(int c, ECNT *e)
 {
    FENSTER *f = e->f[e->mxedt];
-   BUFFER *b = f->b;
-   SCHIRM *s = f->s;
+   BUFFER *b = e_window_text(f);
+   SCHIRM *s = e_window_screen(f);
    int moved = 1;              /* the key moved the cursor: it ends a selection */
 
    if (e_cursor_letter_deletes(f, wpe_binding_action(c, wpe_binding_style(e->edopt), WPE_CTX_CURSOR)))
@@ -2039,15 +2041,15 @@ int e_tst_fkt(int c, ECNT *e)
    e_rep_search(f);
    break;
   case WPE_ACT_BLOCK_ALL:
-   e_buffer_block_all(f->b);
+   e_buffer_block_all(e_window_text(f));
    e_schirm(f, 1);
    break;
   case WPE_ACT_BLOCK_LINE:
-   e_buffer_block_line(f->b);
+   e_buffer_block_line(e_window_text(f));
    e_schirm(f, 1);
    break;
   case WPE_ACT_SELECT_WORD:
-   e_select_word_at_cursor(f->b);
+   e_select_word_at_cursor(e_window_text(f));
    e_schirm(f, 1);
    break;
   default:
@@ -2085,8 +2087,8 @@ static int e_prefix_read_letter(void)
  */
 int e_ctrl_k(FENSTER *f)
 {
- BUFFER *b = f->ed->f[f->ed->mxedt]->b;
- SCHIRM *s = f->ed->f[f->ed->mxedt]->s;
+ BUFFER *b = e_window_text(f->ed->f[f->ed->mxedt]);
+ SCHIRM *s = e_window_screen(f->ed->f[f->ed->mxedt]);
  int c;
 
  c = e_prefix_read_letter();
@@ -2309,8 +2311,8 @@ static void e_delete_word_left(BUFFER *b, SCHIRM *s)
  */
 int e_ctrl_o(FENSTER *f)
 {
- BUFFER *b = f->ed->f[f->ed->mxedt]->b;
- SCHIRM *s = f->ed->f[f->ed->mxedt]->s;
+ BUFFER *b = e_window_text(f->ed->f[f->ed->mxedt]);
+ SCHIRM *s = e_window_screen(f->ed->f[f->ed->mxedt]);
  int i, c;
 
  c = e_prefix_read_letter();
@@ -2538,7 +2540,7 @@ int e_edit_action_run(BUFFER *b, int y0, int y1, int point, const char *what,
  r = e_buffer_action_begin(&a, b, y0, y1, point, what);
  if (r == E_BUFFER_OK)
  {
-  pieces(a.shell, a.shell->f->s, a.y0 - a.g_top, plan);
+  pieces(a.shell, e_window_screen(a.shell->f),a.y0 - a.g_top, plan);
   r = e_buffer_action_commit(&a);
  }
  e_buffer_step_end(b);
@@ -3062,7 +3064,7 @@ static int e_auto_indent_pending_row(BUFFER *b)
 
  if (b->f == NULL || b->f->ed == NULL || !(b->f->ed->edopt & ED_TRIM_AUTO_INDENT))
   return(-1);
- mark = b->f->s->ai;
+ mark = e_window_screen(b->f)->ai;
  if (!wpe_row_has(b, mark.y) || wpe_row_len(b, mark.y) != mark.x)
   return(-1);
  for (i = 0; i < mark.x; i++)
@@ -3099,10 +3101,10 @@ static void e_auto_indent_mark_new_line(BUFFER *b, int indent)
 static void e_auto_indent_key_begin(FENSTER *f, EAutoIndentStep *step)
 {
  step->b = NULL;
- if (e_auto_indent_pending_row(f->b) < 0)
+ if (e_auto_indent_pending_row(e_window_text(f)) < 0)
   return;
- e_buffer_step_begin(f->b);
- step->b = f->b;
+ e_buffer_step_begin(e_window_text(f));
+ step->b = e_window_text(f);
 }
 
 /**
@@ -3114,7 +3116,7 @@ static int e_auto_indent_window_has(ECNT *e, BUFFER *b)
  int i;
 
  for (i = 1; i <= e->mxedt; i++)
-  if (e->f[i]->b == b)
+  if (e_window_text(e->f[i]) == b)
    return(1);
  return(0);
 }
@@ -3139,8 +3141,8 @@ static void e_auto_indent_key_done(ECNT *e, EAutoIndentStep *step)
 {
  FENSTER *f = e->f[e->mxedt];
 
- if (step->b != NULL && f->b == step->b)
-  e_auto_indent_take_off(step->b, f->s);
+ if (step->b != NULL && e_window_text(f) == step->b)
+  e_auto_indent_take_off(step->b, e_window_screen(f));
  e_auto_indent_key_close(e, step);
 }
 
@@ -3231,8 +3233,8 @@ typedef struct {
  */
 static int e_selection_bounds(FENSTER *f, POINT *begin, POINT *end)
 {
- BUFFER *b = f->b;
- SCHIRM *s = f->s;
+ BUFFER *b = e_window_text(f);
+ SCHIRM *s = e_window_screen(f);
 
  if (!(f->ed->edopt & ED_BLOCK_SELECTION) || b->mxlines < 1)
   return(0);
@@ -3378,7 +3380,7 @@ static void e_sel_replace_pieces(BUFFER *b, SCHIRM *s, int top, void *plan)
 static void e_selection_run(FENSTER *f, int piece, const unsigned char *text, int n,
                             const char *what)
 {
- BUFFER *b = f->b;
+ BUFFER *b = e_window_text(f);
  ESelReplacePlan p;
  int r;
 
@@ -3470,7 +3472,7 @@ static int e_selection_tab(FENSTER *f)
 void e_selection_end(FENSTER *f)
 {
  if (f->ed->edopt & ED_BLOCK_SELECTION)
-  e_buffer_block_between(f->b, E_BUFFER_POS_CURSOR, E_BUFFER_POS_CURSOR);
+  e_buffer_block_between(e_window_text(f),E_BUFFER_POS_CURSOR, E_BUFFER_POS_CURSOR);
 }
 
 /**
@@ -3481,7 +3483,7 @@ void e_selection_end(FENSTER *f)
 void e_selection_redo_ends_here(FENSTER *f, int n)
 {
  if (f->ed->edopt & ED_BLOCK_SELECTION)
-  e_buffer_redo_view_keep(f->b, n);
+  e_buffer_redo_view_keep(e_window_text(f), n);
 }
 
 /**
@@ -3491,7 +3493,7 @@ void e_selection_redo_ends_here(FENSTER *f, int n)
  */
 void e_selection_collapse(FENSTER *f)
 {
- if (e_buffer_block_is_open(f->b))
+ if (e_buffer_block_is_open(e_window_text(f)))
   return;
  e_selection_end(f);
 }
@@ -3499,7 +3501,7 @@ void e_selection_collapse(FENSTER *f)
 /*   cursor placement */
 static int e_cursor_visual_adjust(FENSTER *f)
 {
- BUFFER *b = f->b;
+ BUFFER *b = e_window_text(f);
  int i, j;
 
  for (i = j = 0; i < b->b.x; i++)
@@ -3525,7 +3527,7 @@ static int e_cursor_visual_adjust(FENSTER *f)
  */
 int e_cursor_display_col(FENSTER *f)
 {
- return(f->b->b.x + e_cursor_visual_adjust(f));
+ return(e_window_text(f)->b.x + e_cursor_visual_adjust(f));
 }
 
 static int e_cursor_in_viewport(FENSTER *f, int sx, int sy)
@@ -3559,8 +3561,8 @@ static void e_cursor_keep_on_text(BUFFER *b)
 
 void e_cursor_pos_only(FENSTER *f)
 {
- BUFFER *b = f->b;
- SCHIRM *s = f->s;
+ BUFFER *b = e_window_text(f);
+ SCHIRM *s = e_window_screen(f);
  int j, sx, sy;
  extern int cur_on;
 
@@ -3587,8 +3589,8 @@ void e_cursor_pos_only(FENSTER *f)
 
 void e_cursor(FENSTER *f, int sw)
 {
- BUFFER *b = f->b;
- SCHIRM *s = f->s;
+ BUFFER *b = e_window_text(f);
+ SCHIRM *s = e_window_screen(f);
  static int iold = 0, jold = 0;
  int i, j;
 
@@ -4353,7 +4355,7 @@ void e_zlsplt(FENSTER *f)
 
  if (!DTMD_ISTEXT(f->dtmd))
   return;
- if (e_linecol_text(str, sizeof str, f->b->b.y + 1, f->b->cl + 1) == WPE_FMT_OK)
+ if (e_linecol_text(str, sizeof str, e_window_text(f)->b.y + 1, e_window_text(f)->cl + 1) == WPE_FMT_OK)
   e_puts(str,f->a.x+5,f->e.y,f->fb->er.fb);
  if (f->save)
   e_pr_char(f->a.x+3, f->e.y, '*', f->fb->er.fb);
@@ -4904,7 +4906,7 @@ static int e_rudo_block_refusal(int r, Undo *rec)
  */
 static int e_rudo_block_back(BUFFER *b, SCHIRM *s, Undo *rec)
 {
- BUFFER *bn = (BUFFER *) rec->u.pt;
+ BUFFER *bn = rec->u.pt;
  WpeReplayView before;
  Undo *way_back = NULL;
  int r;
@@ -5080,7 +5082,7 @@ int e_make_rudo(FENSTER *f, int sw)
  if (e_undo_waits_for_the_assistant(f))
   return(0);
 #endif
- b = f->b;  s = f->s;
+ b = e_window_text(f);  s = e_window_screen(f);
  if (!sw)
   r = e_buffer_undo(b, s);
  else

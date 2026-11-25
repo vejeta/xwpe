@@ -130,15 +130,15 @@ extern char *ctree[5];
 #define MALLOC(n) malloc(n)
 #define FREE(n) free(n)
 
-#define sc_txt_1(f) { if(f->c_sw) f->c_sw = e_sc_txt(f->c_sw, f->b); }
+#define sc_txt_1(f) { if(f->c_sw) f->c_sw = e_sc_txt(f->c_sw, e_window_text(f)); }
 
 #define sc_txt_2(f) 							\
 {   if(f->c_sw) 							\
-    {	if(f->s->mark_begin.y == f->s->mark_end.y)                      \
-        e_sc_nw_txt(f->s->mark_end.y, f->b, 0);                         \
+    {	if(e_window_screen(f)->mark_begin.y == e_window_screen(f)->mark_end.y) \
+        e_sc_nw_txt(e_window_screen(f)->mark_end.y, e_window_text(f), 0); \
 	else								\
-	{  f->c_sw = REALLOC(f->c_sw, f->b->mx.y * sizeof(int));	\
-	   f->c_sw = e_sc_txt(f->c_sw, f->b);				\
+	{  f->c_sw = REALLOC(f->c_sw, e_window_text(f)->mx.y * sizeof(int)); \
+	   f->c_sw = e_sc_txt(f->c_sw, e_window_text(f));		\
 	}								\
     }									\
 }

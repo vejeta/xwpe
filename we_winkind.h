@@ -93,6 +93,7 @@ struct FLBFF *e_window_files(const struct FNST *f);
 struct fl_wnd *e_window_list(const struct FNST *f);
 WpeListKind e_window_list_kind(const struct FNST *f);
 WpePane e_window_pane(const struct FNST *f);
+int e_window_is_dock_pane(const struct FNST *f);
 WpeHolds e_window_holds(const struct FNST *f);
 
 /* Giving a window what it holds: once per window, at its construction.  A

@@ -126,10 +126,9 @@ static void slot_open(Slot *sl, int width, int numundo)
 {
  memset(sl, 0, sizeof *sl);
  sl->cn.numundo = numundo;
- sl->win.s = &sl->scr;
  sl->win.datnam = "t.c";
+ e_window_hold_text(&sl->win, &sl->buf, &sl->scr);
  e_buffer_init(&sl->buf, &sl->cn, &sl->win, width, E_BUFFER_HISTORY_FULL);
- sl->win.b = &sl->buf;
  sl->open = 1;
 }
 

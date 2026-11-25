@@ -154,6 +154,32 @@ WpePane e_window_pane(const FENSTER *f)
  return(h ? (WpePane)h->pane : WPE_PANE_FILE);
 }
 
+/**
+ * e_window_is_dock_pane - Is this one of the editor's docked tool strips?
+ * @f: the window.
+ *
+ * What the user gains: a dialog opened over the Messages, Watches, Stack or
+ * assistant pane is centred on the whole screen, because those panes are thin
+ * strips; a dialog opened over a locked (read-only) file or over the Help
+ * viewer is centred on that window like over any other text window.  The
+ * read-only flag cannot tell them apart: a locked file and the viewers carry
+ * it too.
+ * Return: 1 for a dock pane, 0 for every other window.
+ */
+int e_window_is_dock_pane(const FENSTER *f)
+{
+ switch (e_window_pane(f))
+ {
+  case WPE_PANE_MESSAGES:
+  case WPE_PANE_WATCHES:
+  case WPE_PANE_STACK:
+  case WPE_PANE_ASSISTANT:
+   return(1);
+  default:
+   return(0);
+ }
+}
+
 /* The block a window holds its payload in, made on the first hold.  One
    allocation per window: a failure answers NULL and the constructor says so
    the way it says its own allocation failures. */
@@ -174,17 +200,22 @@ static struct wpe_window_held *held_make(FENSTER *f)
  return(h);
 }
 
-/* The two fields the rest of the tree still reads while the payload moves
-   over to this owner, written here so that what a window holds and what
-   those fields say cannot drift apart.  They go away with the last reader. */
-static void held_mirror_text(FENSTER *f, BUFFER *b, SCHIRM *s)
+/**
+ * held_no_insert_mode - A window that is not text has no insert mode.
+ * @f: the window that was just given its list, lists or rows.
+ *
+ * The insert mode is the typing mode of text.  A list window used to carry
+ * its kind there, and a text command's guard read that number as "insert
+ * control characters"; now the kind is held beside the rows and the insert
+ * mode stays 0, whatever the constructor wrote before holding.
+ */
+static void held_no_insert_mode(FENSTER *f)
 {
- f->b = b;
- f->s = s;
+ f->ins = 0;
 }
 
 /**
- * e_window_held_forget - A window structure was just allocated: it holds nothing.
+ * e_window_held_forget -A window structure was just allocated: it holds nothing.
  * @f: the window.
  *
  * The editor allocates a window with plain malloc, so every field starts as
@@ -219,7 +250,6 @@ int e_window_hold_text(FENSTER *f, BUFFER *b, SCHIRM *s)
  h->list = NULL;
  h->list_kind = WPE_LISTKIND_NONE;
  h->holds = WPE_HOLDS_TEXT;
- held_mirror_text(f, b, s);
  return(1);
 }
 
@@ -240,7 +270,7 @@ int e_window_hold_files(FENSTER *f, FLBFFR *fb)
  h->list = NULL;
  h->list_kind = WPE_LISTKIND_NONE;
  h->holds = WPE_HOLDS_FILES;
- held_mirror_text(f, (BUFFER *)fb, NULL);
+ held_no_insert_mode(f);
  return(1);
 }
 
@@ -265,7 +295,7 @@ int e_window_hold_list(FENSTER *f, FLWND *fw, WpeListKind kind)
  h->list = fw;
  h->list_kind = (unsigned char)kind;
  h->holds = WPE_HOLDS_LIST;
- held_mirror_text(f, (BUFFER *)fw, NULL);
+ held_no_insert_mode(f);
  return(1);
 }
 
@@ -289,7 +319,7 @@ int e_window_hold_dropdown(FENSTER *f, FLWND *fw)
  h->list = fw;
  h->list_kind = WPE_LISTKIND_NONE;
  h->holds = WPE_HOLDS_DROPDOWN;
- held_mirror_text(f, (BUFFER *)fw, NULL);
+ held_no_insert_mode(f);
  return(1);
 }
 
@@ -349,7 +379,6 @@ BUFFER *e_window_release_text(FENSTER *f, SCHIRM **s)
  h->text = NULL;
  h->screen = NULL;
  h->holds = WPE_HOLDS_NOTHING;
- held_mirror_text(f, NULL, NULL);
  return(b);
 }
 
@@ -368,7 +397,6 @@ FLBFFR *e_window_release_files(FENSTER *f)
  fb = h->files;
  h->files = NULL;
  h->holds = WPE_HOLDS_NOTHING;
- held_mirror_text(f, NULL, NULL);
  return(fb);
 }
 
@@ -390,7 +418,6 @@ FLWND *e_window_release_list(FENSTER *f)
  h->list = NULL;
  h->list_kind = WPE_LISTKIND_NONE;
  h->holds = WPE_HOLDS_NOTHING;
- held_mirror_text(f, NULL, NULL);
  return(fw);
 }
 

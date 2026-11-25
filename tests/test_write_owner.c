@@ -296,7 +296,8 @@ static FENSTER *make_window(void)
  question_count = 0;
  question_text[0] = '\0';
  f->ed = keep(calloc(1, sizeof *f->ed));
- f->b = keep(calloc(1, sizeof *f->b));
+ e_window_held_forget(f);
+ e_window_hold_text(f, keep(calloc(1, sizeof(BUFFER))), NULL);
  f->filemode = -1;
  return(f);
 }

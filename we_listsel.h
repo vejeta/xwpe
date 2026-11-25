@@ -43,8 +43,13 @@ enum wpe_list_action {
 
 /* ---- Queries: the only reads of a selected entry ---- */
 
-/** 1 when the window kind @ins keeps a sealed list (a project list). */
-int wpe_listsel_is_sealed_kind(int ins);
+/** 1 when the list window kind @kind (a WpeListKind) keeps a sealed list (a
+    project list). */
+int wpe_listsel_is_sealed_kind(int kind);
+
+/** 1 when the list window kind @kind shows results to open and nothing else:
+    the Function-Index, Grep, Find and Windows lists. */
+int wpe_listsel_is_result_kind(int kind);
 
 /** 1 when row @nf names a real entry; 0 on an empty list, out of range, or on
     the sentinel row of a @sealed list. */
@@ -64,8 +69,8 @@ char *wpe_listsel_entry(const struct dirfile *df, int i, int sealed);
 int wpe_listsel_sentinel_row(const struct dirfile *df);
 
 /** 1 when the action @a needs an entry under the cursor in a list of kind
-    @ins: opening one does; adding and editing on the blank row do not. */
-int wpe_listsel_action_needs_entry(int ins, enum wpe_list_action a);
+    @kind: opening one does; adding and editing on the blank row do not. */
+int wpe_listsel_action_needs_entry(int kind, enum wpe_list_action a);
 
 /* ---- Builders and mutators of a project list ---- */
 

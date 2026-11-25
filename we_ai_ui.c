@@ -433,7 +433,7 @@ static int  g_ai_home_edt = -1;         /* window to refocus when the chat close
  */
 static int ai_stream_y(FENSTER *wf)
 {
- int y = wf->b->mxlines - 1;
+ int y = e_window_text(wf)->mxlines - 1;
  if (g_ai_chat_focus) y -= g_ai_input_rows;
  if (y < 0) y = 0;
  return y;
@@ -597,7 +597,7 @@ static int ai_pane_row_is_free(BUFFER *b, int y)
  */
 static int ai_pane_take_first_row(FENSTER *wf, const char *line, int role)
 {
- BUFFER *b = wf->b;
+ BUFFER *b = e_window_text(wf);
  if (!ai_pane_row_is_free(b, 0))
   return 0;
  ai_pane_set_line(wf, 0, line);
@@ -636,9 +636,9 @@ static void ai_pane_put1(FENSTER *f, const char *line, int role, int surface)
     before appending -- the same placement as the chat pane.  Without this the
     Edit/Plan/Agent output opened as a full window over the file being edited. */
  if (!ai_pane_take_first_row(wf, line, role)) {
-  before = wf->b->mxlines;
+  before = e_window_text(wf)->mxlines;
   e_d_p_named(AI_PANE_NAME, (char *)line, f, surface ? 1 : 0);
-  ai_roles_set_appended(wf->b, before, role);
+  ai_roles_set_appended(e_window_text(wf), before, role);
  }
  ai_pane_show(wf);
 }
@@ -652,7 +652,7 @@ static void ai_pane_put1(FENSTER *f, const char *line, int role, int surface)
  */
 static int ai_pane_last_transcript_row(FENSTER *wf)
 {
- int y = wf->b->mxlines - 1;
+ int y = e_window_text(wf)->mxlines - 1;
  if (g_ai_chat_focus) y -= g_ai_input_rows;
  if (y < 0) y = 0;
  return y;
@@ -673,7 +673,7 @@ static void ai_pane_put_continuation(FENSTER *f, const char *seg, int role)
  ai_pane_put1(f, seg, role, 0);
  wf = ai_pane_win(f);
  if (!wf) return;
- ai_pane_mark_continuation(wf->b, ai_pane_last_transcript_row(wf));
+ ai_pane_mark_continuation(e_window_text(wf), ai_pane_last_transcript_row(wf));
 }
 
 /* The largest row the wrapper hands the pane: the width is capped well below
@@ -849,7 +849,7 @@ static void ai_cut_context(char *t)
 /* Join the current file's lines into a single (bounded) text block. */
 static char *ai_current_file_text(FENSTER *f)
 {
- char *t = ai_rows_text(f->b, 0, f->b->mxlines - 1);
+ char *t = ai_rows_text(e_window_text(f), 0, e_window_text(f)->mxlines - 1);
 
  if (t)
   ai_cut_context(t);
@@ -862,14 +862,14 @@ static char *ai_current_file_text(FENSTER *f)
    block that ends at column 0 does not pull in that trailing line. */
 static int ai_block_range(FENSTER *f, int *y0, int *y1)
 {
- SCHIRM *s = f->s;
+ SCHIRM *s = e_window_screen(f);
  int a = s->mark_begin.y, b = s->mark_end.y;
  if (b < a || (a == b && s->mark_end.x <= s->mark_begin.x))
   return 0;                                  /* empty / inverted -> no selection */
  if (s->mark_end.x == 0 && b > a) b--;       /* mark at col 0 excludes that line */
  if (b < a) b = a;
  if (a < 0) a = 0;
- if (b > f->b->mxlines - 1) b = f->b->mxlines - 1;
+ if (b > e_window_text(f)->mxlines - 1) b = e_window_text(f)->mxlines - 1;
  *y0 = a; *y1 = b;
  return 1;
 }
@@ -878,7 +878,7 @@ static int ai_block_range(FENSTER *f, int *y0, int *y1)
    send only the selected region to the model for a scoped Edit. */
 static char *ai_lines_text(FENSTER *f, int y0, int y1)
 {
- return ai_rows_text(f->b, y0, y1);
+ return ai_rows_text(e_window_text(f), y0, y1);
 }
 
 /**
@@ -927,7 +927,7 @@ static char *ai_join_splice(const char *head, int join, const char *snippet, siz
    the lines the edit does not touch come back unchanged. */
 static char *ai_splice_lines(FENSTER *f, int y0, int y1, const char *snippet)
 {
- BUFFER *b = f->b;
+ BUFFER *b = e_window_text(f);
  size_t sl = strlen(snippet);
  char *head, *tail, *t;
  int join = (y0 > 0 && y0 <= b->mxlines && !ai_row_breaks_after(b, y0 - 1));
@@ -952,7 +952,7 @@ static char *ai_splice_lines(FENSTER *f, int y0, int y1, const char *snippet)
  */
 static char *ai_full_file_text(FENSTER *f)
 {
- return ai_lines_text(f, 0, f->b->mxlines - 1);
+ return ai_lines_text(f, 0, e_window_text(f)->mxlines - 1);
 }
 
 /* ai_line_bytes - what line y costs in the context sent to the model: the
@@ -973,7 +973,7 @@ static size_t ai_line_bytes(BUFFER *b, int y)
  */
 static int ai_file_fits_cap(FENSTER *f)
 {
- BUFFER *b = f->b;
+ BUFFER *b = e_window_text(f);
  size_t used = 0;
  int y;
  for (y = 0; y < b->mxlines; y++) {
@@ -998,7 +998,7 @@ static int ai_file_fits_cap(FENSTER *f)
  */
 static void ai_context_window(FENSTER *f, int *y0, int *y1)
 {
- BUFFER *b = f->b;
+ BUFFER *b = e_window_text(f);
  int last = b->mxlines - 1;
  int cur = b->b.y;
  int lo, hi, grew;
@@ -1091,7 +1091,7 @@ static void ai_edit_announce_window(FENSTER *f, int y0, int y1)
 {
  char line[120];
  snprintf(line, sizeof line, "[AI edit] lines %d-%d of %d sent",
-          y0 + 1, y1 + 1, f->b->mxlines);
+          y0 + 1, y1 + 1, e_window_text(f)->mxlines);
  ai_pane(f, line, AI_ROLE_MACHINERY, 0);
 }
 
@@ -1137,12 +1137,13 @@ static FENSTER *ai_pane_win(FENSTER *f)
   /* The pane is a view the assistant writes, like Messages: its rows carry no
      Undo history and no modified mark, while the user's block marks stay so
      a copy from the pane works. */
-  e_buffer_mark_view(cn->f[i]->b);
+  e_buffer_mark_view(e_window_text(cn->f[i]));
   /* Mark it a tool/output pane like Messages (ins == 8, backs no file): it is
      never offered for saving on quit and wears the gear marker, not the padlock.
      The chat input still works -- e_ai_chat_key consumes those keys before the
      ins-gated editing path (we_edit.c). */
   cn->f[i]->ins = WPE_INS_READONLY;
+  e_window_set_pane(cn->f[i], WPE_PANE_ASSISTANT);   /* a dialog over it centres on the screen */
   e_position_ai_window(cn->f[i], cn);   /* dock at the bottom, not over the editor */
   /* Free every window's save-under before the relayout repaint: docking moves
      the editor's bottom edge, and a stale save-under would restore an old strip
@@ -1218,7 +1219,7 @@ static int ai_pane_page_rows(FENSTER *wf)
  */
 static int ai_pane_bottom_offset(FENSTER *wf)
 {
- int bottom = wf->b->mxlines - ai_pane_view_rows(wf);
+ int bottom = e_window_text(wf)->mxlines - ai_pane_view_rows(wf);
  if (bottom < 0)
   return 0;
  return bottom;
@@ -1251,7 +1252,7 @@ static void ai_input_caret(FENSTER *wf, int *cy, int *cx)
    bcol++;
   }
  }
- *cy = wf->b->mxlines - rows + line_idx;
+ *cy = e_window_text(wf)->mxlines - rows + line_idx;
  *cx = AI_INPUT_PREFIX_LEN + bcol;
 }
 
@@ -1281,7 +1282,7 @@ static int ai_pane_keeps_browsed_view(void)
  */
 static void ai_pane_hold_browsed_view(FENSTER *wf, int pane_focused)
 {
- e_buffer_cursor_set(wf->b, wf->s->c.y, 0);
+ e_buffer_cursor_set(e_window_text(wf), e_window_screen(wf)->c.y, 0);
  if (pane_focused)
   e_cursor(wf, 0);
 }
@@ -1306,7 +1307,7 @@ static void ai_pane_caret_to_input(FENSTER *wf)
 {
  int cy, cx;
  ai_input_caret(wf, &cy, &cx);
- e_buffer_cursor_set(wf->b, cy, cx);
+ e_buffer_cursor_set(e_window_text(wf), cy, cx);
 }
 
 /**
@@ -1318,11 +1319,11 @@ static void ai_pane_caret_to_input(FENSTER *wf)
  */
 static void ai_pane_caret_to_end(FENSTER *wf)
 {
- int y = wf->b->mxlines - 1;
- if (y >= 0 && wpe_row_stored(wf->b, y))
-  e_buffer_cursor_set(wf->b, y, wpe_row_len(wf->b, y));
+ int y = e_window_text(wf)->mxlines - 1;
+ if (y >= 0 && wpe_row_stored(e_window_text(wf), y))
+  e_buffer_cursor_set(e_window_text(wf), y, wpe_row_len(e_window_text(wf), y));
  else
-  e_buffer_cursor_set(wf->b, y, 0);
+  e_buffer_cursor_set(e_window_text(wf), y, 0);
 }
 
 /**
@@ -1334,7 +1335,7 @@ static void ai_pane_caret_to_end(FENSTER *wf)
  */
 static void ai_pane_pin_input_row(FENSTER *wf)
 {
- wf->s->c.y = ai_pane_bottom_offset(wf);
+ e_window_screen(wf)->c.y = ai_pane_bottom_offset(wf);
 }
 
 /**
@@ -1448,8 +1449,8 @@ static void ai_pane_paint(FENSTER *wf)
  */
 static void ai_pane_scroll(FENSTER *wf, int delta)
 {
- BUFFER *b = wf->b;
- SCHIRM *s = wf->s;
+ BUFFER *b = e_window_text(wf);
+ SCHIRM *s = e_window_screen(wf);
  int bottom = ai_pane_bottom_offset(wf);          /* view offset that pins the input */
 
  /* A focused window always re-pins its view to keep the caret visible
@@ -1586,7 +1587,7 @@ static void ai_pane_set_row_bytes(BUFFER *b, int y, const char *text, size_t n)
  */
 static void ai_pane_set_line(FENSTER *wf, int y, const char *text)
 {
- BUFFER *b = wf->b;
+ BUFFER *b = e_window_text(wf);
  if (y < 0) y = 0;
  if (y >= b->mxlines) y = b->mxlines - 1;
  ai_pane_set_row_bytes(b, y, text, strlen(text));
@@ -1616,7 +1617,7 @@ static void ai_pane_set_last(FENSTER *wf, const char *text)
  */
 static void ai_pane_set_last_role(FENSTER *wf, int role)
 {
- ai_roles_set(wf->b, ai_stream_y(wf), role);
+ ai_roles_set(e_window_text(wf), ai_stream_y(wf), role);
 }
 
 /**
@@ -1725,7 +1726,7 @@ static void ai_input_put_row(FENSTER *wf, int y, int first,
  */
 static void ai_input_render(FENSTER *wf)
 {
- BUFFER *b = wf->b;
+ BUFFER *b = e_window_text(wf);
  int want = ai_input_line_count();
  const char *p = g_ai_input;
  int i;
@@ -1759,7 +1760,7 @@ static void ai_input_render(FENSTER *wf)
  */
 static int ai_pane_commit(FENSTER *wf)
 {
- BUFFER *b = wf->b;
+ BUFFER *b = e_window_text(wf);
  int at;
  /* The pane's own opening row: a task that writes its first line through the
     stream line (a spinner, an edit's status) takes that row rather than
@@ -1818,7 +1819,7 @@ static void ai_pane_append_lines(BUFFER *b, const char *text, int role)
  */
 static void ai_tr_line(FENSTER *wf, const char *str, int role)
 {
- BUFFER *b = wf->b;
+ BUFFER *b = e_window_text(wf);
  int at;
  ai_pane_note_unwrapped(str);
  if (!g_ai_chat_focus) {
@@ -1845,7 +1846,7 @@ static void ai_tr_line(FENSTER *wf, const char *str, int role)
 static int ai_pane_width(FENSTER *wf)
 {
  int w = wf->e.x - wf->a.x - 2;
- if (w > wf->b->mx.x - 1) w = wf->b->mx.x - 1;
+ if (w > e_window_text(wf)->mx.x - 1) w = e_window_text(wf)->mx.x - 1;
  if (w > AI_PANE_MAX_COLS) w = AI_PANE_MAX_COLS;
  if (w < AI_PANE_MIN_COLS) w = AI_PANE_MIN_COLS;
  return w;
@@ -1877,7 +1878,7 @@ static void ai_stream_wrap(ai_chat_session *s, FENSTER *wf)
  }
  /* The fresh row goes on with the same line: recorded so a later change of
     width joins the reply back and wraps it again whole. */
- ai_pane_mark_continuation(wf->b, ai_stream_y(wf));
+ ai_pane_mark_continuation(e_window_text(wf), ai_stream_y(wf));
  rem = (int)s->plen - brk;
  if (rem < 0) rem = 0;
  memmove(s->pending, s->pending + brk, (size_t)rem);
@@ -1903,7 +1904,7 @@ static void ai_stream_wrap(ai_chat_session *s, FENSTER *wf)
  */
 static int ai_pane_transcript_rows(FENSTER *wf)
 {
- int n = wf->b->mxlines;
+ int n = e_window_text(wf)->mxlines;
  if (g_ai_chat_focus) n -= g_ai_input_rows;
  if (n < 0) n = 0;
  return n;
@@ -2028,7 +2029,7 @@ static int ai_wrap_rows(const char *text, int width)
  */
 static int ai_pane_rewrap_line(FENSTER *wf, int y0, int limit, int width)
 {
- BUFFER *b = wf->b;
+ BUFFER *b = e_window_text(wf);
  int old_rows, new_rows, role, y;
  const char *p;
  char *text = ai_pane_join_line(b, y0, limit, &old_rows);
@@ -2074,8 +2075,8 @@ static int ai_pane_rewrap_line(FENSTER *wf, int y0, int limit, int width)
 static void ai_pane_view_after_reflow(FENSTER *wf, int held, int top_line,
                                       int rows_changed)
 {
- BUFFER *b = wf->b;
- SCHIRM *s = wf->s;
+ BUFFER *b = e_window_text(wf);
+ SCHIRM *s = e_window_screen(wf);
  if (rows_changed) {
   e_buffer_mark_set(b, E_BUFFER_MARK_BEGIN, 0, 0);
   e_buffer_mark_set(b, E_BUFFER_MARK_END, 0, 0);
@@ -2117,7 +2118,7 @@ static int ai_pane_reflow_is_owed(int live)
  */
 static void ai_pane_reflow(FENSTER *wf)
 {
- BUFFER *b = wf->b;
+ BUFFER *b = e_window_text(wf);
  int width = ai_pane_width(wf);
  int live = ai_pane_stream_line_is_live();
  int held = ai_pane_keeps_browsed_view();
@@ -2133,7 +2134,7 @@ static void ai_pane_reflow(FENSTER *wf)
  if (live && limit > 0)
   limit = ai_pane_line_start(limit - 1);        /* leave the stream line alone */
  if (held)
-  top_line = ai_pane_logical_line_at(wf->s->c.y);
+  top_line = ai_pane_logical_line_at(e_window_screen(wf)->c.y);
  for (y = 0; y < limit; ) {
   int before = b->mxlines;
   int rows = ai_pane_rewrap_line(wf, y, limit, width);
@@ -2222,7 +2223,7 @@ static char *ai_transcript_absolute(const char *name)
  */
 static int ai_transcript_put_lines(FENSTER *wf, FILE *fp)
 {
- BUFFER *b = wf->b;
+ BUFFER *b = e_window_text(wf);
  int limit, y = 0;
  ai_roles_sync(b);
  limit = ai_pane_transcript_rows(wf);
@@ -3795,7 +3796,7 @@ static int ai_text_lines(const char *t, size_t n)
  */
 static int ai_file_line_count(FENSTER *w)
 {
- BUFFER *b = w->b;
+ BUFFER *b = e_window_text(w);
  int n = b->mxlines;
  if (n > 1 && wpe_row_len(b, n - 1) == 0)
   n--;
@@ -4388,7 +4389,7 @@ static void ai_chat_next_turn(ai_chat_session *s)
  */
 static void ai_compose_show_seed(FENSTER *w, const char *seed)
 {
- BUFFER *b = w->b;
+ BUFFER *b = e_window_text(w);
  if (e_eol_replace_all(b, seed, E_BUFFER_STEP_NEW, E_EOL_ROWS) == E_BUFFER_NOMEM)
   wpe_buffer_say_nomem(b, "the composer's text");
  e_buffer_history_drop(b);                   /* the seed is not the user's to undo */
@@ -4433,7 +4434,7 @@ static int ai_compose_row_ends_line(BUFFER *b, int y)
  */
 static long ai_compose_bytes(FENSTER *w)
 {
- BUFFER *b = w->b;
+ BUFFER *b = e_window_text(w);
  long n = 0;
  int y;
  for (y = 0; y < b->mxlines; y++) {
@@ -4474,7 +4475,7 @@ int e_ai_window_full(FENSTER *f, int n)
  */
 static char *ai_compose_text(FENSTER *w)
 {
- BUFFER *b = w->b;
+ BUFFER *b = e_window_text(w);
  int last = b->mxlines - 1;
  char *t = NULL;
 
@@ -5184,7 +5185,7 @@ static void e_ai_chat_close(void)
  if (!wf) return;
  g_ai_chat_focus = 0;
  g_ai_chat_pane = NULL;
- ai_input_drop_rows(wf->b);
+ ai_input_drop_rows(e_window_text(wf));
  ai_pane_paint(wf);
  if (g_ai_home_edt >= 0)
   e_switch_window(g_ai_home_edt, wf);
@@ -5241,7 +5242,7 @@ static void e_ai_chat_arm(FENSTER *f)
  g_ai_scroll_lock = 0;
  ai_input_clear();
  g_ai_input_rows = 0;
- ai_roles_sync(wf->b);
+ ai_roles_sync(e_window_text(wf));
  /* The header when the setup changed (or was never shown), the hints once per
     pane: whatever another action wrote to the pane before this arm. */
  ai_chat_emit_header_if_due(wf);
@@ -5845,11 +5846,11 @@ static void ai_hook_after_accept(FENSTER *f)
  */
 static void e_ai_apply_text(FENSTER *f, const char *newtext)
 {
- e_buffer_step_begin(f->b);
- if (e_eol_replace_all(f->b, newtext, E_BUFFER_STEP_NEW, E_EOL_ROWS) == E_BUFFER_NOMEM)
-  wpe_buffer_say_nomem(f->b, "the new text");
+ e_buffer_step_begin(e_window_text(f));
+ if (e_eol_replace_all(e_window_text(f), newtext, E_BUFFER_STEP_NEW, E_EOL_ROWS) == E_BUFFER_NOMEM)
+  wpe_buffer_say_nomem(e_window_text(f), "the new text");
  ai_hook_after_accept(f);
- e_buffer_step_end(f->b);
+ e_buffer_step_end(e_window_text(f));
  e_window_show_replaced_text(f);
 }
 
@@ -6487,7 +6488,7 @@ static int ai_box_anchor_after_resize(FENSTER *f, int anchor_row)
  int line;
  if (anchor_row <= 0)
   return anchor_row;
- line = f->b->b.y + 1;
+ line = e_window_text(f)->b.y + 1;
  ai_scroll_line_into_view(f, line);
  return ai_line_screen_row(f, line);
 }
@@ -6803,7 +6804,7 @@ static int ai_hunk_old_start(const wpe_ai_seg *segs, int i)
  */
 static void ai_scroll_line_into_view(FENSTER *f, int line)
 {
- BUFFER *b = f->b;
+ BUFFER *b = e_window_text(f);
  int y = line - 1;
  if (y > b->mxlines - 1) y = b->mxlines - 1;
  if (y < 0) y = 0;
@@ -6820,7 +6821,7 @@ static void ai_scroll_line_into_view(FENSTER *f, int line)
  */
 static int ai_line_screen_row(const FENSTER *f, int line)
 {
- int row = f->a.y + (line - 1) - f->s->c.y + 1;
+ int row = f->a.y + (line - 1) - e_window_screen(f)->c.y + 1;
  if (row < ai_window_first_row(f)) row = ai_window_first_row(f);
  if (row > ai_window_last_row(f)) row = ai_window_last_row(f);
  return row;
@@ -7816,15 +7817,15 @@ static void ai_spin_end(ai_spin *sp, ECNT *cn)
   wpe_ai_flash_clear(sp->f);
  wf = ai_pane_existing(cn);
  if (!wf) return;
- if (wf->b->mxlines <= AI_PANE_LONE_ROW) {  /* the buffer keeps one row: empty it */
+ if (e_window_text(wf)->mxlines <= AI_PANE_LONE_ROW) {  /* the buffer keeps one row: empty it */
   ai_pane_set_last(wf, "");
   return;
  }
- if (ai_pane_rows_drop(wf->b, ai_stream_y(wf), 1) != E_BUFFER_OK) {
+ if (ai_pane_rows_drop(e_window_text(wf), ai_stream_y(wf), 1) != E_BUFFER_OK) {
   ai_pane_set_last(wf, "");     /* the row stays: empty it, as a lone row is */
   return;
  }
- e_buffer_cursor_set(wf->b, wf->b->b.y, wf->b->b.x);
+ e_buffer_cursor_set(e_window_text(wf), e_window_text(wf)->b.y, e_window_text(wf)->b.x);
  ai_pane_paint(wf);
 }
 
@@ -8757,7 +8758,7 @@ static void ai_edit_done(ai_async_op *op)
     into the current file at those lines so the diff below shows just that hunk
     and the proven whole-file apply path is reused. */
  if (op->sel_y0 >= 0) {
-  int y0 = op->sel_y0, y1 = op->sel_y1, last = f->b->mxlines - 1;
+  int y0 = op->sel_y0, y1 = op->sel_y1, last = e_window_text(f)->mxlines - 1;
   char *full;
   if (y0 > last) y0 = last;
   if (y1 > last) y1 = last;
@@ -9066,7 +9067,7 @@ static void ai_edit_launch(FENSTER *f, const char *instr)
  if (scope == AI_SCOPE_FILE)       { cur = ai_current_file_text(f);   sys = sys_file;   }
  else if (scope == AI_SCOPE_BLOCK) { cur = ai_lines_text(f, sy0, sy1); sys = sys_sel;    }
  else                              { cur = ai_lines_text(f, sy0, sy1); sys = sys_window; }
- ai_edit_scope_header(scope, sy0, sy1, f->b->mxlines, hdr, sizeof hdr);
+ ai_edit_scope_header(scope, sy0, sy1, e_window_text(f)->mxlines, hdr, sizeof hdr);
  if (scope == AI_SCOPE_WINDOW) ai_edit_announce_window(f, sy0, sy1);
  { char diag[1700], ow[1400]; ai_diag_block(diag, sizeof diag);
    wpe_ai_open_windows_block(f, ow, sizeof ow);
@@ -9564,7 +9565,7 @@ static int e_ai_complete(FENSTER *f)
  char *text, *before, *after, *user = NULL;
  ai_complete_ud *ud;
  ai_async_op *op;
- BUFFER *b = f->b;
+ BUFFER *b = e_window_text(f);
  ECNT *cn = f->ed;
  int save_id = -1, wi;
  size_t off;
@@ -11745,7 +11746,7 @@ static FENSTER *ai_messages_window(FENSTER *f)
 static BUFFER *ai_messages_open_buffer(FENSTER *f)
 {
  FENSTER *m = ai_messages_window(f);
- return m ? m->b : NULL;
+ return m ? e_window_text(m) : NULL;
 }
 
 /* A run has started and has not yet written to Messages: its first row empties
@@ -11772,11 +11773,11 @@ static void ai_messages_empty_for_run(FENSTER *f)
  g_ai_plan_row = -1;
  g_ai_plan_rows = 0;
  if (!m) return;
- if (e_buffer_clear(m->b) == E_BUFFER_NOMEM)
-  wpe_buffer_say_nomem(m->b, "the run's rows");
+ if (e_buffer_clear(e_window_text(m)) == E_BUFFER_NOMEM)
+  wpe_buffer_say_nomem(e_window_text(m), "the run's rows");
  else
-  e_line_make_hard_empty(m->b, 0);  /* the one row a compile leaves */
- e_buffer_cursor_set(m->b, 0, 0);
+  e_line_make_hard_empty(e_window_text(m), 0);  /* the one row a compile leaves */
+ e_buffer_cursor_set(e_window_text(m), 0, 0);
  e_messages_scroll_to_bottom(m);
  e_rep_win_tree(f->ed);
 }
@@ -14812,7 +14813,7 @@ static void ai_plan_apply_file(FENSTER *w, const ai_proposal *p)
   e_ai_apply_text(w, result);
   free(result);
  } else {
-  wpe_buffer_say_nomem(w->b, "the new text");
+  wpe_buffer_say_nomem(e_window_text(w), "the new text");
  }
 }
 

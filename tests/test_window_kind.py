@@ -425,6 +425,86 @@ def test_the_window_list_keeps_its_own_keys_and_never_reaches_a_text_command(tmp
     assert (tmp_path / MAIN_C).read_text() == SOURCE
 
 
+F4 = "\033OS"                # Search: Find, a dialog
+FIND_TITLE = " Find q"       # the dialog's title in its frame, as the pty paints it
+HELP_KEY = "\033OP"          # F1
+
+
+def find_dialog_top(w):
+    """Open the Find dialog over the window on top, read the row its frame's
+    title is on, and close it."""
+    w.key(F4, delay=0.8)
+    rows = w.display()
+    top = next((y for y, row in enumerate(rows) if FIND_TITLE in row), None)
+    assert top is not None, "no Find dialog:\n%s" % "\n".join(rows)
+    w.key(ESC, delay=0.6)
+    return top
+
+
+def test_a_dialog_over_a_locked_file_and_over_help_sits_on_that_window(tmp_path):
+    """A dialog is centred on the window under it, except over a docked tool
+    strip (Messages, Watches, Stack, the assistant), where it is centred on
+    the screen.  A file locked against writing and the Help viewer are
+    read-only like those strips, and are ordinary windows: the dialog opens
+    on them where it opens on a file the user can write.  Red when the strip
+    is told from the window by the read-only flag, which both carry."""
+    locked = tmp_path / "locked.c"
+    locked.write_text("int x;\n")
+    locked.chmod(0o444)
+    with session_in(tmp_path, args=(str(locked),)) as w:
+        # The writable file was opened last, so it is on top.
+        over_a_writable_file = find_dialog_top(w)
+        w.key(ALT_1, delay=0.6)
+        over_a_locked_file = find_dialog_top(w)
+        w.key(HELP_KEY, delay=1.0)
+        over_the_help_viewer = find_dialog_top(w)
+        assert w.alive(), "the editor died opening a dialog"
+    assert over_a_locked_file == over_a_writable_file, \
+        "a dialog over a locked file sits on row %d, over a writable one on %d" % (
+            over_a_locked_file, over_a_writable_file)
+    assert over_the_help_viewer == over_a_writable_file, \
+        "a dialog over the Help viewer sits on row %d, over a writable file on %d" % (
+            over_the_help_viewer, over_a_writable_file)
+
+
+def click_at(w, row, col):
+    """Press and release the left button at a 1-based cell (SGR 1006)."""
+    w.key("\033[<0;%d;%dM" % (col, row), delay=0.2)
+    w.key("\033[<0;%d;%dm" % (col, row), delay=0.5)
+
+
+# The Windows list answers a click on the two rows above its Show button as
+# the project lists' Add and Edit, though it paints neither: the mouse reads a
+# row as a button by its place.  These rows say what such a click does.
+HIDDEN_ROWS_ABOVE_SHOW = (4, 2)
+
+
+def test_the_hidden_add_and_edit_rows_of_the_window_list_open_no_window(tmp_path):
+    """A click on the cell where the project lists keep Add or Edit does not
+    open the window under the cursor: the Windows list only shows results,
+    so only its Show button opens one.  Red when the Windows list is taken
+    for a list that keeps a blank row to add at (the sealed project lists),
+    because then those two cells act as Add and Edit."""
+    with session_in(tmp_path) as w:
+        open_window_list(w)
+        show = cell_of(w, "Show")
+        assert show is not None, screen_text(w)
+        show_row, show_col = show
+        w.key("\033[B", delay=0.4)       # Down: the row of main.c, not the list itself
+        for above in HIDDEN_ROWS_ABOVE_SHOW:
+            click_at(w, show_row - above, show_col)
+            assert w.alive(), "the editor died on a click above Show"
+            assert window_list_on_top(w), \
+                "a click %d rows above Show left the window list:\n%s" % (
+                    above, screen_text(w))
+        click(w, "Show")
+        assert wait_until(w, lambda: not window_list_on_top(w),
+                          tmo=OPEN_WAIT_S,
+                          what="the window under the list in front"), \
+            screen_text(w)
+    assert (tmp_path / MAIN_C).read_text() == SOURCE
+
+
 def slow_build_folder(tmp_path):
     """A folder whose make names an error after a pause, with a source to
     build from."""

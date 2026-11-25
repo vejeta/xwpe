@@ -2370,7 +2370,7 @@ static int e_run_program(ECNT *cn)
  if (i <= 0)
   i = cn->mxedt;
  mf = cn->f[i];
- b = mf->b;
+ b = e_window_text(mf);
 
  if (wpe_row_len(b, b->mxlines-1) != 0)
   e_view_add_row(b);
@@ -3533,7 +3533,7 @@ static void e_build_wait_line_drop(void)
   return;
  g_build.wait_row = 0;
  if (mf)
-  e_build_drop_last_row(mf->b);
+  e_build_drop_last_row(e_window_text(mf));
  else if (e_p_m_buffer)
   e_build_drop_last_row(e_p_m_buffer);   /* Messages closed: its buffer stays */
 }
@@ -3553,7 +3553,7 @@ static void e_build_wait_line_put(void)
  if (!mf || g_build.wait_row)
   return;
  snprintf(line, sizeof line, E_BUILD_WAIT_FMT, (long)(time(NULL) - g_build.start));
- e_view_append(mf->b, line);
+ e_view_append(e_window_text(mf), line);
  g_build.wait_row = 1;
 }
 
@@ -3585,7 +3585,7 @@ void e_messages_show_tail(ECNT *cn)
   wpe_paint_request(e_messages_show_tail_replay, cn, E_MESSAGES_TAIL_WHAT);
   return;
  }
- e_buffer_cursor_set(mf->b, mf->b->mxlines - 1, 0);
+ e_buffer_cursor_set(e_window_text(mf), e_window_text(mf)->mxlines - 1, 0);
  e_messages_scroll_to_bottom(mf);
  e_schirm(mf, 0);
  if (mf != cn->f[cn->mxedt])
@@ -3779,7 +3779,7 @@ static int e_build_pump_stream(int fd)
  BUFFER *b = NULL;
 
  if (mf)
-  b = mf->b;
+  b = e_window_text(mf);
  if (fd == g_build.efd)
   return(e_p_pump_fd(fd, &g_build.eacc, &g_build.eacclen, b));
  return(e_p_pump_fd(fd, &g_build.wacc, &g_build.wacclen, b));
@@ -4082,7 +4082,7 @@ static int e_build_enter_dir(char *saved, size_t n)
  */
 static int e_build_step_verdict(FENSTER *mf, int ret)
 {
- BUFFER *b = mf->b;
+ BUFFER *b = e_window_text(mf);
  int list = 0;
 
  if (g_build.cancelled)
@@ -4138,14 +4138,14 @@ static void e_build_step_end(void)
  e_build_close_stream(g_build.wfd);
  e_build_wait_line_drop();
  mf = e_build_step_end_window(cn);
- e_build_flush_fragments(mf->b);
+ e_build_flush_fragments(e_window_text(mf));
  if (g_build.pic)
   e_close_view(g_build.pic, 1);
  cwd_chg = e_build_enter_dir(cwd_saved, sizeof cwd_saved);
  if (g_build.pid > 0)
   g_build_chain_ran = 1;
  result = e_build_step_verdict(mf, e_build_exit_code());
- e_buffer_cursor_set(mf->b, mf->b->mxlines - 1, mf->b->b.x);
+ e_buffer_cursor_set(e_window_text(mf), e_window_text(mf)->mxlines - 1, e_window_text(mf)->b.x);
  g_build.active = 0;
  e_build_continue(cont, e_p_source_window(cn), result, data);
  if (cwd_chg)
@@ -4170,7 +4170,7 @@ static void e_build_step_begin(ECNT *cn, FENSTER *mf, PIC *pic,
  g_build.cont = cont;
  g_build.data = data;
  g_build.start = time(NULL);
- g_build.is = mf->b->mxlines - 1;
+ g_build.is = e_window_text(mf)->mxlines - 1;
  if (!getcwd(g_build.dir, sizeof g_build.dir))
   g_build.dir[0] = '\0';
 }
@@ -4396,10 +4396,10 @@ static void e_build_say_pattern(BUFFER *b)
 static void e_build_tally(FENSTER *mf, int result)
 {
  e_make_error_list(mf);
- e_build_mark_warnings(mf->b);
- e_build_say_pattern(mf->b);
- e_build_print_count(mf->b, result);
- e_buffer_cursor_set(mf->b, mf->b->mxlines - 1, mf->b->b.x);
+ e_build_mark_warnings(e_window_text(mf));
+ e_build_say_pattern(e_window_text(mf));
+ e_build_print_count(e_window_text(mf), result);
+ e_buffer_cursor_set(e_window_text(mf), e_window_text(mf)->mxlines - 1, e_window_text(mf)->b.x);
  e_messages_scroll_to_bottom(mf);
 }
 
@@ -4479,7 +4479,7 @@ static void e_build_report_up_to_date(ECNT *cn, int result)
  n = strlen(E_BUILD_UP_TO_DATE_FMT) + strlen(g_build_up_to_date) + 1;
  line = MALLOC(n);
  snprintf(line, n, E_BUILD_UP_TO_DATE_FMT, g_build_up_to_date);
- e_view_append(mf->b, line);
+ e_view_append(e_window_text(mf), line);
  FREE(line);
  e_messages_scroll_to_bottom(mf);
  e_build_return_to_source(cn);
@@ -4602,14 +4602,14 @@ static void e_err_show_row_in_messages(ECNT *cn, int n)
  FENSTER *mf = e_build_messages(cn);
  int row = err_li[n].row, visible_h;
 
- if (!mf || row < 0 || row >= mf->b->mxlines)
+ if (!mf || row < 0 || row >= e_window_text(mf)->mxlines)
   return;
  visible_h = mf->e.y - mf->a.y - 1;
- e_buffer_cursor_set(mf->b, row, 0);
- if (row < mf->s->c.y || row >= mf->s->c.y + visible_h)
-  mf->s->c.y = row - E_ERR_ROW_CONTEXT;
- if (mf->s->c.y < 0)
-  mf->s->c.y = 0;
+ e_buffer_cursor_set(e_window_text(mf), row, 0);
+ if (row < e_window_screen(mf)->c.y || row >= e_window_screen(mf)->c.y + visible_h)
+  e_window_screen(mf)->c.y = row - E_ERR_ROW_CONTEXT;
+ if (e_window_screen(mf)->c.y < 0)
+  e_window_screen(mf)->c.y = 0;
  e_schirm(mf, 0);
 }
 
@@ -4676,7 +4676,7 @@ static char *e_err_locate_file(ECNT *cn, const char *name)
 int e_show_error(int n, FENSTER *f)
 {
  ECNT *cn = f->ed;
- BUFFER *b = cn->f[cn->mxedt]->b;
+ BUFFER *b = e_window_text(cn->f[cn->mxedt]);
  int i, bg = 0;
  char *filename;
 
@@ -4747,7 +4747,7 @@ int e_show_error(int n, FENSTER *f)
  }
  else if (filename != f->datnam)
   FREE(filename);
- b = cn->f[cn->mxedt]->b;
+ b = e_window_text(cn->f[cn->mxedt]);
  /* a line past the end of the file lands on its last row: the owner clamps */
  e_buffer_cursor_set(b, err_li[n].line - 1, 0);
  if (!err_li[n].srch)
@@ -5205,7 +5205,7 @@ int e_cur_error(int y, FENSTER *f)
 int e_d_car_ret(FENSTER *f)
 {
  if (!strcmp(f->datnam, "Messages"))
-  return(e_cur_error(f->ed->f[f->ed->mxedt]->b->b.y, f));
+  return(e_cur_error(e_window_text(f->ed->f[f->ed->mxedt])->b.y, f));
 #ifdef DEBUGGER
  if (!strcmp(f->datnam, "Watches"))
   return(e_edit_watches(f));
@@ -6058,7 +6058,7 @@ int e_prj_ob_btt(FENSTER *f, int sw)
                             wpe_binding_style(f->ed->edopt),
                             WPE_CTX_LIST) != WPE_ACT_CLOSE_LIST)
    ;
-  fw = (FLWND *)f->ed->f[f->ed->mxedt]->b;
+  fw = e_window_list(f->ed->f[f->ed->mxedt]);
   fw->df = NULL;
   e_close_window(f->ed->f[f->ed->mxedt]);
  }
@@ -6518,7 +6518,8 @@ int e_find_project_window(ECNT *cn)
  int i;
 
  for (i = cn->mxedt;
-   i > 0 && (cn->f[i]->dtmd != DTMD_DATA || cn->f[i]->ins != 4); i--)
+   i > 0 && (cn->f[i]->dtmd != DTMD_DATA ||
+             e_window_list_kind(cn->f[i]) != WPE_LISTKIND_PROJECT_FILES); i--)
   ;
  return(i);
 }
@@ -6542,7 +6543,8 @@ int e_find_dirty_project_window(ECNT *cn)
  int i;
 
  for (i = cn->mxedt; i > 0 && (cn->f[i]->dtmd != DTMD_DATA
-   || cn->f[i]->ins != 4 || !cn->f[i]->save); i--)
+   || e_window_list_kind(cn->f[i]) != WPE_LISTKIND_PROJECT_FILES
+   || !cn->f[i]->save); i--)
   ;
  return(i);
 }
@@ -7025,7 +7027,7 @@ int e_p_add_item(FENSTER *f)
 
   e_make_prj_opt(f);
   e_prj_ob_file(f);
-  fw = (FLWND *) cn->f[cn->mxedt]->b;
+  fw = e_window_list(cn->f[cn->mxedt]);
   fw->nf = wpe_listsel_sentinel_row(fw->df);
  }
  cn->f[cn->mxedt]->save = 1;
@@ -7046,7 +7048,7 @@ int e_p_del_item(FENSTER *f)
   return(e_error(e_p_msg[ERR_NOPROJECT], 0, f->fb));
  f = cn->f[cn->mxedt];
  f->save = 1;
- e_p_del_df((FLWND *) f->b, f->ins);
+ e_p_del_df(e_window_list(f), e_window_list_kind(f));
  /* Persist immediately, symmetrically with Add (#137: keep disk in sync).
     A refusal was said by the writer; the window stays marked unsaved. */
  e_prj_persist(f);
@@ -7282,8 +7284,8 @@ int e_system(struct WpeStartPlan *plan, ECNT *cn)
 
 void e_messages_scroll_to_bottom(FENSTER *f)
 {
- SCHIRM *s = f->s;
- BUFFER *b = f->b;
+ SCHIRM *s = e_window_screen(f);
+ BUFFER *b = e_window_text(f);
  int visible_h = f->e.y - f->a.y - 1;
  int margin = visible_h > 4 ? 2 : 0;
 
@@ -7426,10 +7428,10 @@ static int e_p_message_now(char *str, FENSTER *f, int sw)
  f = cn->f[i];
 
 /* b - buffer */
- b = cn->f[i]->b;
+ b = e_window_text(cn->f[i]);
 
 /* s - content of window */
- s = cn->f[i]->s;
+ s = e_window_screen(cn->f[i]);
 
  e_view_append_wrapped(b, str);
 
@@ -7475,11 +7477,11 @@ int e_d_p_named(char *winname, char *str, FENSTER *f, int sw)
   if (e_edit_view(cn, winname))
    return(-1);
   i = cn->mxedt;
-  e_buffer_mark_view(cn->f[i]->b);
+  e_buffer_mark_view(e_window_text(cn->f[i]));
   cn->f[i]->ins = WPE_INS_READONLY;   /* a view the editor writes, never the user */
  }
  wf = cn->f[i];
- b = wf->b;
+ b = e_window_text(wf);
  e_view_append_wrapped(b, str);
  e_buffer_cursor_set(b, b->mxlines - 1, b->b.x);
  e_messages_scroll_to_bottom(wf);
@@ -7525,10 +7527,10 @@ static long e_msg_now_ms(void)
 static int e_msg_row_at_mouse(FENSTER *f)
 {
  extern struct mouse e_mouse;
- int row = e_mouse.y - f->a.y + f->s->c.y - 1;
+ int row = e_mouse.y - f->a.y + e_window_screen(f)->c.y - 1;
 
- if (row >= f->b->mxlines)
-  row = f->b->mxlines - 1;
+ if (row >= e_window_text(f)->mxlines)
+  row = e_window_text(f)->mxlines - 1;
  if (row < 0)
   row = 0;
  return(row);
@@ -7578,10 +7580,10 @@ void e_d_note_messages_focus_click(FENSTER *f)
 static int e_msg_car_mouse(FENSTER *f)
 {
  extern struct mouse e_mouse;
- BUFFER *b = f->b;
+ BUFFER *b = e_window_text(f);
  int row = e_msg_row_at_mouse(f);
 
- e_buffer_cursor_set_col(b, row, e_mouse.x - f->a.x + f->s->c.x - 1);
+ e_buffer_cursor_set_col(b, row, e_mouse.x - f->a.x + e_window_screen(f)->c.x - 1);
  if (e_msg_press(f, row))
   return(WPE_CR);
  return(0);
@@ -7590,8 +7592,8 @@ static int e_msg_car_mouse(FENSTER *f)
 int e_d_car_mouse(FENSTER *f)
 {
  extern struct mouse e_mouse;
- BUFFER *b = f->ed->f[f->ed->mxedt]->b;
- SCHIRM *s = f->ed->f[f->ed->mxedt]->s;
+ BUFFER *b = e_window_text(f->ed->f[f->ed->mxedt]);
+ SCHIRM *s = e_window_screen(f->ed->f[f->ed->mxedt]);
 
  if (!strcmp(f->datnam, "Messages"))
   return(e_msg_car_mouse(f));
@@ -10270,15 +10272,15 @@ int e_prj_save_before_close(FENSTER *f)
  return(0);
 }
 
-int e_p_add_df(FLWND *fw, int sw)
+int e_p_add_df(FLWND *fw, int kind)
 {
  char *title = NULL, str[WPE_PATH_SIZE];
 
- if (sw == 4)
+ if (kind == WPE_LISTKIND_PROJECT_FILES)
   title = "Add File";
- else if (sw == 5)
+ else if (kind == WPE_LISTKIND_PROJECT_VARIABLES)
   title = "Add Variable";
- else if (sw == 6)
+ else if (kind == WPE_LISTKIND_PROJECT_INSTALL)
   title = "Add Command";
  str[0] = '\0'; /* terminate new string to prevent garbage in display */
  if (e_add_arguments(str, sizeof str, title, fw->f, 0, AltA, NULL))
@@ -10286,17 +10288,17 @@ int e_p_add_df(FLWND *fw, int sw)
  return(0);
 }
 
-int e_p_edit_df(FLWND *fw, int sw)
+int e_p_edit_df(FLWND *fw, int kind)
 {
  char *title = NULL, str[WPE_PATH_SIZE];
  char *entry;
  int row;
 
- if (sw == 4)
+ if (kind == WPE_LISTKIND_PROJECT_FILES)
   title = "Change Filename";
- else if (sw == 5)
+ else if (kind == WPE_LISTKIND_PROJECT_VARIABLES)
   title = "Change Variable";
- else if (sw == 6)
+ else if (kind == WPE_LISTKIND_PROJECT_INSTALL)
   title = "Change Command";
  entry = wpe_listsel_name(fw->df, fw->nf, 1);
  if (entry)
@@ -10320,8 +10322,9 @@ int e_p_edit_df(FLWND *fw, int sw)
  return(0);
 }
 
-int e_p_del_df(FLWND *fw, int sw)
+int e_p_del_df(FLWND *fw, int kind)
 {
+ (void)kind;
  /* Delete removes an entry, never the blank row that ends the list, and the
     last real file stays deletable because the list is sealed. */
  wpe_listsel_remove(fw->df, &fw->nf);
@@ -10395,9 +10398,9 @@ int e_p_show_messages(FENSTER *f)
   return(-1);
  }
  f = f->ed->f[f->ed->mxedt];
- if (f->b->mxlines == 1 && wpe_row_len(f->b, 0) == 0)
+ if (e_window_text(f)->mxlines == 1 && wpe_row_len(e_window_text(f), 0) == 0)
  {
-  e_ins_nchar(f->b, f->s, "No Messages", 0, 0, 11);
+  e_ins_nchar(e_window_text(f), e_window_screen(f), "No Messages", 0, 0, 11);
   e_schirm(f, 1);
  }
  return(0);
@@ -10426,14 +10429,14 @@ int e_p_show_program_output(FENSTER *f)
  mf = f->ed->f[f->ed->mxedt];                /* now the active window */
  if (strcmp(mf->datnam, "Messages"))
   return(0);
- if (mf->b->mxlines > 0)
+ if (e_window_text(mf)->mxlines > 0)
  {
-  int last = mf->b->mxlines - 1;
+  int last = e_window_text(mf)->mxlines - 1;
   /* Sit at the stream write position -- the end of the last line, like a
      tailing terminal -- so output continues (and interactive input goes)
      right after the last character, not on top of it.  For a line ending
      in a newline the last line is empty, so this is column 0. */
-  e_buffer_cursor_set(mf->b, last, wpe_row_len(mf->b, last));
+  e_buffer_cursor_set(e_window_text(mf), last, wpe_row_len(e_window_text(mf), last));
  }
  e_messages_scroll_to_bottom(mf);
  e_schirm(mf, 1);

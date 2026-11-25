@@ -4475,9 +4475,6 @@ int e_get_opt_sw(int c, int x, int y, W_OPTSTR *o)
    return(!ret ? c : ret);
 }
 
-/* The window kind of a docked tool or output pane (AI, Messages). */
-#define E_OPT_PANE_INS 8
-
 /**
  * e_opt_box_refresh - Tell the layout owner which window the dialog sits on.
  * @box: the dialog's box.
@@ -4494,7 +4491,7 @@ static void e_opt_box_refresh(WpeBox *box)
    FENSTER *ef = o->f->ed->f[o->f->ed->mxedt];
 
    wpe_box_within(&box->place, ef->a.x, ef->a.y, ef->e.x, ef->e.y,
-                  ef->ins == E_OPT_PANE_INS);
+                  e_window_is_dock_pane(ef));
 }
 
 /**

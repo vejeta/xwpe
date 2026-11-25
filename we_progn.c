@@ -333,7 +333,7 @@ int e_sc_all(FENSTER *f, int sw)
    {
     if (f->ed->f[i]->c_sw)
      FREE(f->ed->f[i]->c_sw);
-    f->ed->f[i]->c_sw = e_sc_txt(NULL, f->ed->f[i]->b);
+    f->ed->f[i]->c_sw = e_sc_txt(NULL, e_window_text(f->ed->f[i]));
    }
   }
  }
@@ -533,7 +533,7 @@ void e_pr_inlay_eol(FENSTER *f, int y, int *jp, int frb)
  extern int e_lsp_inlay_active_for(FENSTER *f);
  extern const char *e_lsp_inlay_eol_text(int y);
  extern int e_lsp_inlay_color(SCHIRM *s, int base);
- SCHIRM *s = f->s;
+ SCHIRM *s = e_window_screen(f);
  const char *hint;
  int j = *jp, limit = NUM_COLS_ON_SCREEN + s->c.x - 1, attr;
  int sx = f->a.x - s->c.x + 1, sy = y - s->c.y + f->a.y + 1;
@@ -558,8 +558,8 @@ void e_pr_inlay_eol(FENSTER *f, int y, int *jp, int frb)
 
 void e_pr_c_line(int y, FENSTER *f)
 {
- BUFFER *b = f->b;
- SCHIRM *s = f->s;
+ BUFFER *b = e_window_text(f);
+ SCHIRM *s = e_window_screen(f);
  int i, j, k, frb = 0;
  int mcsw = f->c_sw[y], svmsw = f->c_sw[y] == 5 ? 5 : 0, bssw = 0;
  int n_bg = -1, n_nd = strlen(f->c_st->end_comment)-1;
@@ -729,7 +729,7 @@ int e_add_synt_tl(char *filename, FENSTER *f)
    {
     f->c_st = WpeSyntaxDef[i]->syntax_rule;
     if (f->ed->edopt & ED_SYNTAX_HIGHLIGHT)
-     f->c_sw = MALLOC(f->b->mx.y*sizeof(int));
+     f->c_sw = MALLOC(e_window_text(f)->mx.y*sizeof(int));
    }
   }
  }
@@ -824,7 +824,7 @@ E_AFILE *e_aopen(char *name, char *path, int mode, char **found)
    ;
   if (i <= cn->mxedt)
   {
-   ep->b = cn->f[i]->b;
+   ep->b = e_window_text(cn->f[i]);
    ep->p.x = ep->p.y = 0;
   }
  }
@@ -1324,20 +1324,20 @@ int e_show_nm_f(char *name, FENSTER *f, int oldn, char **oldname)
  f = f->ed->f[f->ed->mxedt];
  for (i = num, j = x+1-(len = strlen(name)); i >= 0; )
  {
-  for (len = strlen(name); j >= 0 && strncmp(name, wpe_row_text(f->b, i, j), len);
+  for (len = strlen(name); j >= 0 && strncmp(name, wpe_row_text(e_window_text(f), i, j), len);
     j--)
    ;
   if (j < 0 && i >= 0)
-  {  i--;  j = wpe_row_len(f->b, i)-len+1;  }
+  {  i--;  j = wpe_row_len(e_window_text(f), i)-len+1;  }
   else break;
  }
  if (i >= 0)
  {  num = i;  x = j;  }
  else len = 0;
- e_buffer_find_set(f->b, num, x, x + len);
- e_buffer_cursor_from(f->b, E_BUFFER_MARK_FIND_E);
+ e_buffer_find_set(e_window_text(f), num, x, x + len);
+ e_buffer_cursor_from(e_window_text(f), E_BUFFER_MARK_FIND_E);
  e_cursor(f, 1);
- e_buffer_find_mark_restore(f->b, num);
+ e_buffer_find_mark_restore(e_window_text(f), num);
  e_schirm(f, 1);
  WpeMouseRestoreShape();
  return(num);
@@ -1395,9 +1395,9 @@ int e_nxt_brk(FENSTER *f)
 {
  int y, x;
 
- if (e_brk_match(f->b, &y, &x) == 0)
+ if (e_brk_match(e_window_text(f), &y, &x) == 0)
  {
-  e_buffer_cursor_set(f->b, y, x);
+  e_buffer_cursor_set(e_window_text(f), y, x);
   return(0);
  }
  return(e_error("No Matching Bracket!", 0, f->ed->fb));
@@ -1440,11 +1440,11 @@ int e_mbt_str(BUFFER *b, int *ii, int *jj, unsigned char c, int n, int sw,
    for (j = 0, m = wpe_row_len(b, i); j < m && isspace(wpe_row_byte(b, i, j)); j++)
     ;
    if (j > 0)
-    e_del_nchar(b, b->f->s, 0, i, j);
+    e_del_nchar(b, e_window_screen(b->f), 0, i, j);
    if (j < m)
    {
     str = e_mbt_mk_sp(str, n+b->cn->autoindent, sw, &m);
-    e_ins_nchar(b, b->f->s, str, 0, i, m);
+    e_ins_nchar(b, e_window_screen(b->f), str, 0, i, m);
    }
    j = -1;
    FREE(str);
@@ -1472,11 +1472,11 @@ int e_mbt_cnd(BUFFER *b, int *ii, int *jj, int n, int sw, int *cmnd)
     for (j = 0, m = wpe_row_len(b, i); j < m && isspace(wpe_row_byte(b, i, j)); j++)
      ;
     if (j > 0)
-     e_del_nchar(b, b->f->s, 0, i, j);
+     e_del_nchar(b, e_window_screen(b->f), 0, i, j);
     if (j < m && (wpe_row_byte(b, i, 0) != '*' || wpe_row_byte(b, i, 1) != '/'))
     {
      str = e_mbt_mk_sp(str, n+b->cn->autoindent, sw, &m);
-     e_ins_nchar(b, b->f->s, str, 0, i, m);
+     e_ins_nchar(b, e_window_screen(b->f), str, 0, i, m);
     }
     j = -1;
     FREE(str);
@@ -1521,8 +1521,8 @@ int e_mk_beauty(int sw, int ndif, FENSTER *f)
  *vkcs = 0;
  *vkcb = 0;
  WpeMouseChangeShape(WpeWorkingShape);
- b = f->b;
- s = f->s;
+ b = e_window_text(f);
+ s = e_window_screen(f);
  sa = s->mark_begin;  se = s->mark_end;  sb = b->b;
  if (sw & 1)
  {

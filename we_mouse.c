@@ -283,7 +283,7 @@ int WpeMngMouseInFileManager(FENSTER * f)
 {
   extern struct mouse e_mouse;
   ECNT           *cn = f->ed;
-  FLBFFR         *b = (FLBFFR *) f->b;
+  FLBFFR         *b = e_window_files(f);
   int             i, c = 0, by = 4;
 
   if(e_mouse.y == 0)
@@ -418,7 +418,7 @@ int WpeMouseInFileDirList(int k, int sw, FENSTER * f)
 {
   extern struct mouse e_mouse;
   ECNT           *cn = f->ed;
-  FLBFFR         *b = (FLBFFR *) f->b;
+  FLBFFR         *b = e_window_files(f);
   int             i;
   char            tmp[WPE_PATH_SIZE];
 
@@ -550,7 +550,7 @@ int fl_wnd_mouse(sw, k, fw)
 	    if(sw && (e_mouse.x != xa || e_mouse.y != ya))
 	    {  xn = e_mouse.x;  yn = e_mouse.y;
 	       if(fw->srcha < 0)
-	       {  FLBFFR *b = (FLBFFR *)fw->f->b;
+	       {  FLBFFR *b = e_window_files(fw->f);
 		  if(b->cd->anz > fw->nf)
 		  {  while (e_mshit() != 0);
 		     FREE (file);  FREE (bgrd);  return(WPE_CR);
@@ -604,13 +604,13 @@ static void e_scroll_invalidate_content(FENSTER *f)
 static void e_scroll_render_lines(FENSTER *f)
 {
  int j;
- int first = f->b->b.y;
+ int first = e_window_text(f)->b.y;
  int visible = f->e.y - f->a.y - 1;
  int last = first + visible;
 
- f->s->c.y = first;
+ e_window_screen(f)->c.y = first;
 
- for (j = first; j < f->b->mxlines && j < last; j++)
+ for (j = first; j < e_window_text(f)->mxlines && j < last; j++)
   e_pr_line(j, f);
  for (; j < last; j++)
   e_blk(f->e.x - f->a.x - 2, f->a.x + 1,
@@ -626,7 +626,7 @@ static void e_scroll_content(FENSTER *f)
 #ifndef NO_XWINDOWS  /* scrollbar fluid-drag helpers: X11-only (Xlib events) */
 static void e_scroll_render_h(FENSTER *f, int new_bx)
 {
- f->s->c.x = new_bx;
+ e_window_screen(f)->c.x = new_bx;
  e_schirm(f, 0);
  e_cursor_pos_only(f);
  e_refresh();
@@ -681,9 +681,9 @@ void e_scroll_drag_h(FENSTER *f)
  int fw = WpeRender.font_width;
  int track_l = (f->a.x + 20) * fw;
  int track_r = (f->e.x - 3) * fw;
- int max_x = f->b->mx.x;
+ int max_x = e_window_text(f)->mx.x;
  int visible = f->e.x - f->a.x - 1;
- int old_bx = f->b->b.x;
+ int old_bx = e_window_text(f)->b.x;
 
  if (track_r - track_l < 1 || max_x <= visible)
   return;
@@ -709,12 +709,12 @@ void e_scroll_drag_h(FENSTER *f)
 #ifndef NO_XWINDOWS
 static void e_scroll_drag_end_cursor(FENSTER *f)
 {
- int vp_left = f->s->c.x;
+ int vp_left = e_window_screen(f)->c.x;
  int vp_right = vp_left + (f->e.x - f->a.x - 2);
- int vp_top = f->s->c.y;
+ int vp_top = e_window_screen(f)->c.y;
  int vp_bottom = vp_top + (f->e.y - f->a.y - 2);
  int col = e_cursor_display_col(f);
- int row = f->b->b.y;
+ int row = e_window_text(f)->b.y;
 
  /* The viewport is counted in screen columns, so the cursor is compared by
     the column it is shown in, not by its byte. */
@@ -722,7 +722,7 @@ static void e_scroll_drag_end_cursor(FENSTER *f)
   col = vp_left;
  if (row < vp_top || row > vp_bottom)
   row = (vp_top + vp_bottom) / 2;
- e_buffer_cursor_set_col(f->b, row, col);
+ e_buffer_cursor_set_col(e_window_text(f), row, col);
 
  e_cursor_pos_only(f);
  e_schirm(f, 1);
@@ -736,9 +736,9 @@ void e_scroll_drag_v(FENSTER *f)
  int fh = WpeRender.font_height;
  int track_t = (f->a.y + 2) * fh;
  int track_b = (f->e.y - 1) * fh;
- int total = f->b->mxlines;
+ int total = e_window_text(f)->mxlines;
  int visible = f->e.y - f->a.y - 1;
- int old_by = f->b->b.y;
+ int old_by = e_window_text(f)->b.y;
 
  if (track_b - track_t < 1 || total <= visible)
   return;
@@ -754,7 +754,7 @@ void e_scroll_drag_v(FENSTER *f)
   new_by = e_scroll_pixel_to_pos(py, track_t, track_b, total, visible);
   if (new_by == old_by) continue;
 
-  f->s->c.y = new_by;
+  e_window_screen(f)->c.y = new_by;
   e_schirm(f, 0);
   e_cursor_pos_only(f);
   e_refresh();
@@ -969,7 +969,7 @@ void e_eck_mouse(FENSTER *f, int sw)
    fk_mouse(g);
    if (f->dtmd == DTMD_FILEDROPDOWN)
    {
-    FLWND *fw = (FLWND*) f->b;
+    FLWND *fw = e_window_list(f);
     fw->xa = f->a.x+1;
     fw->xe = f->e.x;
     fw->ya = f->a.y+1;
@@ -1028,8 +1028,8 @@ int e_edt_mouse(int c, FENSTER *f)
   {
    if (c < -1) ret = e_ccp_mouse(c, f);
    else if (f->dtmd == DTMD_HELP && f->ins == 8 &&
-     f->b->b.y == e_mouse.y-f->a.y+NUM_LINES_OFF_SCREEN_TOP-1 &&
-     ((i = f->b->b.x) == e_mouse_cursor(f->b, f->s, f)))
+     e_window_text(f)->b.y == e_mouse.y-f->a.y+NUM_LINES_OFF_SCREEN_TOP-1 &&
+     ((i = e_window_text(f)->b.x) == e_mouse_cursor(e_window_text(f), e_window_screen(f), f)))
     ret = WPE_CR;
    else
 #ifdef PROG
@@ -1059,7 +1059,7 @@ int e_edt_mouse(int c, FENSTER *f)
    /*changed the while()... to a do...while();  :Mark L*/
    do
    {
-    e_buffer_cursor_set_col(f->b, f->b->b.y - 1, f->b->clsv);
+    e_buffer_cursor_set_col(e_window_text(f), e_window_text(f)->b.y - 1, e_window_text(f)->clsv);
     e_cursor(f, 1);
     e_refresh();
    } while(e_mshit());
@@ -1069,7 +1069,7 @@ int e_edt_mouse(int c, FENSTER *f)
    /*changed the while()... to a do...while();  :Mark L*/
    do
    {
-    e_buffer_cursor_set_col(f->b, f->b->b.y + 1, f->b->clsv);
+    e_buffer_cursor_set_col(e_window_text(f), e_window_text(f)->b.y + 1, e_window_text(f)->clsv);
     e_cursor(f, 1);
     e_refresh();
    } while(e_mshit());
@@ -1082,8 +1082,8 @@ int e_edt_mouse(int c, FENSTER *f)
     e_scroll_drag_v(f);
    else
    {
-    e_buffer_cursor_set_col(f->b, e_lst_mouse(f->e.x, f->a.y+1,
-      f->e.y-f->a.y-1, 0, f->b->mxlines, f->b->b.y), f->b->clsv);
+    e_buffer_cursor_set_col(e_window_text(f), e_lst_mouse(f->e.x, f->a.y+1,
+      f->e.y-f->a.y-1, 0, e_window_text(f)->mxlines, e_window_text(f)->b.y), e_window_text(f)->clsv);
     e_cursor(f, 1);
     e_refresh();
    }
@@ -1092,7 +1092,7 @@ int e_edt_mouse(int c, FENSTER *f)
   {
    while (e_mshit())
    {
-    e_buffer_cursor_step(f->b, -1);
+    e_buffer_cursor_step(e_window_text(f), -1);
     e_cursor(f, 1);
     e_refresh();
    }
@@ -1101,7 +1101,7 @@ int e_edt_mouse(int c, FENSTER *f)
   {
    while (e_mshit())
    {
-    e_buffer_cursor_step(f->b, 1);
+    e_buffer_cursor_step(e_window_text(f), 1);
     e_cursor(f, 1);
     e_refresh();
    }
@@ -1114,8 +1114,8 @@ int e_edt_mouse(int c, FENSTER *f)
     e_scroll_drag_h(f);
    else
    {
-    e_buffer_cursor_set_col(f->b, f->b->b.y, e_lst_mouse(f->a.x+19, f->e.y,
-      f->e.x-f->a.x-20, 1, f->b->mx.x, NUM_COLS_OFF_SCREEN_LEFT));
+    e_buffer_cursor_set_col(e_window_text(f), e_window_text(f)->b.y, e_lst_mouse(f->a.x+19, f->e.y,
+      f->e.x-f->a.x-20, 1, e_window_text(f)->mx.x, NUM_COLS_OFF_SCREEN_LEFT));
     e_cursor(f, 1);
     e_refresh();
    }
@@ -1159,8 +1159,8 @@ int e_mouse_cursor(BUFFER *b, SCHIRM *s, FENSTER *f)
 /*  Copy, Cut and Paste functions    */
 int e_ccp_mouse(int c, FENSTER *f)
 {
- BUFFER *b = f->ed->f[f->ed->mxedt]->b;
- SCHIRM *s = f->ed->f[f->ed->mxedt]->s;
+ BUFFER *b = e_window_text(f->ed->f[f->ed->mxedt]);
+ SCHIRM *s = e_window_screen(f->ed->f[f->ed->mxedt]);
 
  while (e_mshit() != 0)
   ;
@@ -1249,8 +1249,8 @@ static void e_mouse_extend_block(BUFFER *b, SCHIRM *s, const POINT *bs)
 void e_cur_mouse(f)
      FENSTER *f;
 {
-   BUFFER *b = f->ed->f[f->ed->mxedt]->b;
-   SCHIRM *s = f->ed->f[f->ed->mxedt]->s;
+   BUFFER *b = e_window_text(f->ed->f[f->ed->mxedt]);
+   SCHIRM *s = e_window_screen(f->ed->f[f->ed->mxedt]);
    POINT bs;
    bs.x = b->b.x;  bs.y = b->b.y;
    e_mouse_cursor(b, s, f);
@@ -1432,7 +1432,14 @@ int e_data_ein_mouse(f)
      FENSTER *f;
 {
    extern struct mouse e_mouse;
-   FLWND *fw = (FLWND *)f->b;
+   FLWND *fw = e_window_list(f);
+   WpeListKind kind = e_window_list_kind(f);
+   /* Kinds 4 to 7: the rows above the Show button's place, which the Windows
+      list does not paint but has always answered as Add and Edit.  Its
+      Delete row is the Show button's own row, and Show is asked first, so
+      that row opens the window.  A result list's keys then ignore the
+      Add and Edit keys, so the two clicks open nothing. */
+   int past_results = (kind >= WPE_LISTKIND_PROJECT_FILES);
    ECNT *cn = f->ed;
    int i, c = 0;
    if(e_mouse.y == 0) return(AltBl);
@@ -1457,15 +1464,15 @@ int e_data_ein_mouse(f)
 	e_mouse.x >= fw->xa && e_mouse.x <= fw->xe)  c = AltF;
    else if(e_mouse.y == f->e.y-2 && e_mouse.x >= f->e.x-9
 			&& e_mouse.x <= f->e.x-3) c = WPE_ESC;
-   else if((f->ins < 4 || f->ins == 7) && e_mouse.y == f->e.y-4
+   else if(wpe_listsel_is_result_kind(kind) && e_mouse.y == f->e.y-4
 	    && e_mouse.x >= f->e.x-9 && e_mouse.x <= f->e.x-3) c = AltS;
-   else if(f->ins > 3 && e_mouse.y == f->e.y-8 && e_mouse.x >= f->e.x-9
+   else if(past_results && e_mouse.y == f->e.y-8 && e_mouse.x >= f->e.x-9
 			&& e_mouse.x <= f->e.x-3) c = AltA;
-   else if(f->ins > 3 && e_mouse.y == f->e.y-6 && e_mouse.x >= f->e.x-9
+   else if(past_results && e_mouse.y == f->e.y-6 && e_mouse.x >= f->e.x-9
 			&& e_mouse.x <= f->e.x-3) c = AltE;
-   else if(f->ins > 3 && e_mouse.y == f->e.y-4 && e_mouse.x >= f->e.x-9
+   else if(past_results && e_mouse.y == f->e.y-4 && e_mouse.x >= f->e.x-9
 			&& e_mouse.x <= f->e.x-3) c = AltD;
-   else if(f->ins == 4 && e_mouse.y == f->e.y-10 && e_mouse.x >= f->e.x-9
+   else if(kind == WPE_LISTKIND_PROJECT_FILES && e_mouse.y == f->e.y-10 && e_mouse.x >= f->e.x-9
 			&& e_mouse.x <= f->e.x-3) c = AltO;
    else c = AltF;
    while (e_mshit() != 0);

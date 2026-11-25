@@ -67,6 +67,9 @@ static FLWND stand_in_list;
 static BUFFER other_text;
 static BUFFER pane_text;
 
+/* An insert mode no kind of list has: a typing mode of text. */
+#define INSERT_MODE_BEFORE_HOLD 5
+
 static FENSTER win;
 static ECNT desk;
 
@@ -78,6 +81,9 @@ static void window_reset(void)
  memset(&win, 0, sizeof(win));
  win.ed = &desk;
  win.datnam = (char *)"a-file.c";
+ /* What a constructor may have written before it holds: a list's kind used
+    to be stored here, and the owner must leave a window without text at 0. */
+ win.ins = INSERT_MODE_BEFORE_HOLD;
 }
 
 static void desk_reset(void)
@@ -154,8 +160,8 @@ static void chk_only_dropdown(const char *what)
 /* The agreement the state dump prints and the painters rely on: the owner's
    answer about text is the window's own mode character's answer, the view
    state is set exactly for a text window, and the list kind exactly for a
-   list window.  The insert-mode clause of the agreement belongs to the pass
-   that moves the list kind off the insert mode. */
+   list window.  The insert-mode clause: a window that is not text has insert
+   mode 0, whatever its constructor wrote before it held its payload. */
 static void chk_agreement(const char *what)
 {
  int says_text = DTMD_ISTEXT(win.dtmd) ? 1 : 0;
@@ -164,10 +170,15 @@ static void chk_agreement(const char *what)
 
  chk_int(what, e_window_is_text(&win), says_text);
  if (says_text)
+ {
   chk_int("a text window has a view state", e_window_screen(&win) != NULL, 1);
+ }
  else
+ {
   chk_ptr("a window without text has no view state", e_window_screen(&win),
           NULL);
+  chk_int("a window without text has insert mode 0", win.ins, 0);
+ }
  /* The list kind is set exactly for a list window: a dropdown shows rows
     too, but it is no list of the editor's own, and a file window is neither. */
  chk_int("the list kind is set exactly for a list window", kind_is_set,
@@ -190,10 +201,6 @@ static void check_hold_text(void)
          e_window_hold_text(&win, &stand_in_text, &stand_in_screen), 1);
  chk_only_text("after holding a file's text");
  chk_agreement("a text window agrees with its mode character");
- chk_ptr("the field the tree still reads is the text held",
-         win.b, &stand_in_text);
- chk_ptr("the field the tree still reads is the view state held",
-         win.s, &stand_in_screen);
 }
 
 static void check_hold_files(void)
@@ -370,8 +377,6 @@ static void check_the_shell_window_constructor(void)
  chk_ptr("the shell has no rows", e_window_list(&shell), NULL);
  chk_int("the shell answers for no pane", e_window_pane(&shell),
          WPE_PANE_FILE);
- chk_ptr("the field the tree still reads is the shell's text", shell.b,
-         &stand_in_text);
  e_window_drop(&shell);
  chk_holds_nothing_of("the shell after its block was freed", &shell);
 }
@@ -397,8 +402,6 @@ static void check_the_help_viewer_constructor(void)
  chk_ptr("the help viewer has no rows", e_window_list(&win), NULL);
  chk_int("the help viewer is the pane the editor opened",
          e_window_pane(&win), WPE_PANE_HELP);
- chk_ptr("the field the tree still reads is the buffer taken over it",
-         win.b, &pane_text);
  chk_agreement("the help viewer agrees with its mode character");
 }
 
@@ -438,8 +441,6 @@ static void check_release_text(void)
  chk_ptr("a close gets the text back to free", text, &stand_in_text);
  chk_ptr("a close gets the view state back to free", screen, &stand_in_screen);
  chk_holds_nothing("after the text was taken back");
- chk_ptr("the field the tree still reads was cleared", win.b, NULL);
- chk_ptr("the field the tree still reads was cleared", win.s, NULL);
 }
 
 static void check_release_files_and_list(void)
@@ -495,6 +496,37 @@ static void check_the_pane_is_the_intent(void)
  e_window_set_pane(&win, WPE_PANE_MESSAGES);
  chk_int("the pane the editor opened is the one it says",
          e_window_pane(&win), WPE_PANE_MESSAGES);
+}
+
+/* A dialog is centred on the screen over a dock strip and on the window over
+   any other: the read-only flag cannot say which, so the owner does. */
+static void check_the_dock_panes(void)
+{
+ static const WpePane docks[] = { WPE_PANE_MESSAGES, WPE_PANE_WATCHES,
+                                  WPE_PANE_STACK, WPE_PANE_ASSISTANT };
+ static const WpePane others[] = { WPE_PANE_FILE, WPE_PANE_HELP,
+                                   WPE_PANE_CLIPBOARD };
+ size_t i;
+
+ window_reset();
+ win.dtmd = DTMD_NORMAL;
+ e_window_hold_text(&win, &stand_in_text, &stand_in_screen);
+ win.ins = WPE_INS_READONLY;
+ chk_int("a locked file is no dock pane", e_window_is_dock_pane(&win), 0);
+ for (i = 0; i < sizeof docks / sizeof docks[0]; i++)
+ {
+  e_window_set_pane(&win, docks[i]);
+  win.ins = 0;
+  chk_int("a dock pane is one whatever its read-only flag",
+          e_window_is_dock_pane(&win), 1);
+ }
+ for (i = 0; i < sizeof others / sizeof others[0]; i++)
+ {
+  e_window_set_pane(&win, others[i]);
+  win.ins = WPE_INS_READONLY;
+  chk_int("a read-only window that is no dock pane is not one",
+          e_window_is_dock_pane(&win), 0);
+ }
 }
 
 /* ---- windows chosen by kind ------------------------------------------- */
@@ -666,6 +698,7 @@ int main(void)
  check_release_files_and_list();
  check_release_asks_the_kind();
  check_the_pane_is_the_intent();
+ check_the_dock_panes();
  check_windows_chosen_by_kind();
  check_the_project_list_slot();
  check_a_command_refused_names_the_command();

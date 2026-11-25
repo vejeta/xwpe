@@ -321,11 +321,10 @@ static void fixture(int n, int history)
  memset(&win, 0, sizeof win);
  memset(&scr, 0, sizeof scr);
  cn.numundo = NUMUNDO;
- win.s = &scr;
  win.datnam = "t.c";
  scr.brp = NULL;
+ e_window_hold_text(&win, &buf, &scr);
  e_buffer_init(&buf, &cn, &win, WIDTH, history);
- win.b = &buf;
  for (i = 0; i < n; i++) {
   snprintf(name, sizeof name, "L%d", i);
   lines[i] = line_of(&buf, name);
@@ -347,6 +346,7 @@ static void fixture_free(void)
  free(scr.brp);
  free(win.c_sw);
  win.c_sw = NULL;
+ e_window_drop(&win);
 }
 
 static void brp_set(int n, const int *rows)
@@ -1505,7 +1505,7 @@ static void case_a_shell_is_an_owner_allocation(void)
  if (shell != NULL) {
   chk("30 one empty line", shell->mxlines == 1 && shell->bf[0].len == 0, 1);
   chk("30 as wide as asked", shell->mx.x, WIDTH);
-  chk("30 a margin of its own, empty", shell->f->s->brp != NULL && shell->f->s->brp[0] == 0, 1);
+  chk("30 a margin of its own, empty", e_window_screen(shell->f)->brp != NULL && e_window_screen(shell->f)->brp[0] == 0, 1);
   chk("30 no file name: no debugger hears of it", shell->f->datnam == NULL, 1);
   chk("30 no editor window", shell->f->ed == NULL, 1);
   chk("30 nothing refused yet", shell->refusals, 0);
@@ -1544,7 +1544,7 @@ static void case_a_shell_counts_its_refusals(void)
  memset(&rec, 0, sizeof rec);
  rec.type = 'a';
  stub_refuses = 1;
- wpe_buffer_replay_on_shell(shell, shell->f->s, &rec, 0);
+ wpe_buffer_replay_on_shell(shell, e_window_screen(shell->f), &rec, 0);
  stub_refuses = 0;
  chk("31 a primitive refused on a shell counts there", shell->refusals, 2);
  chk("31 and is not said", nomem_calls, 0);
@@ -1569,8 +1569,8 @@ static int shell_span_rows(BUFFER *shell, int g_top, int n_ins, int *out)
 {
  int i, rel, n = 0;
 
- for (i = 1; i <= shell->f->s->brp[0]; i++) {
-  rel = shell->f->s->brp[i] - g_top;
+ for (i = 1; i <= e_window_screen(shell->f)->brp[0]; i++) {
+  rel = e_window_screen(shell->f)->brp[i] - g_top;
   if (rel >= 0 && rel < n_ins && n < MAX_ROWS)
    out[n++] = rel;
  }
@@ -1595,7 +1595,7 @@ static int a_join_replayed_on_a_shell(const Undo *rec)
  }
  shell->b = pnt(rec->b.x, rec->b.y - top);
  e_buffer_step_begin(shell);
- wpe_buffer_replay_on_shell(shell, shell->f->s, rec, top);
+ wpe_buffer_replay_on_shell(shell, e_window_screen(shell->f), rec, top);
  e_buffer_step_end(shell);
  if (shell->refusals > 0) {
   e_buffer_shell_free(shell);
@@ -1713,7 +1713,7 @@ static void case_a_rewrite_reports_rows_removed_and_added(void)
  e_buffer_txn_begin(&t);
  shell = e_buffer_shell_new(&buf, WIDTH);
  e_buffer_shell_fill(shell, &t, &buf, 2, 4);
- chk("33 the fill copies the rows", shell->f->s->brp[0] == 1 && shell->f->s->brp[1] == 1, 1);
+ chk("33 the fill copies the rows", e_window_screen(shell->f)->brp[0] == 1 && e_window_screen(shell->f)->brp[1] == 1, 1);
  e_buffer_txn_rewrite(&t, &buf, 3, 2, shell, 1, 1, &one, 1);
  chk("33 a rewrite moving a row commits", e_buffer_txn_commit(&t), E_BUFFER_OK);
  chk("33 the row moved", scr.brp[0] == 1 && brp_has(4), 1);
@@ -1805,7 +1805,7 @@ static int a_record_replayed_into(WpeBufferTxn *t, const Undo *rec, int y, int n
  }
  shell->b = pnt(rec->b.x, rec->b.y - top);
  e_buffer_step_begin(shell);
- wpe_buffer_replay_on_shell(shell, shell->f->s, rec, top);
+ wpe_buffer_replay_on_shell(shell, e_window_screen(shell->f), rec, top);
  e_buffer_step_end(shell);
  if (shell->refusals > 0) {
   e_buffer_shell_free(shell);
@@ -1896,7 +1896,7 @@ static void case_a_shell_of_one_row_keeps_its_breakpoint(void)
  shell = e_buffer_shell_new(&buf, buf.mx.x);
  chk("36 a shell of one row is filled", e_buffer_shell_fill(shell, &t, &buf, 1, 1), E_BUFFER_OK);
  chk("36 ... with the row's breakpoint",
-     shell->mxlines == 1 && shell->f->s->brp[0] == 1 && shell->f->s->brp[1] == 0, 1);
+     shell->mxlines == 1 && e_window_screen(shell->f)->brp[0] == 1 && e_window_screen(shell->f)->brp[1] == 0, 1);
  chk("36 the rewrite of it is taken",
      e_buffer_txn_rewrite(&t, &buf, 1, 1, shell, 0, 0, &zero, 1), E_BUFFER_OK);
  chk("36 ... and made", e_buffer_txn_commit(&t), E_BUFFER_OK);
@@ -2108,7 +2108,7 @@ static void case_a_move_into_a_narrower_buffer_builds_its_line_again(void)
  chk("40 every row fits the narrow width", rows_fit(nb), 1);
  chk_str("40 every byte and the line break", rows_text(nb, 0, nb->mxlines - 1), WIDE_TEXT "\n");
  chk("40 the breakpoint is on its first row",
-     nb->f->s->brp != NULL && nb->f->s->brp[0] == 1 && nb->f->s->brp[1] == 0, 1);
+     e_window_screen(nb->f)->brp != NULL && e_window_screen(nb->f)->brp[0] == 1 && e_window_screen(nb->f)->brp[1] == 0, 1);
  e_buffer_shell_free(nb);
  fixture_free();
 }

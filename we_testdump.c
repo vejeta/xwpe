@@ -227,8 +227,8 @@ static int dump_steps(const Undo *u)
  */
 static int dump_window_is_text(FENSTER *f)
 {
- return f != NULL && DTMD_ISTEXT(f->dtmd) && f->b != NULL && f->s != NULL
-        && wpe_rows_exist(f->b);
+ return f != NULL && DTMD_ISTEXT(f->dtmd) && e_window_text(f) != NULL
+        && e_window_screen(f) != NULL && wpe_rows_exist(e_window_text(f));
 }
 
 /**
@@ -247,7 +247,7 @@ static int dump_window_locked(FENSTER *f)
 static void dump_breakpoints(DumpBuf *d, FENSTER *f)
 {
 #ifdef DEBUGGER
- int i, *brp = f->s->brp;
+ int i, *brp = e_window_screen(f)->brp;
 
  if (brp != NULL && brp[0] > 0)
  {
@@ -284,8 +284,8 @@ static void dump_markers(DumpBuf *d, SCHIRM *s)
  */
 static void dump_window_head(DumpBuf *d, int n, FENSTER *f)
 {
- BUFFER *b = f->b;
- SCHIRM *s = f->s;
+ BUFFER *b = e_window_text(f);
+ SCHIRM *s = e_window_screen(f);
 
  dump_printf(d, "W %d ", n);
  dump_string(d, f->datnam);
@@ -309,7 +309,7 @@ static void dump_window_head(DumpBuf *d, int n, FENSTER *f)
  */
 static void dump_window_lines(DumpBuf *d, int n, FENSTER *f)
 {
- BUFFER *b = f->b;
+ BUFFER *b = e_window_text(f);
  int i;
 
  for (i = 0; i < b->mxlines; i++)

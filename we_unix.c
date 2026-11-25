@@ -1054,7 +1054,7 @@ static int e_err_save_window(FENSTER *f, char *shown, size_t n)
  */
 static int e_err_save_wanted(FENSTER *f)
 {
- BUFFER *b = f->b;
+ BUFFER *b = e_window_text(f);
 
  if (!DTMD_ISTEXT(f->dtmd) || !f->save)
   return(0);
@@ -1760,7 +1760,7 @@ int e_recover(ECNT *cn)
   (void)wpe_write_identity_of_name(f->dirct, f->datnam, &f->file_id);
   if (!strcmp(f->datnam, BUFFER_NAME))
   {
-   b = cn->f[cn->mxedt]->b;
+   b = e_window_text(cn->f[cn->mxedt]);
    e_buffer_mark_set(b, E_BUFFER_MARK_END, b->mxlines - 1,
                      wpe_row_len(b, b->mxlines-1));
    e_edt_copy_block(f);
