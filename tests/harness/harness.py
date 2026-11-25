@@ -49,7 +49,10 @@ Sub-commands (all stdlib, no third-party imports, so CI can run it bare):
 the line): the plan the jobs of one CI run were made from and the folder that
 holds each job's status file.  A mapped row the plan gave to a job and that no
 junit holds is MISSING, and the line on stderr says why: the job was cut at N
-min, ended before running it, or uploaded nothing.
+min, ended before running it, or uploaded nothing.  A scenario of a layer the
+plan only shows (the Wayland rows outside the resize and relayout gates) is
+printed as ``SHOWN:`` and does not count in the exit status; the rule is the
+plan's own, tests/harness/suite_plan.py gates().
     coverage edit-model <run.json|dir>
                                      the edit model's coverage matrix of one
                                      run (a coverage file, or the directory
@@ -509,6 +512,18 @@ def folded_with_the_plan(scenario, result, raw, plan, statuses):
     return None, not_run_reasons(absent, plan, statuses)
 
 
+def gates_the_run(scenario):
+    """True when this scenario's verdict decides whether the run passed: the
+    plan's own rule for the row the scenario maps (suite_plan.gates).
+
+    A layer the plan only shows keeps its scenarios in the report, so a
+    regression in them is still read, but a failure of one does not fail the
+    run: the Wayland rows outside the resize and relayout gates run on a shared
+    runner that fails them on timing alone."""
+    test_id = scenario.get("test")
+    return not test_id or suite_plan.gates(test_id)
+
+
 def cmd_report(capability, layer, source, plan_path=None, status_dir=None):
     manifest = load_manifest(capability)
     skip_reasons = {}
@@ -525,6 +540,7 @@ def cmd_report(capability, layer, source, plan_path=None, status_dir=None):
     # A scenario may be pinned by several tests (several rows with one id);
     # the scenario's verdict is the worst of them, never the last one listed.
     report = {}
+    gating = set()
     for scenario in scenarios_for_layer(manifest, layer):
         result = lookup(scenario["test"]) if scenario.get("test") else None
         reasons = junit_skip_reasons(skip_reasons, scenario["test"]) if scenario.get("test") else []
@@ -534,12 +550,18 @@ def cmd_report(capability, layer, source, plan_path=None, status_dir=None):
         say_why(this, scenario, reasons, expected)
         for line in not_run:
             sys.stderr.write("%s: MISSING, %s\n" % (scenario["id"], line))
+        if gates_the_run(scenario):
+            gating.add(scenario["id"])
+        elif this not in PASSING:
+            sys.stderr.write("SHOWN: %s: %s (the plan shows this row, it does "
+                             "not gate the run on it)\n" % (scenario["id"], this))
         seen = report.get(scenario["id"])
         if seen is None or SEVERITY[this] < SEVERITY[seen]:
             report[scenario["id"]] = this
     json.dump(report, sys.stdout, indent=1, sort_keys=True)
     print()
-    return 0 if all(v in PASSING for v in report.values()) else 1
+    return 0 if all(this in PASSING or name not in gating
+                    for name, this in report.items()) else 1
 
 
 def collect_suite(suite):

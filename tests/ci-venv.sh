@@ -4,9 +4,9 @@
 #
 # The versions are the ones tests/ci-versions.txt records, and
 # tests/check-ci-versions.sh fails when this file says another.  pytest 8.2 or
-# newer is needed for the `@file` argument the pyte jobs read their rows from;
-# pytest-rerunfailures gives `--rerun-except`, which keeps a row the row clock
-# cut from running again.
+# newer is needed for the `@file` argument a shard reads its rows and its own
+# layer's pytest options from; pytest-rerunfailures gives `--rerun-except`,
+# which keeps a row the row clock cut from running again.
 #
 #   sh tests/ci-venv.sh
 

@@ -1,6 +1,7 @@
 #!/bin/sh
 # ci-install.sh -- the packages every job of .github/workflows/linux.yml runs
-# the suite with (the build job, each pyte shard and the GUI job).
+# the suite with (the build job and every shard of the suite job, of whichever
+# layer that shard holds).
 #
 # The rows compile programs while they run and start debuggers, so every job
 # needs the compilers, the debuggers and the libraries of the built program,

@@ -16,9 +16,20 @@ base, image, absent:R, condition).  Three things must agree with it, offline:
       is exactly the apt, layer and built tools that job installs.
       The harness reads a declared tool of this list that skips as a failure
       of the image; a display layer gate stops the session on a missing one;
-  C4  the build job, every pyte shard and the GUI job install through the one
+  C4  the build job and every shard of the suite job install through the one
       script tests/ci-install.sh, which holds the apt-get list and the locale
       command (a job that installs nothing, as the gate, only reads the list);
+  C5  the shard rules: the shard script cuts its pytest with job_cut.py and
+      never masks its exit status, a gate that always runs after every job it
+      judges, and the planner's own self-test on this tree's planner, which
+      refuses a plan whose ncurses args would run a row the clock cut again, a
+      display layer over the shards it may have, a row no layer holds, or a
+      shard whose cut, step and job minutes do not rise in that order;
+  C6  the suite job takes the planner's matrix objects whole (`include`, never
+      a key of its own, which would hand a whole object to a shard index), its
+      limits are the plan's own expressions, and it names no layer, no test
+      path and no pytest option: which rows run in which shard, and with which
+      options, is the plan's answer, written into that shard's args file;
   F1  no foreign cut: `timeout` and `gtimeout` are not the command of any
       line of a workflow or of tests/*.sh, nor the first word of an argument
       list in tests/**/*.py (tracked files only).  The cut program of an image
@@ -49,13 +60,6 @@ import subprocess
 import sys
 import tempfile
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(HERE, "harness"))
-try:
-    import suite_plan
-finally:
-    sys.path.pop(0)
-
 RECORD = os.path.join("tests", "ci-tools.txt")
 WORKFLOW = os.path.join(".github", "workflows", "linux.yml")
 INSTALL_SCRIPT = os.path.join("tests", "ci-install.sh")
@@ -64,6 +68,10 @@ UNCUT_RECORD = os.path.join("tests", "ci-uncut-steps.txt")
 # The one program that cuts a job (rules F1 to F3).
 JOB_CUT = "tests/harness/job_cut.py"
 JOB_CUT_NAME = "job_cut.py"
+# The one owner of the plan: which rows run in which shard, with which pytest
+# options and which limits (rule C5 runs its self-test).
+PLANNER = os.path.join("tests", "harness", "suite_plan.py")
+PLANNER_SELFTEST_S = 120
 # The cut programs an image ships, which no file of the tree may run.  Built
 # from parts, so that this list is not itself an argument list that starts with
 # one (rule F1 reads this file too).
@@ -94,8 +102,27 @@ PYTEST_RUN = re.compile(r"-m pytest\b")
 # Folders of tests/ that are not this tree's own tests.
 NOT_OURS = (os.path.join("tests", ".venv"), os.path.join("tests", "eval"),
             "__pycache__")
+# The jobs of the workflow this file reads by name.
+BUILD_JOB = "build"
+SUITE_JOB = "suite"
+GATE_JOB = "gate"
 # The jobs that run the suite and so install through the script.
-SCRIPT_JOBS = ("build", "pyte", "gui")
+SCRIPT_JOBS = (BUILD_JOB, SUITE_JOB)
+# The suite job's matrix and its limits, which are the planner's and never this
+# file's: `suite_plan.py shards` prints one object a shard, holding its index,
+# its layer and the minutes of its step and of its job.
+MATRIX_INCLUDE = "include: ${{ fromJSON(needs.build.outputs.shards) }}"
+SHARD_RUN = "run: sh tests/ci-shard.sh ${{ matrix.shard }}"
+JOB_LIMIT_EXPRESSION = "timeout-minutes: ${{ matrix.job_min }}"
+STEP_LIMIT_EXPRESSION = "timeout-minutes: ${{ matrix.step_min }}"
+# The one key the suite job's matrix may hold: any other key (`shard`, `index`,
+# ...) would hand a whole object, or nothing, to a shard index.
+MATRIX_ONLY_KEY = "include"
+# What the suite job must never name in a line that is not a comment: a layer's
+# rows, a test path, a pytest option or a pytest of its own.  Which rows run in
+# which shard, and with which options, is the plan's answer.
+SUITE_JOB_FORBIDDEN = ("tests/x11", "tests/wayland", "-n ", "--reruns",
+                       "--basetemp", "faulthandler_timeout", "-m pytest")
 MANIFESTS = os.path.join("tests", "harness", "*", "manifest.json")
 EXPECTED_VARIABLE = "XWPE_TEST_TOOLS_EXPECTED"
 KINDS = ("apt", "layer", "built", "base", "image", "absent", "condition")
@@ -298,6 +325,7 @@ def check_tree(root):
             problems.append("%s: package %s is in no job's apt-get list that "
                             "sets %s" % (need, record[need][0], EXPECTED_VARIABLE))
     problems.extend(shard_findings(root, jobs))
+    problems.extend(plan_findings(root))
     problems.extend(foreign_cut_findings(root))
     problems.extend(uncut_step_findings(root))
     return problems
@@ -625,49 +653,143 @@ def uncut_step_findings(root):
     return findings
 
 
-def first_number(pattern, text):
-    """The integer of the first line of @text that matches @pattern, or None."""
-    found = re.search(pattern, text, re.M)
-    return int(found.group(1)) if found else None
+def without_comments(text):
+    """@text with every full-line comment left out: what a job runs, not what
+    its lines say about it."""
+    return "\n".join(line for line in text.splitlines()
+                     if not line.lstrip().startswith("#"))
+
+
+def code_lines(text):
+    """The lines of @text that are not comments, each stripped of its indent:
+    a rule that asks for a line asks for it whole, so a commented-out copy, or
+    the same words at the end of another line, never counts."""
+    return {line.strip() for line in without_comments(text).splitlines()}
+
+
+def matrix_keys(text):
+    """The keys written under the `matrix:` of a job's @text (comments left
+    out): what each shard of the job is handed."""
+    keys = []
+    depth = None
+    for line in without_comments(text).splitlines():
+        if not line.strip():
+            continue
+        indent = len(line) - len(line.lstrip())
+        if depth is None:
+            if line.strip() == "matrix:":
+                depth = indent
+            continue
+        if indent <= depth:
+            break
+        key = line.strip().split(":", 1)[0]
+        if indent == depth + 2:
+            keys.append(key)
+    return keys
+
+
+def suite_matrix_findings(text):
+    """C6: the suite job takes the planner's matrix objects whole, and its
+    limits are the plan's own expressions.
+
+    `suite_plan.py shards` prints one object a shard, holding its index, its
+    layer and the minutes of its step and of its job.  A matrix that lists
+    those objects under a key of its own hands a whole object to
+    `ci-shard.sh K`, which reads an index; a matrix of plain integers leaves
+    every shard without its layer and without its limits, so this file would
+    have to hold a step and a job limit per layer, and a shard the planner
+    moved to another layer would keep the limits of the one it moved out of."""
+    if not text:
+        return ["job %s: missing, so no shard of the plan runs" % SUITE_JOB]
+    findings = []
+    lines = code_lines(text)
+    if MATRIX_INCLUDE not in lines:
+        findings.append("job %s: its matrix must be `%s`, the objects the "
+                        "planner prints, taken whole with `include`"
+                        % (SUITE_JOB, MATRIX_INCLUDE))
+    for key in matrix_keys(text):
+        if key != MATRIX_ONLY_KEY:
+            findings.append("job %s: a matrix key of its own (`%s`) hands a "
+                            "whole object, or nothing, to ci-shard.sh, which "
+                            "reads a shard index; the planner's objects go in "
+                            "with `include`" % (SUITE_JOB, key))
+    if SHARD_RUN not in lines:
+        findings.append("job %s: a shard runs with `%s`, so that every layer "
+                        "runs the same way and leaves a junit and a status"
+                        % (SUITE_JOB, SHARD_RUN))
+    for expression, what in ((JOB_LIMIT_EXPRESSION, "the job's"),
+                             (STEP_LIMIT_EXPRESSION, "the shard step's")):
+        if expression not in lines:
+            findings.append("job %s: %s limit must be `%s`, the minutes the "
+                            "planner gave that shard, and not a number of this "
+                            "file" % (SUITE_JOB, what, expression))
+    return findings
+
+
+def suite_layer_findings(text):
+    """C6: the suite job names no layer, no test path, no pytest option and no
+    pytest of its own.
+
+    The plan is the one owner of which rows run in which shard and with which
+    options, and it writes them into that shard's args file.  A workflow that
+    named a layer or an option of its own would run some rows twice, or run a
+    display shard with the workers and the reruns its conftest refuses, and
+    nothing would say so."""
+    code = without_comments(text)
+    return ["job %s: it names `%s`, which the plan owns: a shard runs the rows "
+            "and the options of its own args file" % (SUITE_JOB, word)
+            for word in SUITE_JOB_FORBIDDEN if word in code]
 
 
 def shard_findings(root, jobs):
-    """The findings of the shard rules (C5) over the workflow's jobs and the
-    shard script: the cut inside the step's limit inside the job's inside
-    GitHub's, no masked exit status, no rerun of a cut row, a gate that
-    always runs after every job it judges."""
-    findings = []
-    pyte = jobs.get("pyte", "")
-    job_limit = first_number(r"^    timeout-minutes:\s*(\d+)", pyte)
-    step_limit = first_number(r"^        timeout-minutes:\s*(\d+)", pyte)
-    cut = suite_plan.SHARD_CUT_MIN
-    if job_limit is None or step_limit is None:
-        findings.append("job pyte: the job and its shard step each need timeout-minutes")
-    elif not cut < step_limit < job_limit < suite_plan.GITHUB_JOB_LIMIT_MIN:
-        findings.append("job pyte: the cut (%d), the step (%d), the job (%d) and GitHub's "
-                        "limit (%d) minutes must rise in that order"
-                        % (cut, step_limit, job_limit, suite_plan.GITHUB_JOB_LIMIT_MIN))
-    elif (step_limit, job_limit) != (suite_plan.STEP_LIMIT_MIN, suite_plan.JOB_LIMIT_MIN):
-        findings.append("job pyte: the limits %d and %d are not the %d and %d of "
-                        "tests/harness/suite_plan.py" % (
-                            step_limit, job_limit, suite_plan.STEP_LIMIT_MIN,
-                            suite_plan.JOB_LIMIT_MIN))
+    """The findings of the shard rules (C5 and C6) over the workflow's jobs and
+    the shard script: the suite job's matrix and its limits are the planner's,
+    the shard script cuts with job_cut.py and never masks its exit status, and
+    the gate always runs after every job it judges."""
+    suite = jobs.get(SUITE_JOB, "")
+    findings = suite_matrix_findings(suite)
+    findings.extend(suite_layer_findings(suite))
     with open(os.path.join(root, SHARD_SCRIPT), encoding="utf-8") as fh:
         script = fh.read()
     findings.extend(shard_cut_findings(script))
-    if "--rerun-except RowOverBudget" not in script:
-        findings.append("%s: a row the clock cut must not be rerun: pass "
-                        "--rerun-except RowOverBudget" % SHARD_SCRIPT)
     if "|| true" in script:
         findings.append("%s: `|| true` would hide a cut (exit 124) from the status file"
                         % SHARD_SCRIPT)
-    gate = jobs.get("gate", "")
+    gate = jobs.get(GATE_JOB, "")
     needs = re.search(r"^    needs:\s*\[([^\]]*)\]", gate, re.M)
     listed = {n.strip() for n in needs.group(1).split(",")} if needs else set()
-    if not {"build", "pyte", "gui"} <= listed or "if: always()" not in gate:
-        findings.append("job gate: it needs build, pyte and gui and runs `if: always()`, so "
-                        "a cut or failed job is judged and not skipped")
+    if not {BUILD_JOB, SUITE_JOB} <= listed or "if: always()" not in gate:
+        findings.append("job %s: it needs %s and %s and runs `if: always()`, so "
+                        "a cut or failed job is judged and not skipped"
+                        % (GATE_JOB, BUILD_JOB, SUITE_JOB))
     return findings
+
+
+def plan_findings(root):
+    """C5: the planner's own self-test, run on this tree's planner.
+
+    The numbers a shard runs with live in the plan, not in the workflow or the
+    shard script, so the planner is the one that must refuse a plan that cannot
+    work: ncurses args that would run a row the row clock cut a second time, a
+    display layer that needs more shards than it may have, a row no layer
+    holds, and a shard whose cut, step and job minutes do not rise in that
+    order (the cut's grace has to fit inside the step's limit)."""
+    script = os.path.join(root, PLANNER)
+    if not os.path.exists(script):
+        return []
+    try:
+        done = subprocess.run([sys.executable, script, "--selftest"], cwd=root,
+                              stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                              text=True, timeout=PLANNER_SELFTEST_S)
+    except (OSError, subprocess.SubprocessError) as err:
+        return ["%s: its self-test did not run (%s)" % (PLANNER, err)]
+    if done.returncode == 0:
+        return []
+    return ["%s: its self-test is refused, so a plan of this tree would run a "
+            "row the clock cut again (--rerun-except RowOverBudget), plan a "
+            "display layer over the shards it may have, drop a row no layer "
+            "holds, or cut a shard whose minutes do not rise in that order:\n%s"
+            % (PLANNER, done.stdout.strip())]
 
 
 def mutate(root, relative, old, new):
@@ -704,11 +826,31 @@ CANARIES = (
      "        run: sh tests/ci-venv.sh\n\n      - name: Run the shard",
      "        run: true\n\n      - name: Set up the pytest venv\n"
      "        run: sh tests/ci-venv.sh\n\n      - name: Run the shard",
-     "job pyte: does not run"),
-    ("step-limit-under-the-cut", WORKFLOW, "        timeout-minutes: 110\n",
-     "        timeout-minutes: 90\n", "must rise in that order"),
-    ("job-limit-over-github", WORKFLOW, "    timeout-minutes: 130\n",
-     "    timeout-minutes: 400\n", "must rise in that order"),
+     "job suite: does not run"),
+    ("matrix-key-not-include", WORKFLOW,
+     "        include: ${{ fromJSON(needs.build.outputs.shards) }}",
+     "        shard: ${{ fromJSON(needs.build.outputs.shards) }}",
+     "a matrix key of its own"),
+    ("matrix-include-commented-out", WORKFLOW,
+     "        include: ${{ fromJSON(needs.build.outputs.shards) }}",
+     "        # include: ${{ fromJSON(needs.build.outputs.shards) }}\n"
+     "        index: ${{ fromJSON(needs.build.outputs.shards) }}",
+     "a matrix key of its own (`index`)"),
+    ("job-limit-commented-out", WORKFLOW,
+     "    timeout-minutes: ${{ matrix.job_min }}\n",
+     "    # timeout-minutes: ${{ matrix.job_min }}\n    timeout-minutes: 400\n",
+     "the minutes the planner gave"),
+    ("job-limit-not-the-plans", WORKFLOW,
+     "    timeout-minutes: ${{ matrix.job_min }}\n", "    timeout-minutes: 400\n",
+     "the minutes the planner gave"),
+    ("step-limit-not-the-plans", WORKFLOW,
+     "        timeout-minutes: ${{ matrix.step_min }}\n", "        timeout-minutes: 90\n",
+     "the minutes the planner gave"),
+    ("shard-script-not-run", WORKFLOW, "run: sh tests/ci-shard.sh ${{ matrix.shard }}",
+     "run: true", "a shard runs with"),
+    ("suite-job-names-an-option", WORKFLOW, '      TERM: "xterm-256color"',
+     '      TERM: "xterm-256color"\n      PYTEST_ADDOPTS: "-n 4 --reruns 2"',
+     "which the plan owns"),
     ("cut-tool-removed", SHARD_SCRIPT,
      '"$PY" tests/harness/job_cut.py --after "$CUT" --grace 120 \\\n'
      '  --report "$OUT/shard-$SHARD-cut.json" -- \\\n  "$PY" -m pytest -q',
@@ -758,10 +900,16 @@ CANARIES = (
     ("uncut-reason-missing", UNCUT_RECORD,
      "|three files of the core-font build, well inside their step limit", "|",
      "the reason is not optional"),
-    ("cut-row-rerun", SHARD_SCRIPT, "--rerun-except RowOverBudget", "--reruns-all",
-     "--rerun-except RowOverBudget"),
+    ("cut-row-rerun", PLANNER, '"--rerun-except", "RowOverBudget")',
+     '"--reruns-all")', "--rerun-except RowOverBudget"),
+    ("plan-step-limit-under-the-cut", PLANNER,
+     "STEP_MARGIN_MIN = STEP_LIMIT_MIN - SHARD_CUT_MIN", "STEP_MARGIN_MIN = 1",
+     "must rise in that order"),
+    ("plan-job-limit-under-the-step", PLANNER,
+     "JOB_MARGIN_MIN = JOB_LIMIT_MIN - STEP_LIMIT_MIN", "JOB_MARGIN_MIN = -1",
+     "must rise in that order"),
     ("cut-status-masked", SHARD_SCRIPT, "|| rc=$?", "|| true", "hide a cut"),
-    ("gate-skipped", WORKFLOW, "    needs: [build, pyte, gui]\n", "    needs: [build, pyte]\n",
+    ("gate-skipped", WORKFLOW, "    needs: [build, suite]\n", "    needs: [build]\n",
      "job gate:"),
     ("unknown-kind", RECORD, "|apt|17.1", "|installed|17.1", "is none of"),
     ("no-package", RECORD, "gdb|gdb|apt|", "gdb|-|apt|", "needs a package"),
@@ -810,6 +958,9 @@ def selftest(root):
         shutil.copytree(os.path.join(root, "tests", "harness"),
                         os.path.join(base, "tests", "harness"),
                         ignore=shutil.ignore_patterns("out", "__pycache__", "*.py"))
+        # The planner, so that rule C5 runs the copy's own self-test and a
+        # canary planted in it is seen.
+        shutil.copy(os.path.join(root, PLANNER), os.path.join(base, PLANNER))
         clean = check_tree(base)
         if clean:
             sys.stderr.write("check_ci_tools: the tree itself is refused:\n  %s\n"

@@ -373,3 +373,65 @@ def test_the_check_asks_the_planner_whether_the_suite_still_fits(tmp_path):
     called = {c.func.id for c in ast.walk(body)
               if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)}
     assert "tree_fit_problems" in called, "harness.py check does not run the fitness check"
+
+
+def test_the_check_fails_on_a_display_row_the_record_never_saw():
+    """The fitness check runs over every layer of the plan, so a file added to
+    a display layer tomorrow is a finding here, in minutes, instead of a
+    display shard cut after its minutes with rows no estimate placed."""
+    problems = harness.tree_fit_problems(None, ["tests/x11/test_brand_new.py::test_a"])
+    assert any("x11" in line and "0.0%" in line for line in problems), problems
+    problems = harness.tree_fit_problems(None, ["tests/wayland/test_brand_new.py::test_a"])
+    assert any("wayland" in line and "0.0%" in line for line in problems), problems
+
+
+# A junit case that failed and one that passed, for a file of a display layer.
+FAILED_CASE = '<testcase classname="%s" name="t"><failure message="boom">x</failure></testcase>'
+PASSED_CASE = '<testcase classname="%s" name="t"/>'
+
+
+def junit_of(*cases):
+    """A junit file text holding @cases."""
+    return "<testsuites><testsuite>%s</testsuite></testsuites>" % "".join(cases)
+
+
+# @scenario SC-platform-suite-plan-24
+def test_a_failing_scenario_of_a_layer_the_plan_only_shows_does_not_fail_the_report(
+        tmp_path, monkeypatch, capsys):
+    """The Wayland rows outside the resize and relayout gates run on a shared
+    runner that fails them on timing alone: the report keeps their verdict, so
+    a regression in them is still read, and says SHOWN instead of failing."""
+    import json
+    monkeypatch.setattr(harness, "load_manifest", lambda cap: {"scenarios": [
+        scenario(id="SC-wl-shown-01", layer="wayland", test="tests/wayland/test_grid.py::t"),
+        scenario(id="SC-wl-gate-01", layer="wayland", test="tests/wayland/test_resize.py::t")]})
+    junit = tmp_path / "j.xml"
+    junit.write_text(junit_of(FAILED_CASE % "tests.wayland.test_grid",
+                              PASSED_CASE % "tests.wayland.test_resize"))
+    assert harness.cmd_report("fake", "wayland", str(junit)) == 0
+    seen = capsys.readouterr()
+    assert "SHOWN: SC-wl-shown-01: FAIL" in seen.err, seen.err
+    assert json.loads(seen.out) == {"SC-wl-shown-01": "FAIL", "SC-wl-gate-01": "PASS"}, seen.out
+    # The same failure in a row of a gate file fails the report, and is not
+    # shown: the layer's own rule decides, never the report's caller.
+    junit.write_text(junit_of(FAILED_CASE % "tests.wayland.test_grid",
+                              FAILED_CASE % "tests.wayland.test_resize"))
+    assert harness.cmd_report("fake", "wayland", str(junit)) == 1
+    seen = capsys.readouterr()
+    assert "SHOWN: SC-wl-gate-01" not in seen.err, seen.err
+    assert "SHOWN: SC-wl-shown-01: FAIL" in seen.err, seen.err
+
+
+def test_a_failing_scenario_of_the_x11_layer_or_of_the_ncurses_one_is_never_shown(
+        tmp_path, monkeypatch, capsys):
+    """Every X11 row gates, and a ncurses row gates through the scenario that
+    maps it, so neither is shown: today's blocking gate does not move."""
+    for layer, path in (("x11", "tests/x11/test_grid.py::t"),
+                        ("ncurses", "tests/test_grid.py::t")):
+        monkeypatch.setattr(harness, "load_manifest", lambda cap: {"scenarios": [
+            scenario(id="SC-gating-01", layer=layer, test=path)]})
+        junit = tmp_path / ("j-%s.xml" % layer)
+        junit.write_text(junit_of(FAILED_CASE % harness.junit_key(path)[0]))
+        assert harness.cmd_report("fake", layer, str(junit)) == 1, layer
+        seen = capsys.readouterr()
+        assert "SHOWN" not in seen.err, (layer, seen.err)

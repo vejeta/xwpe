@@ -54,6 +54,20 @@ def reported_file():
     return os.environ[HANG_FILE_VAR] + REPORTED_SUFFIX
 
 
+# Whether this run has workers at all, set once at its start (pytest_configure
+# of this plugin): a serial run has the reports of the rows that finished in
+# the junit that writes them, so its row that hangs has nothing to wait for.
+# A worker sees no numprocesses of its own, but it is one, so the run has them.
+_workers = False
+
+
+def pytest_configure(config):
+    """Say whether the run has workers."""
+    global _workers
+    _workers = (bool(getattr(config.option, "numprocesses", None))
+                or hasattr(config, "workerinput"))
+
+
 def pytest_runtest_logreport(report):
     """Say, in a file, that the process that writes the junit has the last
     report of every row that finished.
@@ -146,16 +160,49 @@ def test_another_quick_row_before_the_hang():
     assert True
 
 
+# What a planted row of a display shard leaves in its own folder under the
+# run's --basetemp: a log, a log whose name starts with a dash, a folder with a
+# log in it, a link that points at itself, and a link out of the tree.  The
+# copy of a shard's log tree takes the files and leaves both links behind: an
+# upload that stats a loop ends with ELOOP and holds nothing, and a link out of
+# the tree would put in the artifact a file no row of the shard ever wrote.
+LOG_NAME = "editor.log"
+LOG_FOLDER = "logs"
+NESTED_LOG_NAME = "nested.log"
+LOOP_NAME = "loop"
+OUTSIDE_LINK_NAME = "outside.log"
+# A name the copy must hand over as a file: a program given `-x.log` reads an
+# option, not a name, and one such file loses the whole copy.
+DASH_LOG_NAME = "-x.log"
+
+
+def test_a_row_that_leaves_a_log_and_a_link_loop(tmp_path):
+    """A row of a display shard, which keeps its log tree: it leaves a log in
+    its own folder, a second one in a folder of that folder, a log whose name
+    starts with a dash at the top of the tree, a link that points at itself,
+    and a link to a file outside the tree."""
+    (tmp_path / LOG_NAME).write_text("a log line\n")
+    (tmp_path / LOG_FOLDER).mkdir()
+    (tmp_path / LOG_FOLDER / NESTED_LOG_NAME).write_text("a nested line\n")
+    # At the top of the tree, which is where a name reaches the copy as one
+    # word of its own: below a folder it is `folder/-x.log`, which no program
+    # reads as an option.
+    (tmp_path.parent / DASH_LOG_NAME).write_text("a name with a dash\n")
+    os.symlink(str(tmp_path / LOOP_NAME), str(tmp_path / LOOP_NAME))
+    os.symlink(os.path.abspath(__file__), str(tmp_path / OUTSIDE_LINK_NAME))
+
+
 def test_a_row_that_hangs_with_no_clock_of_its_own():
     """The row a cut job is measured on: it hangs with no clock of its own
     for the job's cut to end.  It leaves its mark once the process that
     collects the reports has those of the rows that finished
     (pytest_runtest_logreport), so the cut arrives with them in the junit;
-    a parent that has no mark to wait for names no file and the row hangs
-    at once."""
+    a run with no workers has them already, and a parent that has no mark to
+    wait for names no file, so both leave the mark at once and the row hangs."""
     if HANG_FILE_VAR in os.environ:
-        gui_owner.wait_for(lambda: os.path.exists(reported_file()),
-                           "the reports of the rows that finished",
-                           REPORTED_WAIT_S)
+        if _workers:
+            gui_owner.wait_for(lambda: os.path.exists(reported_file()),
+                               "the reports of the rows that finished",
+                               REPORTED_WAIT_S)
         note_in(HANG_FILE_VAR)
     gui_owner.wait_for(lambda: False, "an event that never comes", NEVER_S)

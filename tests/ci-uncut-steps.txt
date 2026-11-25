@@ -4,9 +4,6 @@
 # left to GitHub's own limit by accident).
 #
 # workflow|step name|reason
-linux.yml|X11/Xft GUI suite (Xvfb + matchbox)|display suite; it moves into the plan with the display layers
-linux.yml|Native Wayland resize/relayout gate (BLOCKING)|display suite; it moves into the plan with the display layers
-linux.yml|Native Wayland GUI suite -- full breadth (Xvfb + weston)|display suite; it moves into the plan with the display layers
 linux.yml|X11 resize and uncover rows on the core-font program|three files of the core-font build, well inside their step limit
 macos.yml|pyte UI regression suite (keystrokes, menus, editing, rendering)|macOS job, not yet measured; its step has its own limit
 macos.yml|pyte UI suite, assistant and compile rows|macOS job, not yet measured; its step has its own limit

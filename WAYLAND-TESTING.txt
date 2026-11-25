@@ -72,12 +72,16 @@ screenshot of the wl_shm buffer, since weston-x11 renders through GL that
 `xwd` cannot read.  Most tests assert on the file written to disk (ground
 truth); a few assert on the dumped pixels.
 
-CI: .github/workflows/linux.yml runs this suite on every dispatch.  The
-resize/relayout parity tests are a BLOCKING gate (wrapped in --reruns so a
-slow-runner timing wobble self-heals while a real fault fails the job); the
-full suite runs alongside for breadth but is non-blocking, because the shared
-GitHub runner is too slow to run the whole real-compositor stack flake-free
-as a hard gate.
+CI: .github/workflows/linux.yml runs this suite on every dispatch, as shards of
+the one suite plan (tests/harness/suite_plan.py): every row of tests/wayland is
+collected, placed in a shard of its own layer, and cut after that shard's own
+minutes, with the junit of every row it finished kept.  The resize/relayout
+parity rows are the layer's BLOCKING gate: one of them that failed, or that no
+shard's junit holds, fails the run.  Every other wayland row is shown and not
+gated, because the shared GitHub runner is too slow to run the whole
+real-compositor stack flake-free as a hard gate.  A display shard runs one
+pytest process and no row twice, so a row that fails under load stays failed
+(the conftest refuses --reruns).
 
 
 2. Manual checklist (what the headless suite cannot assert)

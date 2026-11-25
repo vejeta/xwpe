@@ -6,6 +6,7 @@ fails a build when the suite stops fitting.  These rows pin each of those
 with made-up records and ids, so they need no collection of the real suite
 and no CI; the commands run as the workflow runs them, as child processes.
 """
+import importlib.util
 import json
 import os
 import sys
@@ -25,6 +26,10 @@ finally:
 
 RUN_TIMEOUT_S = 120
 SECONDS_PER_MIN = 60
+# The jobs of .github/workflows/linux.yml a row of this file reads: the one
+# that runs the shards of the plan, and the one that judges them.
+SUITE_JOB = "suite"
+GATE_JOB = "gate"
 
 
 def ids_of(*files, rows=3):
@@ -33,9 +38,11 @@ def ids_of(*files, rows=3):
 
 
 def record_of(seconds_by_row, host_kind=suite_plan.HOST_RUNNER, scale=3):
-    """A record holding @seconds_by_row (node id -> seconds)."""
+    """A record holding @seconds_by_row (node id -> seconds), every layer's
+    facts saying the same host kind and wait scale."""
     record = suite_plan.fake_record(seconds_by_row, host_kind)
-    record["scale"] = scale
+    for facts in record["layers"].values():
+        facts["scale"] = scale
     return record
 
 
@@ -175,13 +182,21 @@ def test_a_row_that_was_never_recorded_is_not_made_up_by_a_cut(tmp_path):
 def test_the_record_says_what_host_and_scale_it_was_made_at(tmp_path):
     junit = tmp_path / "run.xml"
     junit.write_text(junit_text([("tests.test_x", "test_a", 5, "passed")], host="vm-7"))
+    ids = tmp_path / "ids.txt"
+    ids.write_text("tests/test_x.py::test_a\n")
     out = tmp_path / "new.json"
-    status, text = run_cli(tmp_path, "record", junit, out, "--scale", "3",
-                           "--settle-ms", "400", "--host-kind", "runner")
+    status, text = run_cli(tmp_path, "record", junit, out, "--collected", ids,
+                           "--scale", "3", "--settle-ms", "400",
+                           "--host-kind", "runner")
     assert status == 0, text
     record = suite_plan.load_record(str(out))
-    assert (record["host"], record["host_kind"], record["scale"], record["settle_ms"]) \
+    facts = record["layers"]["ncurses"]
+    assert (facts["host"], facts["host_kind"], facts["scale"], facts["settle_ms"]) \
         == ("vm-7", "runner", 3, 400)
+    # A layer this run passed no row of keeps the facts it had: a run of one
+    # suite never says another was measured here.
+    other = record["layers"]["x11"]
+    assert (other["host"], other["host_kind"], other["scale"]) == ("", "seed", 1)
 
 
 def test_unmatched_cases_are_counted_and_printed(tmp_path):
@@ -214,12 +229,17 @@ def test_a_job_runs_node_ids_with_no_selection_and_every_row_once(tmp_path):
     seen = []
     for shard in listed["shards"]:
         lines = (plan.parent / shard["args"]).read_text().splitlines()
-        assert all("::" in line and not line.startswith("-") for line in lines), lines
-        assert len(lines) == shard["ids"]
-        seen.extend(lines)
+        rows = [line for line in lines if "::" in line]
+        options = suite_plan.layer_options(shard["layer"], shard["workers"])
+        assert all(not line.startswith("-") for line in rows), lines
+        assert lines == options + rows, lines
+        assert len(rows) == shard["ids"], lines
+        seen.extend(rows)
     assert sorted(seen) == sorted(ids)
     status, text = run_cli(tmp_path, "shards", plan)
-    assert json.loads(text) == [s["index"] for s in listed["shards"]]
+    assert json.loads(text) == [{"shard": s["index"], "layer": s["layer"],
+                                 "step_min": s["step_min"], "job_min": s["job_min"]}
+                                for s in listed["shards"]], text
 
 
 def test_pytest_reads_the_args_file_with_an_id_that_has_a_space(tmp_path):
@@ -273,7 +293,7 @@ def test_the_tracked_record_fits_the_ids_it_holds():
     every id it is asked about and no row longer than a job."""
     record = suite_plan.load_record(suite_plan.TRACKED_RECORD)
     assert record["rows"], "the tracked record is empty"
-    assert record["host_kind"] == suite_plan.HOST_SEED
+    assert record["layers"]["ncurses"]["host_kind"] == suite_plan.HOST_SEED
     ids = sorted(record["rows"])
     assert suite_plan.fit_problems(record, ids) == []
 
@@ -386,6 +406,66 @@ def test_fetch_downloads_the_record_through_gh_and_falls_back_to_the_tracked_one
     assert done.returncode == 0 and not miss.exists(), done.stdout
 
 
+# @scenario SC-platform-suite-plan-24
+def test_fetch_keeps_the_layers_the_newest_artifact_never_measured(tmp_path, monkeypatch):
+    """Every record the branch holds today was written before the display
+    layers existed, so it measured the ncurses layer alone.  Taking it whole
+    would leave x11 and wayland with no row and no seed of their own, and `fit`
+    would then refuse the plan for two suites the run never measured, so no
+    display shard would run at all.  The fetched record gives the rows and the
+    facts of the layers it measured; every other layer keeps the tracked
+    record's."""
+    import zipfile
+    ncurses = ids_of("test_a", rows=2)
+    display = ["tests/x11/test_grid.py::test_%d" % n for n in range(2)]
+    display += ["tests/wayland/test_resize.py::test_%d" % n for n in range(2)]
+    tracked = record_of({node: 60 for node in ncurses + display})
+    tracked["layers"][suite_plan.X11]["source"] = "seed-x11"
+    tracked["layers"][suite_plan.WAYLAND]["source"] = "seed-wayland"
+    tracked_file = tmp_path / "tracked.json"
+    suite_plan.save_record(tracked, str(tracked_file))
+    # The newest artifact of the branch: a version 1 record, its facts at the
+    # top and its rows the ncurses layer's alone.
+    inner = tmp_path / "suite-timings.json"
+    inner.write_text(json.dumps({
+        "version": 1, "host": "runner-9", "host_kind": "runner", "scale": 3,
+        "settle_ms": 400, "workers": 4, "source": "run-9",
+        "rows": {node: [30, "run-9"] for node in ncurses}}))
+    archive = tmp_path / "a.zip"
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.write(inner, "suite-timings.json")
+    listing = tmp_path / "list.json"
+    listing.write_text(json.dumps({"artifacts": [
+        {"id": 9, "name": "suite-timings", "expired": False,
+         "created_at": "2026-11-24T10:00:00Z",
+         "workflow_run": {"id": 91, "head_branch": "main"}}]}))
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    gh = bindir / "gh"
+    gh.write_text(GH_STUB)
+    gh.chmod(0o755)
+    out = tmp_path / "fetched.json"
+    monkeypatch.setattr(suite_plan, "TRACKED_RECORD", str(tracked_file))
+    monkeypatch.setenv("STUB_LISTING", str(listing))
+    monkeypatch.setenv("STUB_ZIP", str(archive))
+    monkeypatch.setenv("PATH", "%s:%s" % (bindir, os.environ["PATH"]))
+    args = suite_plan.build_parser().parse_args(
+        ["fetch", "--repo", "o/r", "--branch", "main", "--out", str(out)])
+    assert suite_plan.cmd_fetch(args) == 0
+    merged = suite_plan.load_record(str(out))
+    assert merged["rows"][ncurses[0]] == [30, "run-9"], merged["rows"]
+    assert merged["rows"][display[0]] == [60, "fake"], \
+        "the fetch dropped a layer it never measured: %s" % sorted(merged["rows"])
+    assert merged["layers"][suite_plan.NCURSES]["source"] == "run-9", merged["layers"]
+    assert merged["layers"][suite_plan.X11]["source"] == "seed-x11", merged["layers"]
+    assert merged["layers"][suite_plan.WAYLAND]["source"] == "seed-wayland", merged["layers"]
+    problems = suite_plan.fit_problems(merged, ncurses + display)
+    display_findings = [line for line in problems
+                        if any(line.startswith("fit: %s" % name)
+                               for name in suite_plan.DISPLAY_LAYERS)]
+    assert not display_findings, display_findings
+
+
 def collect_in(tmp_path, monkeypatch, files, *arguments):
     """suite_plan.run_collect over a tree of @files {name: text} in tmp_path."""
     for name, text in files.items():
@@ -478,12 +558,17 @@ def test_a_row_rerun_and_failed_in_the_end_keeps_its_old_time_and_a_flaky_one_le
 
 
 def test_fetch_stretches_a_record_made_at_a_shorter_settle_and_leaves_the_rest():
-    record = record_of({"tests/test_x.py::test_a": 10})
-    record["settle_ms"] = 200
+    record = record_of({"tests/test_x.py::test_a": 10, "tests/x11/test_x.py::test_a": 10})
+    record["layers"]["ncurses"]["settle_ms"] = 200
     stretched = suite_plan.normalise_settle(record, 400)
-    assert stretched["rows"]["tests/test_x.py::test_a"][0] == 20 and stretched["settle_ms"] == 400
+    assert stretched["rows"]["tests/test_x.py::test_a"][0] == 20
+    assert stretched["layers"]["ncurses"]["settle_ms"] == 400
+    # A layer whose rows never read the settle (a display layer) keeps its
+    # seconds and its own facts.
+    assert stretched["rows"]["tests/x11/test_x.py::test_a"][0] == 10
+    assert stretched["layers"]["x11"]["settle_ms"] == 0
     assert suite_plan.normalise_settle(record, 100)["rows"]["tests/test_x.py::test_a"][0] == 10
-    record["settle_ms"] = 0
+    record["layers"]["ncurses"]["settle_ms"] = 0
     assert suite_plan.normalise_settle(record, 400)["rows"]["tests/test_x.py::test_a"][0] == 10
 
 
@@ -492,6 +577,360 @@ def test_the_drift_guard_runs_in_the_job_that_built_the_tree():
     with open(os.path.join(os.path.dirname(HERE), ".github", "workflows", "linux.yml"),
               encoding="utf-8") as fh:
         jobs = fh.read().split("\njobs:", 1)[1]
-    build = jobs.split("\n  pyte:", 1)[0]
-    gate = jobs.split("\n  gate:", 1)[1]
+    for job in (SUITE_JOB, GATE_JOB):
+        assert "\n  %s:" % job in jobs, "the workflow has no job %s" % job
+    build = jobs.split("\n  %s:" % SUITE_JOB, 1)[0]
+    gate = jobs.split("\n  %s:" % GATE_JOB, 1)[1]
     assert "harness.py check" in build and "harness.py check" not in gate
+
+
+# ---------------------------------------------------------------------------
+# The layers: one plan of the ncurses selection and of the two display suites
+
+
+def ids_of_layers():
+    """Node ids of all three layers: two files of each."""
+    return (ids_of("test_a", "test_b")
+            + ["tests/x11/test_%s.py::test_%d" % (name, n)
+               for name in ("grid", "expose") for n in range(2)]
+            + ["tests/wayland/test_%s.py::test_%d" % (name, n)
+               for name in ("grid", "help_paint") for n in range(2)])
+
+
+def write_a_plan(tmp_path, ids, seconds=30, name="plan/plan.json"):
+    """Write a plan of @ids (every row @seconds long, on a runner record) and
+    its args files; returns (the plan's path, the plan)."""
+    record = record_of({node: seconds for node in ids})
+    plan = suite_plan.make_plan(record, ids)
+    out = tmp_path / name
+    suite_plan.write_plan(plan, str(out))
+    return out, plan
+
+
+def write_a_planted_plan(tmp_path, layer, ids, name="plan/plan.json"):
+    """Write a plan whose shards are all of @layer and hold @ids, whatever the
+    paths of those ids are: the layer's options, limits and workers are the
+    planner's own, and the rows are the ones the caller planted."""
+    plan = suite_plan.empty_plan()
+    suite_plan.plan_layer(plan, suite_plan.empty_record(), layer, list(ids))
+    plan["jobs"] = len(plan["shards"])
+    out = tmp_path / name
+    suite_plan.write_plan(plan, str(out))
+    return out, plan
+
+
+def args_of(plan_path, plan, shard=0):
+    """The lines of one shard's args file."""
+    return (plan_path.parent / plan["shards"][shard]["args"]).read_text().splitlines()
+
+
+def rows_of(lines):
+    """The node ids of an args file's lines (its options left out)."""
+    return [line for line in lines if "::" in line]
+
+
+def predicted_total(plan):
+    """The minutes the plan predicts for the whole run of its shards."""
+    return round(sum(shard["predicted_min"] for shard in plan["shards"]), 1)
+
+
+# @scenario SC-platform-suite-plan-12
+def test_a_plan_of_mixed_ids_gives_every_shard_one_layer_and_every_id_one_shard():
+    """A shard runs one pytest process, and a display shard's is the process
+    that started its Xvfb or weston: no shard may hold rows of two layers."""
+    ids = ids_of_layers()
+    plan = suite_plan.make_plan(record_of({node: 30 for node in ids}), ids)
+    assert sorted(plan["assignment"]) == sorted(ids), "a row was dropped"
+    assert len(plan["assignment"]) == len(ids), "a row was placed twice"
+    layer_of_shard = {shard["index"]: shard["layer"] for shard in plan["shards"]}
+    for node, shard in plan["assignment"].items():
+        assert layer_of_shard[shard] == suite_plan.layer_of(node), node
+    assert sorted(layer_of_shard.values()) == sorted(suite_plan.LAYER_ORDER)
+    assert [shard["index"] for shard in plan["shards"]] == list(range(plan["jobs"])), \
+        "the shards of the layers are not numbered in one sequence"
+
+
+# @scenario SC-platform-suite-plan-13
+def test_a_display_layer_plans_one_worker_no_rerun_and_its_own_target_and_cut(tmp_path):
+    """A display shard is one pytest process, so the session's one Xvfb or
+    weston serves every row of it, and it runs every row once: a retry turns a
+    row that fails under load into a pass.  It is cut sooner than a ncurses
+    one, and its step's and job's limits sit above that cut."""
+    x11 = ["tests/x11/test_grid.py::test_%d" % n for n in range(2)]
+    ncurses = ids_of("test_a", rows=2)
+    plan_path, plan = write_a_plan(tmp_path, ncurses + x11)
+    display = plan["shards"][1]
+    assert display["layer"] == "x11" and display["logs"], display
+    assert display["workers"] == suite_plan.DISPLAY_WORKERS == 1, display
+    assert display["cut_min"] == suite_plan.DISPLAY_CUT_MIN == 75, display
+    assert display["step_min"] == 85 and display["job_min"] == 105, display
+    assert plan["layers"]["x11"]["target_min"] == 45, plan["layers"]
+    lines = args_of(plan_path, plan, 1)
+    assert rows_of(lines) == x11, lines
+    assert "-n" not in lines and "--reruns" not in lines, lines
+    assert lines[:4] == ["-rf", "--durations=40", "-o",
+                         "faulthandler_timeout=300"], lines
+    # The ncurses shard of the same plan keeps its own numbers.
+    plain = plan["shards"][0]
+    assert plain["workers"] == 4 and plain["cut_min"] == 100 and not plain["logs"]
+    assert plain["step_min"] == 110 and plain["job_min"] == 130, plain
+    assert "--rerun-except" in args_of(plan_path, plan, 0)
+
+
+# @scenario SC-platform-suite-plan-14
+def test_a_version_1_record_loads_as_the_ncurses_facts_alone(tmp_path):
+    """The record a checkout carries today holds its facts at the top: they are
+    the ncurses layer's, and a display layer keeps its own defaults, so a
+    record made before the layers existed says nothing about a suite it never
+    ran."""
+    old = tmp_path / "v1.json"
+    old.write_text(json.dumps({
+        "version": 1, "host": "rdaneel", "host_kind": "runner", "scale": 3,
+        "settle_ms": 400, "workers": 4, "source": "run-1",
+        "rows": {"tests/test_a.py::t": [10, "run-1"]}}))
+    record = suite_plan.load_record(str(old))
+    assert record["version"] == suite_plan.RECORD_VERSION == 2
+    assert record["rows"] == {"tests/test_a.py::t": [10, "run-1"]}
+    facts = record["layers"]["ncurses"]
+    assert (facts["host"], facts["host_kind"], facts["scale"], facts["settle_ms"],
+            facts["workers"], facts["source"]) == ("rdaneel", "runner", 3, 400, 4, "run-1")
+    display = record["layers"]["x11"]
+    assert display["host_kind"] == suite_plan.HOST_SEED and display["workers"] == 1
+    # The runner's own ncurses times turn that layer's factor off and leave the
+    # x11 one at the seed's: a layer is measured apart.
+    assert suite_plan.host_factor(record, "ncurses") == 1.0
+    assert suite_plan.host_factor(record, "x11") == suite_plan.UNMEASURED_SEED_FACTOR
+
+
+# @scenario SC-platform-suite-plan-15
+def test_the_seed_factor_of_a_display_layer_is_the_runners_minutes_over_its_own_seed():
+    """The factor is a quotient of two measurements of the same suite, so the
+    wait scale the seed was recorded at is in it once: what moves a record to
+    this run's scale is the plan's own stretch, never the factor too."""
+    ids = ["tests/x11/test_a.py::test_%d" % n for n in range(4)]
+    at_scale_three = record_of({node: 15 * SECONDS_PER_MIN for node in ids},
+                               host_kind=suite_plan.HOST_SEED, scale=3)
+    # 60 min of seed at scale 3, and the runner needed 104 min for the layer:
+    # 104/60 rounded up to a half is 2.0, and a run at the seed's own scale
+    # stretches no further, so the plan predicts 120 min and not 360.
+    assert suite_plan.seed_factor(at_scale_three, "x11") == 2.0
+    plan = suite_plan.make_plan(at_scale_three, ids, scale=3)
+    assert plan["layers"]["x11"]["factor"] == 2.0, plan["layers"]
+    assert predicted_total(plan) == 120.0, plan["shards"]
+    # A seed recorded at scale 1 is stretched once, by the plan: 80 min of seed
+    # at scale 1, 104 min on a runner at scale 3, so 1.5 times 3.
+    at_scale_one = record_of({node: 20 * SECONDS_PER_MIN for node in ids},
+                             host_kind=suite_plan.HOST_SEED, scale=1)
+    assert suite_plan.seed_factor(at_scale_one, "x11") == 1.5
+    plan = suite_plan.make_plan(at_scale_one, ids, scale=3)
+    assert plan["layers"]["x11"]["factor"] == 4.5, plan["layers"]
+    assert predicted_total(plan) == 360.0, plan["shards"]
+    # The layer the runner measured itself needs no factor at all.
+    measured = record_of({node: 15 * SECONDS_PER_MIN for node in ids},
+                         host_kind=suite_plan.HOST_RUNNER, scale=3)
+    assert suite_plan.host_factor(measured, "x11") == 1.0
+    assert predicted_total(suite_plan.make_plan(measured, ids, scale=3)) == 60.0
+
+
+# @scenario SC-platform-suite-plan-16
+def test_fit_names_the_layer_that_does_not_fit_and_a_display_layer_with_no_times():
+    ncurses = ids_of("test_a", rows=2)
+    display = ["tests/x11/test_f%d.py::test_0" % n for n in range(8)]
+    no_times = record_of({node: 60 for node in ncurses})
+    problems = suite_plan.fit_problems(no_times, ncurses + display)
+    assert any(line.startswith("fit: x11") and "0.0%" in line for line in problems), problems
+    heavy = record_of({node: 60 for node in ncurses})
+    heavy["rows"].update({node: [25 * SECONDS_PER_MIN, "fake"] for node in display})
+    problems = suite_plan.fit_problems(heavy, ncurses + display)
+    assert any("x11" in line and "largest" in line for line in problems), problems
+    assert not any("ncurses" in line and "largest" in line for line in problems), problems
+    # A row no layer holds is refused too: no shard would ever run it.
+    problems = suite_plan.fit_problems(no_times, ncurses + ["wpe.c::a_case"])
+    assert any("wpe.c::a_case" in line and "no layer" in line for line in problems), problems
+
+
+# @scenario SC-platform-suite-plan-17
+def test_the_wayland_gate_files_come_first_in_their_shard(tmp_path):
+    """A compositor that dies part way through a shard must not take a gating
+    row down with it: the rows of the layer's gate files run first."""
+    shown = ["tests/wayland/test_grid.py::test_%d" % n for n in range(3)]
+    gating = ["tests/wayland/test_resize.py::test_a",
+              "tests/wayland/test_resize_mouse.py::test_b"]
+    plan_path, plan = write_a_plan(tmp_path, shown + gating)
+    assert len(plan["shards"]) == 1, plan["shards"]
+    rows = rows_of(args_of(plan_path, plan))
+    assert rows[:2] == sorted(gating), rows
+    assert sorted(rows[2:]) == rows[2:] == sorted(shown), rows
+
+
+needs_the_job_plugins = pytest.mark.skipif(
+    importlib.util.find_spec("xdist") is None
+    or importlib.util.find_spec("pytest_rerunfailures") is None,
+    reason="pytest-xdist and pytest-rerunfailures are not installed here "
+           "(the Linux job pins both)")
+
+# A probe run that says what its own run was given: the ini an `-o` of the args
+# file set, the workers an `-n` of it started, the reruns a `--reruns` of it
+# asked for.  pytest reads an @file one argument to a line, so an option and
+# its value on one line become an ini key with a leading blank, which pytest
+# only warns about: the option is silently lost.  The probe writes from
+# pytest_configure, which sees the controller's own numbers (a worker is told
+# nothing about the workers of its run).
+PROBE_CONFTEST = """import json
+import os
+
+
+def pytest_configure(config):
+    seen = {"faulthandler_timeout": config.getini("faulthandler_timeout"),
+            "workers": config.option.numprocesses,
+            "reruns": getattr(config.option, "reruns", None),
+            "controller": not hasattr(config, "workerinput")}
+    with open(os.environ["PROBE_OUT"], "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(seen) + "\\n")
+"""
+PROBE_ROW = "def test_the_args_file_reached_the_run():\n    pass\n"
+
+
+def run_the_args_file(tmp_path, plan_path, plan, shard=0):
+    """Run a pytest on the options of one shard's args file, plus a planted
+    probe that says what its run was given, with a config warning as an error
+    so a broken line fails; returns (the status, what the probe's controller
+    saw, the output)."""
+    probe = tmp_path / "probe"
+    probe.mkdir()
+    (probe / "conftest.py").write_text(PROBE_CONFTEST)
+    (probe / "test_probe.py").write_text(PROBE_ROW)
+    seen = tmp_path / "seen.jsonl"
+    options = [line for line in args_of(plan_path, plan, shard) if "::" not in line]
+    args = tmp_path / "probe-args.txt"
+    args.write_text("\n".join(
+        options + ["%s::test_the_args_file_reached_the_run"
+                   % (probe / "test_probe.py")]) + "\n")
+    done = gui_owner.run_nested(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+         "-W", "error::pytest.PytestConfigWarning", "@%s" % args],
+        RUN_TIMEOUT_S, cwd=str(tmp_path),
+        extra_env={"HOME": str(tmp_path), "PROBE_OUT": str(seen)})
+    text = done.stdout.decode("utf-8", "replace")
+    lines = ([json.loads(line) for line in seen.read_text().splitlines()]
+             if seen.exists() else [])
+    controller = [entry for entry in lines if entry["controller"]]
+    return done.returncode, controller[0] if controller else None, text
+
+
+# @scenario SC-platform-suite-plan-18
+@needs_the_job_plugins
+def test_a_display_args_file_reaches_pytest_as_options_and_not_as_ini_keys(tmp_path):
+    """`-o faulthandler_timeout=300` on one line of an args file becomes the
+    ini key ` faulthandler_timeout`, which pytest only warns about, and a row
+    that stops moving then never prints its stacks."""
+    plan_path, plan = write_a_planted_plan(tmp_path, suite_plan.X11, ["tests/x11/t.py::t"])
+    lines = args_of(plan_path, plan)
+    assert all(" " not in line for line in lines), "an option and its value share a line"
+    status, seen, text = run_the_args_file(tmp_path, plan_path, plan)
+    assert status == 0, text[-1500:]
+    assert seen["faulthandler_timeout"] == str(suite_plan.FAULTHANDLER_TIMEOUT_S), seen
+    # A display shard runs one pytest process and every row once.
+    assert seen["workers"] is None, seen
+    assert seen["reruns"] is None, seen
+
+
+# @scenario SC-platform-suite-plan-19
+@needs_the_job_plugins
+def test_a_ncurses_args_file_reaches_pytest_with_its_workers_and_its_reruns(tmp_path):
+    plan_path, plan = write_a_planted_plan(tmp_path, suite_plan.NCURSES,
+                                           ["tests/test_t.py::t"])
+    lines = args_of(plan_path, plan)
+    assert all(" " not in line for line in lines), "an option and its value share a line"
+    assert lines[:10] == ["-rf", "--durations=40", "-n", "4", "--reruns", "2",
+                          "--reruns-delay", "3", "--rerun-except",
+                          "RowOverBudget"], lines
+    status, seen, text = run_the_args_file(tmp_path, plan_path, plan)
+    assert status == 0, text[-1500:]
+    assert seen["workers"] == suite_plan.SHARD_WORKERS, seen
+    assert seen["reruns"] == 2, seen
+
+
+# @scenario SC-platform-suite-plan-20
+def test_verdict_gates_a_failed_x11_row_and_shows_a_wayland_row_outside_its_gates(tmp_path):
+    failed_x11 = "tests/x11/test_grid.py::test_failed"
+    shown_wayland = "tests/wayland/test_grid.py::test_failed"
+    gating_wayland = "tests/wayland/test_resize.py::test_failed"
+    ids = [failed_x11, shown_wayland, gating_wayland]
+    plan_path, plan = write_a_plan(tmp_path, ids)
+    junit = tmp_path / "j.xml"
+    junit.write_text(junit_text([
+        ("tests.x11.test_grid", "test_failed", 1, "failed"),
+        ("tests.wayland.test_grid", "test_failed", 1, "failed"),
+        ("tests.wayland.test_resize", "test_failed", 1, "failed")]))
+    status_dir = tmp_path / "status"
+    status_dir.mkdir()
+    for shard in plan["shards"]:
+        (status_dir / ("shard-%d-status.json" % shard["index"])).write_text(
+            json.dumps({"shard": shard["index"], "exit": 1,
+                        "cut_min": shard["cut_min"]}))
+    status, text = run_cli(tmp_path, "verdict", plan_path, "--status", status_dir,
+                           "--junit", junit)
+    assert status == 1, text
+    said = text.splitlines()
+    assert any(line.startswith("verdict: x11 shard") and failed_x11 in line
+               for line in said), text
+    assert any(line.startswith("verdict: wayland shard") and gating_wayland in line
+               for line in said), text
+    warnings = [line for line in said if line.startswith("::warning::")]
+    assert any(shown_wayland in line for line in warnings), text
+    assert not any(gating_wayland in line for line in warnings), text
+    assert not any(failed_x11 in line for line in warnings), text
+    assert "3 row(s) failed or never ran, 2 of them gate the run, 1 are shown" in text, text
+
+
+# @scenario SC-platform-suite-plan-21
+def test_verdict_names_the_shard_and_the_reason_of_a_row_that_never_ran(tmp_path):
+    missing = "tests/x11/test_grid.py::test_never_ran"
+    plan_path, _plan = write_a_plan(tmp_path, [missing])
+    status_dir = tmp_path / "status"
+    status_dir.mkdir()
+    (status_dir / "shard-0-status.json").write_text(json.dumps(
+        {"shard": 0, "exit": 124, "cut": True, "cut_min": suite_plan.DISPLAY_CUT_MIN}))
+    junit = tmp_path / "j.xml"
+    junit.write_text(junit_text([]))
+    status, text = run_cli(tmp_path, "verdict", plan_path, "--status", status_dir,
+                           "--junit", junit)
+    assert status == 1, text
+    assert "verdict: x11 shard 0: MISSING %s, not run: shard 0 was cut at %d min" \
+        % (missing, suite_plan.DISPLAY_CUT_MIN) in text, text
+
+
+# @scenario SC-platform-suite-plan-22
+def test_a_display_shard_that_uploaded_nothing_gates_only_on_its_gate_files(tmp_path):
+    """A shard that left no status and no junit is MISSING for every row it
+    held.  A wayland shard that held no gate file is a warning and the run
+    goes on; one that held a gate file fails it."""
+    shown = ["tests/wayland/test_grid.py::test_%d" % n for n in range(2)]
+    plan_path, _plan = write_a_plan(tmp_path, shown, name="shown/plan.json")
+    status, text = run_cli(tmp_path, "verdict", plan_path)
+    assert status == 0, text
+    assert text.count("::warning::") == 2, text
+    assert "shard 0 uploaded nothing" in text, text
+    gating = shown + ["tests/wayland/test_resize.py::test_a"]
+    plan_path, _plan = write_a_plan(tmp_path, gating, name="gating/plan.json")
+    status, text = run_cli(tmp_path, "verdict", plan_path)
+    assert status == 1, text
+    assert "verdict: wayland shard 0: MISSING tests/wayland/test_resize.py::test_a" in text, text
+
+
+def test_verdict_of_a_plan_that_is_not_there_is_a_bad_command_line(tmp_path):
+    status, text = run_cli(tmp_path, "verdict", tmp_path / "no-plan.json")
+    assert status == 2 and "holds no plan" in text, text
+
+
+# @scenario SC-platform-suite-plan-23
+def test_a_display_row_the_record_never_saw_fails_the_fitness_of_the_tree():
+    """`harness.py check` runs the fitness check over the tree: a file added to
+    a display layer tomorrow fails it in minutes, instead of a display shard
+    being cut after its minutes with rows no estimate placed."""
+    record = suite_plan.load_record(suite_plan.TRACKED_RECORD)
+    problems = suite_plan.fit_problems(record, ["tests/x11/test_brand_new.py::test_a"])
+    assert any("x11" in line and "0.0%" in line for line in problems), problems
+    problems = suite_plan.fit_problems(record, ["tests/wayland/test_brand_new.py::test_a"])
+    assert any("wayland" in line and "0.0%" in line for line in problems), problems

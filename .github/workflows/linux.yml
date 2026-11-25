@@ -16,18 +16,22 @@
 # operations under each catches a divergence in any single backend.
 #
 # One run, several jobs (one run at a time stays true):
-#   build  builds the program once, runs `make check` and the C units under
-#          the sanitizers, collects the rows the suite selects, plans which
-#          rows run in which job from the recorded time of each row
-#          (tests/harness/suite_plan.py) and fails the run in minutes when the
-#          suite no longer fits;
-#   pyte   one job per shard of the plan: a shard runs its node ids and is cut
-#          by tests/harness/job_cut.py (100 min) inside its step (110 min)
-#          inside its job (130 min), so GitHub's six-hour limit never ends a
-#          job and a cut keeps its junit, its status and its trace;
-#   gui    the X11 suite and the native Wayland gates and suite;
-#   gate   reads every shard's junit and status, judges each capability, and
-#          records the time of each row for the next run's plan.
+#   build    builds the program once, runs `make check` and the C units under
+#            the sanitizers, collects the rows of every layer, plans which rows
+#            run in which job from the recorded time of each row
+#            (tests/harness/suite_plan.py) and fails the run in minutes when a
+#            layer no longer fits;
+#   suite    one job per shard of the plan, of whichever layer that shard holds
+#            (ncurses, X11 or native Wayland): a shard runs its node ids under
+#            the display its own conftest starts, and is cut by
+#            tests/harness/job_cut.py after its own layer's minutes, inside its
+#            step's limit, inside its job's, so GitHub's six-hour limit never
+#            ends a job and a cut keeps its junit, its status and its trace;
+#   gate     reads every shard's junit and status, judges every capability of
+#            every layer, prints the plan's verdict of every row that failed or
+#            never ran, and records the time of each row for the next plan;
+#   x11-core builds the program without Xft and Cairo and runs the resize and
+#            uncover rows on it, a program the default build never makes.
 #
 # Versions: the runner, the actions, pyte and pytest are named in
 # tests/ci-versions.txt and checked by tests/check-ci-versions.sh.  ubuntu-26.04
@@ -201,13 +205,17 @@ jobs:
             tests/test_help_check.py tests/test_error_search_text.py -n 4
 
       - name: Collect the rows and plan the jobs
-        # The rows the suite selects, plus every ncurses row a manifest maps,
-        # are collected once; the plan gives each to a job from the recorded
-        # time of the rows (the newest record of this branch that has not
-        # expired, else the tracked one).  `fit` fails the run here, in
-        # minutes, when the suite no longer fits in the jobs.  The jobs get
-        # node ids and no selection, so a row the selection leaves out and a
-        # manifest maps still runs.
+        # Every layer's rows are collected once: the ncurses selection, plus
+        # every ncurses row a manifest maps, plus every row of tests/x11 and of
+        # tests/wayland.  The plan gives each row to a shard of its own layer,
+        # from the recorded time of the rows: the newest record of this branch
+        # that has not expired, merged by layer into the tracked one, so a
+        # record that measured one layer never says anything about another.
+        # `fit` fails the run here, in minutes, when a layer no longer fits in
+        # the shards it may have.  The shards get node ids and no selection, so
+        # a row the selection leaves out and a manifest maps still runs.
+        # `shards` prints the matrix the suite job takes whole: one object a
+        # shard, with its index, its layer and the limits of its step and job.
         id: plan
         env:
           GH_TOKEN: ${{ github.token }}
@@ -256,21 +264,35 @@ jobs:
           path: plan/
           retention-days: 3
 
-  pyte:
-    name: ncurses UI suite, shard ${{ matrix.shard }}
+  suite:
+    name: ${{ matrix.layer }} suite, shard ${{ matrix.shard }}
     needs: build
     runs-on: ubuntu-26.04
-    timeout-minutes: 130
+    # The plan's own numbers: the shard is cut by tests/harness/job_cut.py
+    # after its layer's minutes, the step's limit sits above that cut and its
+    # grace, and the job's above the step's, so GitHub's own limit never ends a
+    # job and the upload steps still run after a cut.  They come from the
+    # matrix the build job planned (tests/harness/suite_plan.py) and never from
+    # this file: a layer's budget is the planner's business, and it refuses a
+    # plan whose minutes do not rise in that order.
+    timeout-minutes: ${{ matrix.job_min }}
+    # One job a shard, of whichever layer that shard holds.  The build job's
+    # plan prints one object a shard, with its index, its layer and its limits,
+    # and `include` takes those objects whole, so ${{ matrix.shard }} is the
+    # index the shard script reads its rows from and ${{ matrix.layer }} names
+    # the suite in the job's own name.  A shard that fails does not stop the
+    # others: the gate judges every row of every layer from what they uploaded.
     strategy:
       fail-fast: false
       matrix:
-        shard: ${{ fromJSON(needs.build.outputs.shards) }}
+        include: ${{ fromJSON(needs.build.outputs.shards) }}
     env:
       TERM: "xterm-256color"
       # A key's wait ends once the editor has painted and stayed silent this
       # long, instead of sleeping the whole delay.  Locally at 250 ms it cut the
       # suite's test time by a third with no failure and no rerun; the runner
-      # is slower, so it gets a wider window.
+      # is slower, so it gets a wider window.  Every layer gets it: a display
+      # row never reads it, and a variable nothing reads changes nothing.
       XWPE_TEST_SETTLE_MS: "400"
       # The record the plan was made from: the row clock reads it too.
       XWPE_SUITE_TIMINGS: ${{ github.workspace }}/plan/record.json
@@ -291,6 +313,11 @@ jobs:
           path: plan
 
       - name: Install build, tool and GUI-test dependencies
+        # Every layer installs the one list: a display shard needs the X
+        # server, the window manager and the compositor, a ncurses one the
+        # debuggers and the language servers its rows drive.  A row that
+        # declares one of them and skips is a failure of the image, not a
+        # declared absence.
         run: sh tests/ci-install.sh
 
       - name: Set up the pytest venv
@@ -299,149 +326,28 @@ jobs:
       - name: Run the shard
         # NON-BLOCKING by itself: the gate reads this shard's junit and status
         # file, so a row that failed or never ran fails the run from there.
-        # tests/ci-shard.sh cuts pytest by an interrupt after 100 minutes (the
-        # step's own limit is above it, the job's above that) and keeps its
-        # exit status, 124 for a cut, in the status file.  Each row runs under
-        # its own clock, and `--rerun-except RowOverBudget` keeps a cut row
-        # from running again.
+        # The script knows nothing about layers: it runs the node ids and the
+        # pytest options of plan/args-K.txt, cut by tests/harness/job_cut.py
+        # after the shard's own minutes, inside the step's limit, inside the
+        # job's.  A display shard's own conftest starts the Xvfb and the window
+        # manager, or the weston, that its rows need, in the private runtime
+        # folder the script makes for it, and keeps its log tree where the
+        # script copies it out for the upload below.  Each row runs under its
+        # own clock, and `--rerun-except RowOverBudget` keeps a cut row from
+        # running again.
         continue-on-error: true
-        timeout-minutes: 110
+        timeout-minutes: ${{ matrix.step_min }}
         run: sh tests/ci-shard.sh ${{ matrix.shard }}
 
       - name: Upload the shard's junit, status and trace
+        # The gate downloads every one of these and nothing else: a display
+        # shard's log tree goes as its own artifact below, so no screenshot is
+        # merged into the folder the gate reads its junit files from.
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: suite-junit-${{ matrix.shard }}
           path: shard-out/
-          if-no-files-found: ignore
-
-  gui:
-    name: X11 and native Wayland GUI suites
-    needs: build
-    runs-on: ubuntu-26.04
-    # Above the sum of the step limits below, so a suite that runs too long
-    # is stopped by its own step limit and the collect and upload steps still
-    # run.  When the job limit ends the job instead, every later step is
-    # dropped with it, and the logs of the row that ran too long never leave
-    # the runner.
-    timeout-minutes: 120
-    env:
-      XDG_RUNTIME_DIR: /tmp/xdg
-    steps:
-      - name: Download the built tree
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: tree
-          path: /tmp/tree
-
-      - name: Unpack the tree
-        run: tar -xzf /tmp/tree/tree.tar.gz -C "$GITHUB_WORKSPACE"
-
-      - name: Install build, tool and GUI-test dependencies
-        run: sh tests/ci-install.sh
-
-      - name: Set up the pytest venv and a private XDG_RUNTIME_DIR
-        run: |
-          sh tests/ci-venv.sh
-          mkdir -p /tmp/xdg && chmod 700 /tmp/xdg
-
-      - name: X11/Xft GUI suite (Xvfb + matchbox)
-        # The conftest starts its own Xvfb + window manager; it skips cleanly if
-        # a tool is missing.  always(): run even if an earlier step failed, so a
-        # flake in one backend never hides another's result.
-        # --basetemp under the runner's own temporary folder, never inside the
-        # checkout: the owner keeps every process's log, the session's Xvfb log
-        # and an editor's crash file in the row's folder under it, and the
-        # collect step below copies them into the artifact.  With no --basetemp
-        # they stay in /tmp/pytest-of-runner, which no artifact holds, so the
-        # display_lost rows that died of SIGSEGV left neither a crash file nor a
-        # backtrace to read.  Inside the checkout they break a row instead: the
-        # session puts the owner's tool farm under its basetemp, and a launch
-        # that names the checkout as its working folder is refused when the farm
-        # is inside it, which is what tests/x11/test_session_owner.py does (it
-        # runs a pytest in the tree it is running from).
-        # The step limit keeps time for the steps after it (see the job's
-        # limit); a run of about 32 minutes took 89 when one row stopped
-        # moving.  faulthandler_timeout prints every thread's stack of a row
-        # that runs past it, so the log names the row and the line it waits on.
-        if: always()
-        timeout-minutes: 45
-        run: |
-          XWPE_BIN="$PWD/xwpe" /tmp/ptenv/bin/python -m pytest -q tests/x11 \
-            --basetemp "$RUNNER_TEMP/x11-logs" -o faulthandler_timeout=300
-
-      - name: Native Wayland resize/relayout gate (BLOCKING)
-        # The one cross-cutting concern that has silently regressed before (the
-        # Messages-window relayout on shrink went unnoticed for weeks).  Gate the
-        # job HARD on the deterministic resize/relayout parity tests only: few
-        # enough to run reliably even on a slow shared runner, and run without
-        # a rerun: the harness owner refuses --reruns, because a retry turns a
-        # row that fails under load into a pass and hides the failure it names.
-        # This is the genuine red/green guard for the Wayland backend; the full
-        # suite below stays visible for breadth but does not gate (it is too
-        # large to run flake-free as a hard gate on this runner).  The owner
-        # keeps every process's log in the row's folder under --basetemp, which
-        # the log upload below collects.
-        if: always()
-        timeout-minutes: 10
-        run: |
-          XWPE_BIN="$PWD/xwpe" /tmp/ptenv/bin/python -m pytest -q \
-            tests/wayland/test_resize.py tests/wayland/test_resize_mouse.py \
-            --basetemp "$RUNNER_TEMP/wl-logs/gate" -rxX
-
-      - name: Native Wayland GUI suite -- full breadth (Xvfb + weston)
-        # The conftest starts its own Xvfb + weston (x11-backend, kiosk-shell) and
-        # skips cleanly if weston / wl-clipboard / Pillow is missing.  This is the
-        # native wl_surface backend: real wl_keyboard/wl_pointer + wl_data_device.
-        # always(): run even if an earlier gate failed, so the Wayland result is
-        # always visible.
-        #
-        # NON-BLOCKING on this runner: the full suite drives a real-compositor GUI
-        # stack -- Xvfb + weston (GL via the X11 backend) + xwpe + xdotool, per
-        # test -- which the shared GitHub free runner has become too slow per-test
-        # to run flake-free as a hard gate (the job went 17 -> 31 min over a week
-        # as the runner degraded; the Wayland step alone takes ~3x its local
-        # wall-time).  Its failures are pure timing, NOT code faults: the captured
-        # per-test xwpe stderr is a clean exit in every case, and the suite passes
-        # locally (49 passed, 2 skipped) and on a real Wayland desktop.  The
-        # resize/relayout concern above is the hard gate; this stays visible for
-        # breadth and uploads logs.
-        continue-on-error: true
-        if: always()
-        timeout-minutes: 45
-        # The weston log and each row's editor log stay under --basetemp, so a
-        # failure on a loaded runner is explainable (a real crash vs a
-        # slow-runner mistime).
-        run: |
-          XWPE_BIN="$PWD/xwpe" /tmp/ptenv/bin/python -m pytest -q tests/wayland \
-            --basetemp "$RUNNER_TEMP/wl-logs/full" -rxX -o faulthandler_timeout=300
-
-      - name: Collect the log trees for the upload
-        # A row plants link loops in its own folder on purpose (a folder
-        # operation must not follow one), and upload-artifact stats every entry
-        # it walks: one loop ended the upload with ELOOP, so the artifact held
-        # nothing at all and the X11 logs never left the runner.  Copy the
-        # regular files out first: find does not follow a link and -type f never
-        # names one, so the loops stay behind while every log, screenshot and
-        # crash file goes.  Empty folders go with them, since a file's own
-        # folder is made by the copy.
-        if: always()
-        run: |
-          out="$PWD/gui-logs"
-          for tree in x11-logs wl-logs; do
-            [ -d "$RUNNER_TEMP/$tree" ] || continue
-            mkdir -p "$out/$tree"
-            ( cd "$RUNNER_TEMP/$tree" && find . -type f -printf '%P\0' \
-                | xargs -0 -r cp --parents -t "$out/$tree" )
-          done
-
-      - name: Upload test logs
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: gui-test-logs
-          path: gui-logs/
           if-no-files-found: ignore
           # An editor that crashes writes its crash file to its state folder,
           # which a row's HOME puts under ".local/state/xwpe" (we_unix.c
@@ -449,9 +355,24 @@ jobs:
           # without this the one file a SIGSEGV row leaves would stay behind.
           include-hidden-files: true
 
+      - name: Upload the shard's log tree
+        # A display shard's log tree: every process's log, the session's Xvfb or
+        # weston log, the screenshots and the crash files, copied out of the
+        # temporary folder by the shard script, which leaves a link loop a row
+        # planted behind (an upload that stats every entry it walks ends with
+        # ELOOP, holding nothing at all).  A ncurses shard keeps no tree and
+        # uploads nothing.
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: suite-logs-${{ matrix.shard }}
+          path: shard-logs/
+          if-no-files-found: ignore
+          include-hidden-files: true
+
   gate:
     name: Capability gates
-    needs: [build, pyte, gui]
+    needs: [build, suite]
     # Runs when a job before it failed or was cut: a missing shard is the
     # finding, and every capability is judged whatever happened.
     if: always()
@@ -460,8 +381,6 @@ jobs:
     env:
       TERM: "xterm-256color"
       BUILD_RESULT: ${{ needs.build.result }}
-      PYTE_RESULT: ${{ needs.pyte.result }}
-      GUI_RESULT: ${{ needs.gui.result }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -486,13 +405,16 @@ jobs:
 
       - name: Capability harness gates (BLOCKING)
         # Every capability with a manifest gates, found by listing the
-        # manifests, so a new capability cannot be left out of the loop.  The
+        # manifests, so a new capability cannot be left out of the loop, and
+        # every layer of the plan is judged for it, so a scenario mapped in
+        # tests/x11 or tests/wayland is read as well as a ncurses one.  The
         # verdicts are read from every shard's junit together with the plan and
         # the shards' status files: a mapped row that no junit holds is MISSING
         # and the line says whether its shard was cut, ended early or uploaded
-        # nothing.  Nothing runs again here.  Every capability is judged even
-        # when an earlier one failed, and the step fails at the end naming each
-        # that did.  A scenario that is FAIL or MISSING fails it.
+        # nothing.  Nothing runs again here.  Every capability of every layer is
+        # judged even when an earlier one failed, and the step fails at the end
+        # naming each that did.  A scenario that is FAIL or MISSING fails it,
+        # unless the plan only shows its row, which the report prints as SHOWN.
         if: always()
         run: |
           PY=/tmp/ptenv/bin/python
@@ -501,22 +423,42 @@ jobs:
           failed=""
           for manifest in tests/harness/*/manifest.json; do
             cap=$(basename "$(dirname "$manifest")")
-            echo "::group::harness $cap (ncurses)"
-            "$PY" tests/harness/harness.py report "$cap" ncurses "$sources" \
-              --plan plan/plan.json --status shards \
-              > "tests/harness/out/$cap-ncurses.json" || failed="$failed $cap"
-            cat "tests/harness/out/$cap-ncurses.json"
-            echo "::endgroup::"
+            for layer in ncurses x11 wayland; do
+              echo "::group::harness $cap ($layer)"
+              "$PY" tests/harness/harness.py report "$cap" "$layer" "$sources" \
+                --plan plan/plan.json --status shards \
+                > "tests/harness/out/$cap-$layer.json" || failed="$failed $cap/$layer"
+              cat "tests/harness/out/$cap-$layer.json"
+              echo "::endgroup::"
+            done
           done
           if [ -n "$failed" ]; then
             echo "harness gate failed for:$failed"
             exit 1
           fi
 
+      - name: The plan's verdict of every row (BLOCKING)
+        # One line for every row the plan gave out that failed or never ran,
+        # with its layer, its shard and, for a row that never ran, why: its
+        # shard was cut at its own minutes, ended early, or uploaded nothing.
+        # A row that gates fails the step (every X11 row, and a Wayland row of
+        # the resize and relayout gates); a row the plan only shows is a
+        # warning line the summary counts, so a ncurses row stays judged by the
+        # harness reports above and a Wayland row outside its gate files never
+        # fails a run for a shared runner's timing alone.
+        if: always()
+        run: |
+          sources=$(ls shards/suite-junit-*.xml 2>/dev/null | paste -sd, -)
+          /tmp/ptenv/bin/python tests/harness/suite_plan.py verdict plan/plan.json \
+            --status shards --junit "$sources"
+
       - name: Record the time of each row
         # The next run plans from this record (the newest of the branch that
         # has not expired); a row this run cut, failed, skipped or never
-        # reached keeps the time the previous record holds.  Commit it as
+        # reached keeps the time the previous record holds, and so does a whole
+        # layer this run passed no row of: the record says, per layer, which
+        # host and which wait scale measured it, and the plan reads the shard's
+        # own worker count from the file it was made from.  Commit it as
         # tests/harness/suite-timings.json when a commit changes tests/.
         if: always()
         run: |
@@ -526,7 +468,7 @@ jobs:
           /tmp/ptenv/bin/python tests/harness/suite_plan.py record "$sources" \
             suite-timings.json --previous "$previous" --collected plan/ids.txt \
             --host-kind runner --scale "$XWPE_TEST_WAIT_SCALE" --settle-ms 400 \
-            --source "run-$GITHUB_RUN_ID"
+            --plan plan/plan.json --source "run-$GITHUB_RUN_ID"
 
       - name: Upload the record
         if: always()
@@ -544,18 +486,24 @@ jobs:
           path: tests/harness/out/
           if-no-files-found: ignore
 
-      - name: Every job ended well (BLOCKING)
-        # The gate fails, naming the job, when the build did not succeed or a
-        # shard job or the GUI job did not: a cut or a failed job is never read
-        # as a green run because its junit is missing.
+      - name: The build ended well (BLOCKING)
+        # The gate fails, naming the job, when the build did not succeed: no
+        # plan, no tree and no record came out of it, so nothing below it can
+        # be read and every row of every layer would be MISSING for want of a
+        # plan to be MISSING from.
+        #
+        # The suite job's own result is deliberately not read here.  One job
+        # now holds the shards of all three layers, so its result is one value
+        # for all of them, and a Wayland shard that failed for a reason of its
+        # own (a package that would not install, a job limit) would fail a run
+        # whose gating rows all passed: the layer that must not gate would gate
+        # by the back door.  A shard that left nothing is MISSING for every row
+        # it held, named with its reason by the two steps above, and each
+        # layer's own rule decides whether that fails the run.
         if: always()
         run: |
-          bad=""
-          [ "$BUILD_RESULT" = success ] || bad="$bad build=$BUILD_RESULT"
-          [ "$PYTE_RESULT" = success ] || bad="$bad pyte=$PYTE_RESULT"
-          [ "$GUI_RESULT" = success ] || bad="$bad gui=$GUI_RESULT"
-          if [ -n "$bad" ]; then
-            echo "jobs that did not succeed:$bad"
+          if [ "$BUILD_RESULT" != success ]; then
+            echo "jobs that did not succeed: build=$BUILD_RESULT"
             exit 1
           fi
 

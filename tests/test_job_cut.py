@@ -267,7 +267,7 @@ def test_a_run_that_dies_of_a_signal_of_its_own_before_the_deadline_is_not_a_cut
     written = tmp_path / "shard-0-status.json"
     suite_plan.cmd_status(argparse.Namespace(
         out=str(written), shard=0, exit=status, started="a", ended="b", ids=3,
-        cut_report=str(tmp_path / "report.json")))
+        cut_report=str(tmp_path / "report.json"), plan=""))
     status_file = json.loads(written.read_text())
     assert status_file["cut"] is False, status_file
     reason = suite_plan.shard_reason(0, {0: status_file})
