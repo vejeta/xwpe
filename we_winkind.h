@@ -16,7 +16,9 @@
    * a window the editor opens itself (Messages, Watches, Stack, Help, the
      clipboard, the assistant's pane) is known by the intent that opened it,
      never by the title it happens to carry, so a file the user names
-     "Messages" stays the user's file.
+     "Messages" stays the user's file: it opens as a file, a build never
+     writes into it, and the pane the editor opens for itself is a window of
+     its own beside it.
 
    The payload lives in a block this file's module owns: the three pointers
    are separate typed members of a struct no other file may name, so the
@@ -80,9 +82,38 @@ typedef enum {
  WPE_PANE_HELP,         /* the help viewer */
  WPE_PANE_CLIPBOARD,    /* the paste buffer shown as a window */
  WPE_PANE_ASSISTANT,    /* the assistant's pane */
- WPE_PANE_REPORT        /* a window the editor writes itself and names, such
+ WPE_PANE_REPORT,       /* a window the editor writes itself and names, such
                            as the language server's Doctor report */
+ WPE_PANE_COMPOSER,     /* the assistant's multi-line prompt: a text window
+                           the user writes in, never found, one per request */
+ WPE_PANE_MANPAGE       /* a manual page shown in a window, named by the word
+                           asked for */
 } WpePane;
+
+/* The title of the assistant's pane, as the user sees it in the frame. */
+#define WPE_PANE_ASSISTANT_TITLE "AI"
+
+/* What a window is asked for.  Every window the editor opens is one of
+   these, and one function (e_window_open) finds or makes it: the kind says
+   which window is meant, so a name the user typed is never mistaken for a
+   pane's and a pane is never made from a user's file.  @pane is
+   WPE_PANE_FILE for a file of the user's, whatever it is called. */
+typedef struct {
+ WpePane pane;
+ const char *name;    /* FILE: the path the user gave ("" is a new unnamed
+                         file, always made).  REPORT, COMPOSER and MANPAGE:
+                         the label, kept as given and never split at a '/'.
+                         Any other pane: NULL. */
+ const char *dir;     /* FILE, for e_window_find: the folder the path
+                         resolves to, with @name then the file's own name.
+                         e_window_open fills both from the path it is
+                         given; NULL for every other kind. */
+ const char *source;  /* a view that shows the text of a file the editor
+                         chose: the manual page's formatted text, or the
+                         file the user named with -pm for the build's
+                         messages.  NULL otherwise; never a name the user
+                         typed into an Open box. */
+} WpeWindowAsk;
 
 /* What a window holds.  Each answers for one kind and NULL (or
    WPE_LISTKIND_NONE, WPE_PANE_FILE) for every other, so a caller cannot take a
@@ -130,15 +161,35 @@ struct FNST *e_window_top(const struct CNT *cn);
 struct FNST *e_window_text_under(const struct CNT *cn);
 struct FNST *e_window_top_except_pane(const struct CNT *cn, WpePane pane);
 struct FNST *e_window_pane_find(const struct CNT *cn, WpePane pane);
+int e_window_slot(const struct CNT *cn, const struct FNST *w);
 
-/* A window the editor writes itself (the assistant's pane, a report), by the
-   name it gave it: its slot from 1 to mxedt, or 0 when none is open. */
-int e_window_view_slot(const struct CNT *cn, const char *name);
+/* The one finder: the window an ask names, or NULL when none is open.  It
+   asks only (nothing is raised) and is pure, so a unit test links it alone.
+   A FILE ask is answered by a file window with that name in that folder; a
+   pane is answered by its tag, a labelled view by its tag and label, a
+   composer never. */
+struct FNST *e_window_find(const struct CNT *cn, const WpeWindowAsk *ask);
 
-/* The one question about a window's title that is about a file and not a
-   pane: is it this file name? */
+/* The title a labelled view carries: the label as given, cut once to the
+   room a file name has.  Returned for the caller to free, NULL when out of
+   memory.  The finder compares against the same cut. */
+char *e_window_label_title(const char *label);
+
+/* The file-name questions about a window.  Each answers 0 for a window that
+   is not a file of the user's, so a pane never answers for a file. */
+int e_window_is_file(const struct FNST *f, const char *dir, const char *name);
+int e_window_is_path(const struct FNST *f, const char *path, int whole_path);
 int e_window_title_is(const struct FNST *f, const char *name);
 int e_window_title_ends_with(const struct FNST *f, const char *suffix);
+
+/* The window's title as text, for painting, printing and joining into a path:
+   "" for a window with none, never NULL.  A question about whether it names
+   a file is asked above, never of this text.  e_window_file_name is the text
+   of a file the user opened, NULL for every other window, so a command that
+   works on files is never answered by a pane's title. */
+const char *e_window_title_text(const struct FNST *f);
+char *e_window_title_detach(struct FNST *f);
+const char *e_window_file_name(const struct FNST *f);
 
 /* The slot of the remembered list a project list kind reads and writes.
    Return: 0 to 2 for the three project lists, -1 for any other kind. */

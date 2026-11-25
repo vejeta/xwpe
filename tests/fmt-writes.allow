@@ -96,7 +96,7 @@ FMT|we_ai_ui.c|ai_edit_launch|2|move
 FMT|we_ai_ui.c|ai_edit_report_discarded|1|move
 FMT|we_ai_ui.c|ai_edit_scope_header|3|move
 FMT|we_ai_ui.c|ai_enqueue|2|move
-FMT|we_ai_ui.c|ai_fix_build_refuse|1|move
+FMT|we_ai_ui.c|ai_fix_build_say_none|1|move
 FMT|we_ai_ui.c|ai_history_cut_line|3|move
 FMT|we_ai_ui.c|ai_hook_announce|1|move
 FMT|we_ai_ui.c|ai_hook_command|1|move

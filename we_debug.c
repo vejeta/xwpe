@@ -4895,9 +4895,10 @@ static int e_d_watches_window_take(ECNT *cn)
  }
  if (iw > 0)
   return(iw);
- if (e_edit(cn, "Watches"))
+ iw = e_window_slot(cn, e_window_pane_open(cn, WPE_PANE_WATCHES));
+ if (iw == 0)
   return(-1);
- return(cn->mxedt);
+ return(iw);
 }
 
 /**
@@ -5007,18 +5008,11 @@ int e_d_p_watches(FENSTER *f, int sw)
 
 int e_p_show_watches(FENSTER *f)
 {
- int i;
+ FENSTER *pane = e_window_pane_open(f->ed, WPE_PANE_WATCHES);
 
- for (i = f->ed->mxedt; i > 0; i--)
-  if (e_window_pane(f->ed->f[i]) == WPE_PANE_WATCHES)
-  {
-   e_switch_window(f->ed->edt[i], f->ed->f[f->ed->mxedt]);
-   break;
-  }
- if (i <= 0 && e_edit(f->ed, "Watches"))
- {
+ if (pane == NULL)
   return(-1);
- }
+ e_window_raise(f->ed, pane);       /* the user asked to see it */
  return(0);
 }
 
@@ -5274,10 +5268,9 @@ int e_d_p_stack(FENSTER *f, int sw)
   return(0);
  if(is == 0)
  {
-  if (e_edit(cn, "Stack"))
+  is = e_window_slot(cn, e_window_pane_open(cn, WPE_PANE_STACK));
+  if (is == 0)
    return(-1);
-  else
-   is = cn->mxedt;
  }
  f = cn->f[is];
  if (!e_d_swtch)
@@ -5327,9 +5320,7 @@ static int e_d_stack_open(ECNT *cn)
   ;
  if (is > 0)
   return(is);
- if (e_edit(cn, "Stack"))
-  return(0);
- return(cn->mxedt);
+ return(e_window_slot(cn, e_window_pane_open(cn, WPE_PANE_STACK)));
 }
 
 /**
@@ -6576,11 +6567,11 @@ void wpe_buffer_lines_moved(BUFFER *b, int y, int n_del, int n_ins,
  const char *file;
  int changed, touched;
 
- if (b == NULL || b->f == NULL || b->f->datnam == NULL)
+ if (b == NULL || b->f == NULL || e_window_file_name(b->f) == NULL)
   return;
  if (e_d_nbrpts == 0 && n_added == 0)
   return;
- file = b->f->datnam;
+ file = e_window_file_name(b->f);
  changed = e_d_lines_kept_in_place(n_del, n_ins);
  touched = e_d_brk_lines_dropped(file, y + changed, y + n_del, rows_removed,
                                  n_removed);
@@ -9117,7 +9108,7 @@ static int e_d_compile_paths(FENSTER *f)
   e_d_compile_too_long(f, E_D_COMPILE_SOURCE_WHAT);
   return(-1);
  }
- e_prog_source_of(&s, f, &e_s_prog, NULL, f->dirct);
+ e_prog_source_of(&s, e_window_title_text(f), &e_s_prog, NULL, f->dirct);
  if (wpe_progname_debug_binary(e_d_compile.binary, sizeof e_d_compile.binary, &s))
  {
   e_d_compile_too_long(f, E_D_COMPILE_BINARY_WHAT);
@@ -11033,9 +11024,9 @@ static int e_d_dap_watches_fill(FENSTER *f, char **values, int nvalues,
  }
  else if (iw == 0)
  {
-  if (e_edit(cn, "Watches"))
+  iw = e_window_slot(cn, e_window_pane_open(cn, WPE_PANE_WATCHES));
+  if (iw == 0)
    return(-1);
-  iw = cn->mxedt;
  }
  f = cn->f[iw];
  b = e_window_text(cn->f[iw]);
@@ -12687,7 +12678,7 @@ static int e_d_dap_start_messages(FENSTER *f)
 {
  if (e_build_messages(f->ed))
   return(0);
- e_edit(f->ed, "Messages");
+ e_window_pane_open(f->ed, WPE_PANE_MESSAGES);
  return(e_build_messages(f->ed) != NULL);
 }
 
@@ -12910,7 +12901,7 @@ static int e_d_exe_name_of(char *out, size_t n, FENSTER *f, const char *executab
 {
  WpeProgramSource s;
 
- e_prog_source_of(&s, f, &e_s_prog, executable, e_d_exedir());
+ e_prog_source_of(&s, e_window_title_text(f), &e_s_prog, executable, e_d_exedir());
  return(wpe_progname_program(out, n, &s));
 }
 
@@ -15469,13 +15460,12 @@ static int e_d_a68g_scan(FENSTER *f, const char *buf, int mid_line)
  */
 static int e_d_a68g_window(ECNT *cn)
 {
- int i, l;
+ int i;
 
  for (i = cn->mxedt; i > 0; i--)
  {
-  char *nm = cn->f[i]->datnam;
-  l = (int)strlen(nm);
-  if (l > 4 && (!strcmp(nm + l - 4, ".a68") || !strcmp(nm + l - 4, ".alg")))
+  if (e_window_title_ends_with(cn->f[i], ".a68") ||
+      e_window_title_ends_with(cn->f[i], ".alg"))
    return(i);
  }
  return(0);
@@ -28428,16 +28418,15 @@ int e_deb_options(FENSTER *f)
  e_add_txtstr(20, 2, "Mode:", o);
  { /* Auto-select debugger by file extension */
    ECNT *cn2 = f->ed;
-   char *_fn = cn2->f[cn2->mxedt]->datnam;
-   int _fnl = strlen(_fn);
-   if (_fnl > 5 && !strcmp(_fn + _fnl - 5, ".java"))
+   FENSTER *top = cn2->f[cn2->mxedt];
+   if (e_window_title_ends_with(top, ".java"))
     e_deb_type = DEB_JDB;
-   else if (_fnl > 3 && !strcmp(_fn + _fnl - 3, ".py"))
+   else if (e_window_title_ends_with(top, ".py"))
     e_deb_type = DEB_PDB;
-   else if (_fnl > 4 && (!strcmp(_fn + _fnl - 4, ".a68") ||
-                         !strcmp(_fn + _fnl - 4, ".alg")))
+   else if (e_window_title_ends_with(top, ".a68") ||
+            e_window_title_ends_with(top, ".alg"))
     /* full path (dir + name) so a source outside the current dir is detected */
-    e_deb_type = e_algol68_use_ga68_in(cn2->f[cn2->mxedt]->dirct, _fn)
+    e_deb_type = e_algol68_use_ga68_in(top->dirct, e_window_file_name(top))
                  ? DEB_GDB : DEB_A68G;
    shown = e_deb_type;                  /* the debugger the box opens with */
    int _sel = e_d_dialog_radio_of();
@@ -29359,41 +29348,32 @@ int e_lsp_inlay_color(SCHIRM *s, int base)
  return(base);
 }
 
-/* The LSP languageId for this window's file, or NULL if none is wired. */
-/* Case-sensitive "does NAME end in SUF?" helper, so the extension table below
-   reads as a list of suffixes rather than repeated strcmp/length arithmetic. */
-static int e_lsp_ends_with(const char *name, const char *suf)
-{
- int n = strlen(name), s = strlen(suf);
- return (n > s && !strcmp(name + n - s, suf));
-}
-
 /* The LSP languageId for a file, by extension -- also the key into the server
    table (e_lsp_server_for).  Adding a language here + a row there is the whole
-   job; the protocol engine (we_lsp.c) is shared.  Returns NULL for files no
+   job; the protocol engine (we_lsp.c) is shared.  Each row asks the window
+   owner whether the file it holds ends this way, so only a file of the user's
+   has a language and a pane called "x.c" has none.  Returns NULL for files no
    server backs. */
 static const char *e_lsp_lang_for(FENSTER *f)
 {
- const char *nm;
- if (!f || !f->datnam)
+ if (!f || e_window_file_name(f) == NULL)
   return(NULL);
- nm = f->datnam;
- if (e_lsp_ends_with(nm, ".scala"))
+ if (e_window_title_ends_with(f, ".scala"))
   return("scala");
- if (e_lsp_ends_with(nm, ".sc"))           /* scala-cli scripts + worksheets */
+ if (e_window_title_ends_with(f, ".sc"))           /* scala-cli scripts + worksheets */
   return("scala");
- if (e_lsp_ends_with(nm, ".cpp") || e_lsp_ends_with(nm, ".cxx") ||
-     e_lsp_ends_with(nm, ".cc")  || e_lsp_ends_with(nm, ".hpp") ||
-     e_lsp_ends_with(nm, ".hxx") || e_lsp_ends_with(nm, ".hh")  ||
-     e_lsp_ends_with(nm, ".C")   || e_lsp_ends_with(nm, ".ii"))
+ if (e_window_title_ends_with(f, ".cpp") || e_window_title_ends_with(f, ".cxx") ||
+     e_window_title_ends_with(f, ".cc")  || e_window_title_ends_with(f, ".hpp") ||
+     e_window_title_ends_with(f, ".hxx") || e_window_title_ends_with(f, ".hh")  ||
+     e_window_title_ends_with(f, ".C")   || e_window_title_ends_with(f, ".ii"))
   return("cpp");                           /* clangd */
- if (e_lsp_ends_with(nm, ".c") || e_lsp_ends_with(nm, ".h"))
+ if (e_window_title_ends_with(f, ".c") || e_window_title_ends_with(f, ".h"))
   return("c");                             /* clangd (a .h is treated as C) */
- if (e_lsp_ends_with(nm, ".py") || e_lsp_ends_with(nm, ".pyi"))
+ if (e_window_title_ends_with(f, ".py") || e_window_title_ends_with(f, ".pyi"))
   return("python");                        /* pyright / pylsp */
- if (e_lsp_ends_with(nm, ".go"))
+ if (e_window_title_ends_with(f, ".go"))
   return("go");                            /* gopls */
- if (e_lsp_ends_with(nm, ".rs"))
+ if (e_window_title_ends_with(f, ".rs"))
   return("rust");                          /* rust-analyzer */
  return(NULL);
 }

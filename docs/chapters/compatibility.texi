@@ -1535,9 +1535,16 @@ The original recognised its own panes by their title.  So @command{wpe
 ./Messages main.c} opened your file locked read-only and parsed the build's
 errors into it, and the next build closed it and put the pane in its place.
 xwpe marks a pane by the intent that opened it and never by the name it
-carries, so your file stays writable and keeps its own text.  The reason: a
-file's name is yours to choose, and only the editor opens the editor's own
-windows.
+carries, so your file stays writable and keeps its own text.  That holds for
+every name the editor gives a window of its own, @file{Messages},
+@file{Watches}, @file{Stack}, @file{Help}, @file{Buffer} and @file{AI}, and
+for every way of naming the file: on the command line with or without
+@file{./}, in File > Open, and as the name in File > Save As.  A build,
+the debugger, @kbd{F1} and the assistant open their own window beside yours
+and never write into it, and a file called @file{Help} or @file{Buffer} is not
+the help viewer or the clipboard.  File > New always makes a new window,
+even when an unnamed one is open.  The reason: a file's name is yours to
+choose, and only the editor opens the editor's own windows.
 
 @item A project file that another file replaced
 The original read and rewrote whatever file held the project's name, so a

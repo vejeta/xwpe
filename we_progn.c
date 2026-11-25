@@ -1248,7 +1248,7 @@ static int e_show_nm_project_unread(FENSTER *f, int code, const WpeReadOutcome *
 int e_show_nm_f(char *name, FENSTER *f, int oldn, char **oldname)
 {
  int i, j, len, ret, num, x, first = oldn < 0 ? 1 : 0, skipped = 0;
- char str[WPE_PATH_SIZE], file[WPE_PATH_SIZE], *filename;
+ char str[WPE_PATH_SIZE], file[WPE_PATH_SIZE];
  struct dirfile *df, *fdf = NULL;
  WpeReadOutcome why;
 
@@ -1311,9 +1311,7 @@ int e_show_nm_f(char *name, FENSTER *f, int oldn, char **oldname)
   ;
  for (j = f->ed->mxedt; j > 0; j--)
  {
-  if (i < 0) filename = f->ed->f[j]->datnam;
-  else filename = e_mkfilename(f->ed->f[j]->dirct, f->ed->f[j]->datnam);
-  if (!strcmp(filename, file)) break;
+  if (e_window_is_path(f->ed->f[j], file, i >= 0)) break;
  }
  if (j > 0) e_switch_window(f->ed->edt[j], f->ed->f[f->ed->mxedt]);
  else if (e_edit(f->ed, file) != 0)

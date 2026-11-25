@@ -50,11 +50,24 @@
 #     window on top without touching the number of windows.  The one write
 #     that is not a change is the desktop's start value.
 #  6. no pasted name reaches a member, the owner itself pastes no tokens, and
-#     window title is compared against a name anywhere but in the owner.  A
-#     title comparison is how a file the user named after one of the editor's
-#     own panes is taken for that pane; the readers ask the pane the owner
-#     holds, or a file-name question of the owner, and a new comparison fails
-#     here.
+#     no window title is compared against a name or copied into a pointer
+#     anywhere but in the owner.  A title comparison is how a file the user
+#     named after one of the editor's own panes is taken for that pane; the
+#     readers ask the pane the owner holds, or a file-name question of the
+#     owner, and a new comparison fails here.  The rule reads statements, not
+#     lines: comments and the bodies of strings are dropped and the text is
+#     joined up to each `;`, `{` and `}`, so a comparison split over two
+#     lines, or one in the header of a `for`, is seen.  "Copied" means that
+#     the whole right operand of an assignment or an initialiser is the title,
+#     through parentheses, casts, both arms of `?:`, `+ n` and `&...[0]`;
+#     `p = e_mkfilename(f->dirct, f->datnam)` hands the title to a call and is
+#     not a copy.  The owner's e_window_title_text counts as the title too, so
+#     the accessor is for handing straight to a call, never for keeping.  This closes the comparison split over lines and the local
+#     pointer, and nothing more: a pointer returned into the title
+#     (`strrchr(f->datnam, '.')`), a copy into a buffer
+#     (`strcpy(buf, f->datnam)`) and the title passed to a helper that
+#     compares are not seen here.  They close at the string itself, in a later
+#     change that takes the title out of the window's own declaration.
 #  7. the payload is reached through the accessors: the count of accessor
 #     calls over the count of holds is printed as the evidence.  The window
 #     declares no member named b or s (the two fields that carried the text
@@ -64,6 +77,14 @@
 #     refused outright: with the accessors typed there is nothing to cast.
 #     What stays held at a ceiling is the number of DTMD_ISTEXT questions
 #     asked of the mode character.
+#  8. one maker.  e_window_open is the one function that finds or makes a
+#     window, and the kind it is asked for, not the name, decides what it
+#     is: e_edit_open is called from e_window_open only, e_window_set_pane is
+#     called from the one body that builds a window and from nowhere else,
+#     e_edit_view and e_window_view_slot are named nowhere, and e_edit,
+#     e_edit_outcome and e_open_named_file never take a string literal or a
+#     name in capitals as the file (the editor has no reason to open a user's
+#     file by a name it wrote itself, so no list of pane titles is kept).
 #
 # --list prints the ceiling lines the tree needs.  --selftest copies the tree
 # to a scratch folder, breaks one rule at a time, and asserts that each broken
@@ -129,10 +150,205 @@ PASTED_PAT='->(text_|screen_|list_|files_)([^A-Za-z0-9_]|$)'
 # where any reader can take it back as any other kind's.
 VOID_CAST_PAT='[(]void *\*[)] *[A-Za-z_]*e_window_'
 VOID_VAR_PAT='void *\*[A-Za-z_][A-Za-z0-9_]* *= *[A-Za-z_]*e_window_'
-# A window's title handed to a comparison: how a file the user named after
-# one of the editor's own panes gets taken for that pane.  Counted, not
-# refused: the readers move to the pane the owner holds one file at a time.
-DATNAM_CMP_PAT='(strcmp|strncmp|strcasecmp|strstr|memcmp|fnmatch|WpeStrcstr) *\([^;]*datnam'
+# The window's title: the member read through a pointer or a value (a local
+# variable that happens to be called datnam is not the title), and the text the
+# owner hands out for it, which is the same string by another name.
+TITLE_MEMBER_PAT='(->|[.])datnam|e_window_title_text[ ]*[(]'
+
+# The one blanker of C comments and literals (tests/blank-c.awk), put in front
+# of the awk programs below.
+BLANK_C=$(cat "$(dirname "$0")/blank-c.awk")
+
+# Rules 6 and 8 read statements, not lines.  This turns a C file into one
+# statement per line, "file TAB line TAB function TAB header TAB text": the
+# comments are dropped and a string's or a character's body is dropped (so a
+# ';' or an '=' inside one is not text of the statement), the preprocessor's
+# lines with their continuations are statements of their own, and the rest is
+# joined up to each ';', '{' and '}'.  "function" is the function the
+# statement is in ("" outside one) and "header" is 1 for the statement that
+# opens a function's body.  POSIX awk only.
+STATEMENTS_AWK='
+function fname(t,    n) {
+  if (!match(t, /[A-Za-z_][A-Za-z0-9_]*[ ]*\(/)) return ""
+  n = substr(t, RSTART, RLENGTH)
+  sub(/[ ]*\($/, "", n)
+  return n
+}
+function emit(l, f, h, t) {
+  gsub(/[ \t]+/, " ", t)
+  sub(/^ /, "", t)
+  if (t ~ /^[{}]?$/) return
+  print FILENAME "\t" l "\t" f "\t" h "\t" t
+}
+FNR == 1 { blank_incom = 0; depth = 0; fn = ""; stmt = ""; pp = ""; inpp = 0 }
+{
+  raw = $0
+  line = blank_c(raw, 0)
+  if (inpp) {
+    pp = pp " " line
+    if (raw !~ /\\$/) { emit(ppl, "", 0, pp); inpp = 0; pp = "" }
+    next
+  }
+  if (line ~ /^[ \t]*#/) {
+    ppl = FNR; pp = line
+    if (raw ~ /\\$/) { inpp = 1; next }
+    emit(ppl, "", 0, pp); pp = ""
+    next
+  }
+  while (line != "") {
+    if (!match(line, /[;{}]/)) {
+      if (line ~ /[^ \t]/) { if (stmt == "") startl = FNR; stmt = stmt " " line }
+      break
+    }
+    d = substr(line, RSTART, 1)
+    piece = substr(line, 1, RSTART)
+    line = substr(line, RSTART + 1)
+    if (stmt == "") startl = FNR
+    stmt = stmt " " piece
+    hdr = 0
+    if (d == "{") {
+      if (depth == 0 && stmt ~ /\(/) { fn = fname(stmt); hdr = 1 }
+      depth++
+    }
+    emit(startl, fn, hdr, stmt)
+    if (d == "}") { depth--; if (depth <= 0) { depth = 0; fn = "" } }
+    stmt = ""
+  }
+}'
+
+# Rule 6 over the statements of the readers: "CMP file:line" for a title
+# handed to a comparison, "COPY file:line" for a title copied into a pointer.
+TITLE_AWK='
+function balanced(s, from,    n, ch, k, depth, c) {
+  n = split(s, ch, "")
+  depth = 0
+  for (k = from; k <= n; k++) {
+    c = ch[k]
+    if (c == "(") depth++
+    else if (c == ")") { if (depth == 0) break; depth-- }
+  }
+  return substr(s, from, k - from)
+}
+function strip_calls(r,    n, ch, out, k, depth, c, prev) {
+  n = split(r, ch, "")
+  out = ""
+  prev = ""
+  for (k = 1; k <= n; k++) {
+    c = ch[k]
+    if (c == "(" && prev ~ /[A-Za-z0-9_]/) {
+      depth = 1
+      while (depth > 0 && k < n) {
+        k++
+        c = ch[k]
+        if (c == "(") depth++
+        else if (c == ")") depth--
+      }
+      out = out "()"
+      prev = ")"
+      continue
+    }
+    out = out c
+    prev = c
+  }
+  return out
+}
+function operand(ch, n, from, t,    k, depth, c) {
+  depth = 0
+  for (k = from; k <= n; k++) {
+    c = ch[k]
+    if (c == "(") depth++
+    else if (c == ")") { if (depth == 0) break; depth-- }
+    else if (c == "," && depth == 0) break
+    else if (c == ";") break
+    else if (c == "=" && depth == 0) {
+      if (ch[k + 1] == "=" || ch[k - 1] ~ /[!<>]/) { k++; continue }
+      return ""
+    }
+  }
+  return strip_calls(substr(t, from, k - from))
+}
+function copies(t,    n, ch, i, prev, found) {
+  found = 0
+  n = split(t, ch, "")
+  for (i = 1; i <= n; i++) {
+    if (ch[i] != "=") continue
+    prev = i > 1 ? ch[i - 1] : ""
+    if (ch[i + 1] == "=") { i++; continue }
+    if (prev ~ /[!<>=]/) continue
+    if (operand(ch, n, i + 1, t) ~ MEMBER) found++
+  }
+  return found
+}
+function compares(t,    n, rest, s, l, args) {
+  n = 0
+  rest = t
+  while (match(rest, /(strcmp|strncmp|strcasecmp|strstr|memcmp|fnmatch|WpeStrcstr)[ ]*\(/)) {
+    s = RSTART; l = RLENGTH
+    if (s > 1 && substr(rest, s - 1, 1) ~ /[A-Za-z0-9_]/) { rest = substr(rest, s + l); continue }
+    args = balanced(rest, s + l)
+    if (args ~ MEMBER) n++
+    rest = substr(rest, s + l)
+  }
+  return n
+}
+BEGIN { FS = "\t"; MEMBER = ENVIRON["MEMBER_PAT"] }
+{
+  if (index($5, "datnam") == 0 && index($5, "e_window_title_text") == 0) next
+  if (compares($5) > 0) print "CMP " $1 ":" $2
+  if (copies($5) > 0) print "COPY " $1 ":" $2
+}'
+
+# Rule 8 over the statements of every product file but the owner's: "OPEN" for
+# a second caller of the body, "TAG" for a tag written anywhere but in it,
+# "GONE" for a removed name that is back, "NAME" for a file opened by a name
+# the editor wrote itself.
+MAKER_AWK='
+function balanced(s, from,    n, ch, k, depth, c) {
+  n = split(s, ch, "")
+  depth = 0
+  for (k = from; k <= n; k++) {
+    c = ch[k]
+    if (c == "(") depth++
+    else if (c == ")") { if (depth == 0) break; depth-- }
+  }
+  return substr(s, from, k - from)
+}
+function second_arg(a,    len, ch, k, depth, c, nth, start) {
+  len = split(a, ch, "")
+  depth = 0; nth = 1; start = 1
+  for (k = 1; k <= len; k++) {
+    c = ch[k]
+    if (c == "(" || c == "[") depth++
+    else if (c == ")" || c == "]") depth--
+    else if (c == "," && depth == 0) {
+      if (nth == 2) return substr(a, start, k - start)
+      nth++; start = k + 1
+    }
+  }
+  return nth == 2 ? substr(a, start) : ""
+}
+function named_literal(t,    rest, s, l, a) {
+  rest = t
+  while (match(rest, /(^|[^A-Za-z0-9_])(e_edit_outcome|e_edit|e_open_named_file)[ ]*\(/)) {
+    s = RSTART; l = RLENGTH
+    a = second_arg(balanced(rest, s + l))
+    gsub(/^[ ]+|[ ]+$/, "", a)
+    if (a ~ /^"/ || a ~ /^[A-Z][A-Z0-9_]*$/) return 1
+    rest = substr(rest, s + l)
+  }
+  return 0
+}
+BEGIN { FS = "\t" }
+$4 == 1 { next }
+{
+  t = $5
+  where = $1 ":" $2
+  if (t ~ /(^|[^A-Za-z0-9_])e_edit_open[ ]*\(/ && $3 != "e_window_open") print "OPEN " where
+  if (t ~ /(^|[^A-Za-z0-9_])e_window_set_pane[ ]*\(/ &&
+      ($1 !~ /we_edit\.c$/ || $3 != "e_edit_open")) print "TAG " where
+  if (t ~ /(^|[^A-Za-z0-9_])(e_edit_view|e_window_view_slot)([^A-Za-z0-9_]|$)/) print "GONE " where
+  if (named_literal(t)) print "NAME " where
+}'
 
 problems=0
 
@@ -340,16 +556,28 @@ EOF
 
 # ---- rule 6: no pasted name reaches a member ---------------------------
 
-# How many window titles the readers compare against a name, written on one
-# line.  The owner is not a reader: its file-name questions
-# (e_window_title_is and e_window_title_ends_with) are the only place a
-# title is compared.  This count reads lines, so a comparison split over two
-# lines or made through a local copy of the title is not seen yet; a rule
-# that reads statements, not lines, is to replace it.
-count_titles() {
+# The statements of some files, one per line (see STATEMENTS_AWK), in the file
+# $1; the files are the rest of the arguments.
+statements_into() {
+  out=$1
+  shift
+  awk "$BLANK_C$STATEMENTS_AWK" "$@" > "$out" 2>/dev/null
+}
+
+# The titles the readers compare or copy outside the owner, one location per
+# line ("CMP file:line" or "COPY file:line").  The owner is not a reader: its
+# file-name questions (e_window_title_is, e_window_title_ends_with,
+# e_window_is_file, e_window_is_path) are the only place a title is compared.
+title_findings() {
   readers=$(product_readers "$1")
   # shellcheck disable=SC2086
-  grep -h -E -o -e "$DATNAM_CMP_PAT" $readers 2>/dev/null | grep -c .
+  statements_into "$WORK/readers.stm" $readers
+  MEMBER_PAT="$TITLE_MEMBER_PAT" awk "$TITLE_AWK" "$WORK/readers.stm"
+}
+
+# The locations of one kind of finding, as a short list for a message.
+finding_places() {
+  printf '%s\n' "$1" | grep "^$2 " | head -5 | sed "s/^$2 //" | tr '\n' ' '
 }
 
 check_no_pasted_name() {
@@ -357,17 +585,20 @@ check_no_pasted_name() {
   pasted=0
   invented=0
   titles=0
+  copies=0
 
   pasted=$(grep -h '##' "$dir"/we_winkind.c "$dir"/we_winkind.h 2>/dev/null |
            grep -c .)
   invented=$(grep -E -l -- "$PASTED_PAT" $(product_files "$dir") 2>/dev/null |
              grep -c .)
-  titles=$(count_titles "$dir")
+  found=$(title_findings "$dir")
+  titles=$(printf '%s\n' "$found" | grep -c '^CMP ')
+  copies=$(printf '%s\n' "$found" | grep -c '^COPY ')
 
   printf 'rule 6: token pastes in the owner: %s, files naming a member the block does not have: %s\n' \
     "$pasted" "$invented"
-  printf 'rule 6: window titles compared outside the owner: %s (none allowed)\n' \
-    "$titles"
+  printf 'rule 6: window titles compared outside the owner: %s, copied into a pointer: %s (none allowed)\n' \
+    "$titles" "$copies"
   if [ "$pasted" -ne 0 ]; then
     say_problem "rule 6: the owner pastes $pasted token(s): a pasted name reaches a member without ever spelling it"
   fi
@@ -375,7 +606,54 @@ check_no_pasted_name() {
     say_problem "rule 6: $invented file(s) name a member of the owner's block that the block does not have"
   fi
   if [ "$titles" -ne 0 ]; then
-    say_problem "rule 6: $titles window title(s) are compared outside the owner: a title comparison takes a file the user named after a pane for that pane, which is what the tag the owner holds is for"
+    say_problem "rule 6: $titles window title(s) are compared outside the owner ($(finding_places "$found" CMP)): a title comparison takes a file the user named after a pane for that pane, which is what the tag the owner holds is for"
+  fi
+  if [ "$copies" -ne 0 ]; then
+    say_problem "rule 6: $copies window title(s) are copied into a pointer outside the owner ($(finding_places "$found" COPY)): a copy is compared where no rule sees it; ask the owner the question, or hand the title to the call that needs it"
+  fi
+}
+
+# ---- rule 8: one maker ------------------------------------------------
+
+# The places rule 8 refuses, one per line ("OPEN", "TAG", "GONE" or "NAME",
+# then file:line).  The owner's own files are not scanned for the tag: it
+# defines the function that writes it.
+maker_findings() {
+  files=""
+  for f in $(product_files "$1"); do
+    case "$f" in
+      */we_winkind.c|*/we_winkind.h) continue ;;
+    esac
+    files="$files $f"
+  done
+  # shellcheck disable=SC2086
+  statements_into "$WORK/product.stm" $files
+  awk "$MAKER_AWK" "$WORK/product.stm"
+}
+
+check_one_maker() {
+  dir=$1
+  found=$(maker_findings "$dir")
+  second=$(printf '%s\n' "$found" | grep -c '^OPEN ')
+  tags=$(printf '%s\n' "$found" | grep -c '^TAG ')
+  gone=$(printf '%s\n' "$found" | grep -c '^GONE ')
+  named=$(printf '%s\n' "$found" | grep -c '^NAME ')
+
+  printf 'rule 8: e_edit_open called outside e_window_open: %s, a window tag written outside the one body: %s\n' \
+    "$second" "$tags"
+  printf 'rule 8: removed openers named again: %s, a file opened by a name the editor wrote itself: %s (none allowed)\n' \
+    "$gone" "$named"
+  if [ "$second" -ne 0 ]; then
+    say_problem "rule 8: e_edit_open is called outside e_window_open ($(finding_places "$found" OPEN)): one function finds or makes a window, from the kind it was asked for"
+  fi
+  if [ "$tags" -ne 0 ]; then
+    say_problem "rule 8: a window's tag is written outside the body that builds it ($(finding_places "$found" TAG)): the kind is written once, from the ask, and never from a name"
+  fi
+  if [ "$gone" -ne 0 ]; then
+    say_problem "rule 8: e_edit_view or e_window_view_slot is named again ($(finding_places "$found" GONE)): a view is opened by its kind through e_window_view_open"
+  fi
+  if [ "$named" -ne 0 ]; then
+    say_problem "rule 8: $named file open(s) by a literal or a capitalised name ($(finding_places "$found" NAME)): a user's file is opened by the name the user gave, and a window of the editor's own by its kind"
   fi
 }
 
@@ -489,6 +767,7 @@ run_checks() {
   check_stack_counted "$1"
   check_no_pasted_name "$1"
   check_accessors "$1"
+  check_one_maker "$1"
 }
 
 # ---- the selftest -------------------------------------------------------
@@ -580,6 +859,57 @@ selftest() {
   plant_and_expect "a window title compared against a pane's name" "rule 6" \
     sh -c 'printf "\n#define PLANTED_TITLE \"Messages\"\nint planted_is_pane(FENSTER *f){ return strcmp(f->datnam, PLANTED_TITLE); }\n" >> "$0/we_wind.c"'
 
+  plant_and_expect "a title compared in a call split over two lines" "rule 6" \
+    sh -c 'printf "\nint planted_split(FENSTER *f){\n return strcmp(f->dirct,\n   f->datnam);\n}\n" >> "$0/we_wind.c"'
+
+  plant_and_expect "the owner's title text handed to a comparison" "rule 6" \
+    sh -c 'printf "\nint planted_text_cmp(FENSTER *f){ return strcmp(e_window_title_text(f), \"Messages\"); }\n" >> "$0/we_wind.c"'
+
+  plant_and_expect "the owner's title text kept in a local" "rule 6" \
+    sh -c 'printf "\nint planted_text_copy(FENSTER *f){\n const char *nm = e_window_title_text(f);\n return nm[0];\n}\n" >> "$0/we_wind.c"'
+
+  plant_and_expect "a title compared in the header of a for" "rule 6" \
+    sh -c 'printf "\nvoid planted_for(FENSTER *f, char *x){\n int i;\n for (i = 0; i < 3 && !strcmp(x,\n   f->datnam); i++)\n  ;\n}\n" >> "$0/we_wind.c"'
+
+  plant_and_expect "a title copied into a local and compared" "rule 6" \
+    sh -c 'printf "\nint planted_local(FENSTER *f){\n char *nm = f->datnam;\n return strcmp(nm, \"Messages\");\n}\n" >> "$0/we_wind.c"'
+
+  plant_and_expect "a title copied through an assignment split over two lines" "rule 6" \
+    sh -c 'printf "\nvoid planted_assign(FENSTER *f, const char **p){\n *p =\n   f->datnam;\n}\n" >> "$0/we_wind.c"'
+
+  plant_and_expect "a title copied through the arm of a ternary" "rule 6" \
+    sh -c 'printf "\nconst char *planted_ternary(FENSTER *f, int i){\n const char *p;\n p = i < 0 ? f->datnam : \"x\";\n return p;\n}\n" >> "$0/we_wind.c"'
+
+  plant_and_expect "a title copied through a cast, an offset and an index" "rule 6" \
+    sh -c 'printf "\nvoid planted_offset(FENSTER *f){\n char *a = (char *)(f->datnam + 1);\n char *b = &f->datnam[0];\n (void)a; (void)b;\n}\n" >> "$0/we_wind.c"'
+
+  plant_and_expect "a title copied in a macro continued over two lines" "rule 6" \
+    sh -c 'printf "\n#define PLANTED_COPY(f, p) \\\\\n  ((p) = (f)->datnam)\n" >> "$0/we_wind.c"'
+
+  plant_and_expect "a literal name given to e_edit" "rule 8" \
+    sh -c 'printf "\nvoid planted_literal(ECNT *cn){ e_edit(cn, \"Messages\"); }\n" >> "$0/we_wind.c"'
+
+  plant_and_expect "a name in capitals given to e_edit" "rule 8" \
+    sh -c 'printf "\n#define PLANTED_NAME \"Messages\"\nvoid planted_capitals(ECNT *cn){ e_edit(cn, PLANTED_NAME); }\n" >> "$0/we_wind.c"'
+
+  plant_and_expect "a literal name given to e_edit_outcome" "rule 8" \
+    sh -c 'printf "\nvoid planted_outcome(ECNT *cn, WpeReadOutcome *why){ e_edit_outcome(cn, \"Help\", why); }\n" >> "$0/we_wind.c"'
+
+  plant_and_expect "a literal name given to e_open_named_file" "rule 8" \
+    sh -c 'printf "\nvoid planted_named(ECNT *cn){ e_open_named_file(cn, \"Messages\"); }\n" >> "$0/we_wind.c"'
+
+  plant_and_expect "a call split over two lines with a literal name" "rule 8" \
+    sh -c 'printf "\nvoid planted_split_open(ECNT *cn){\n e_edit(cn,\n   \"Watches\");\n}\n" >> "$0/we_wind.c"'
+
+  plant_and_expect "a second caller of the body that builds a window" "rule 8" \
+    sh -c 'printf "\nvoid planted_open(ECNT *cn){ e_edit_open(cn, 0, 0, 0, 0); }\n" >> "$0/we_wind.c"'
+
+  plant_and_expect "a window tag written outside the body that builds it" "rule 8" \
+    sh -c 'printf "\nvoid planted_tag(FENSTER *f){ e_window_set_pane(f, WPE_PANE_MESSAGES); }\n" >> "$0/we_prog.c"'
+
+  plant_and_expect "a removed opener named again" "rule 8" \
+    sh -c 'printf "\nint e_edit_view(ECNT *cn, char *name);\n" >> "$0/we_wind.c"'
+
   plant_and_expect "the window's text member declared again" "rule 7" \
     sh -c 'awk "{ print } /^typedef struct FNST *\\{/ { print \" struct BFF *b;\" }" "$0/edit.h" > "$0/edit.h.planted" && mv "$0/edit.h.planted" "$0/edit.h"'
 
@@ -647,11 +977,13 @@ selftest() {
 
 # ---- main ---------------------------------------------------------------
 
+# Made here, in the main shell, and not inside a function: work_dir's EXIT trap
+# belongs to the shell that ends the script, and a folder made in a function
+# called from a subshell would go with the subshell.  Rules 6 and 8 keep the
+# statements they read in it.
+work_dir window-kind 2
+
 if [ $SELFTEST -eq 1 ]; then
-  # Made here, in the main shell, and not inside selftest: work_dir's EXIT trap
-  # belongs to the shell that ends the script, and a folder made in a function
-  # called from a subshell would go with the subshell.
-  work_dir window-kind 2
   selftest
   exit $?
 fi

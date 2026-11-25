@@ -450,6 +450,28 @@ FENSTER *e_window_top(const ECNT *cn)
 }
 
 /**
+ * e_window_slot - Where a window is on the desktop's stack.
+ * @cn: the desktop; @w: the window, or NULL.
+ *
+ * For a caller that was handed a window by the opener and keeps its places by
+ * index: it asks where that very window is and never assumes the window it
+ * got is the one on top.
+ * Return: the slot (1 to mxedt, the window on top first), or 0 when @w is
+ * NULL or not on the stack.
+ */
+int e_window_slot(const ECNT *cn, const FENSTER *w)
+{
+ int i;
+
+ if (!cn || !w)
+  return(0);
+ for (i = cn->mxedt; i > 0; i--)
+  if (cn->f[i] == w)
+   return(i);
+ return(0);
+}
+
+/**
  * e_window_text_under - The topmost window that holds text.
  * @cn: the desktop.
  *
@@ -489,34 +511,231 @@ FENSTER *e_window_pane_find(const ECNT *cn, WpePane pane)
  return(NULL);
 }
 
+/* How many bytes of a label a view's title keeps: the room a file name has,
+   less its terminator. */
+#define LABEL_KEEP (WPE_NAME_SIZE - 1)
+
+/* The part of @label a view's title keeps.  The one cut, so the title made
+   and the title compared agree for a label longer than a file name. */
+static size_t label_len(const char *label)
+{
+ size_t len = strlen(label);
+
+ return(len > LABEL_KEEP ? LABEL_KEEP : len);
+}
+
 /**
- * e_window_view_slot - The slot of a window the editor writes, by its name.
- * @cn: the desktop; @name: the name the editor gave the window.
+ * e_window_label_title - The title a labelled view carries.
+ * @label: the label the editor gave the view.
  *
- * What the user gains: the assistant's lines and the language server's report
- * go on writing into their own window once it is open; this lookup itself
- * matches only a window the editor tagged as its own.  The window is still
- * made through e_edit_view, whose already-open check matches by name, so a
- * user's file of the same name open first can still be taken for it.  That
- * belongs to the one function that opens windows, not to this lookup.
- * Return: the slot (1 to mxedt, the window on top first), or 0 when the
- * editor has no such window open.
+ * What the user gains: a view's frame shows the label as it was given, with
+ * a '/' in it where it has one (a manual page asked for as "a/b"), instead of
+ * the end of a path made from it.
+ * Return: the title, for the caller to free, or NULL when out of memory.
  */
-int e_window_view_slot(const ECNT *cn, const char *name)
+char *e_window_label_title(const char *label)
+{
+ size_t len;
+ char *title;
+
+ if (!label)
+  return(NULL);
+ len = label_len(label);
+ title = (char *)MALLOC(len + 1);
+ if (!title)
+  return(NULL);
+ memcpy(title, label, len);
+ title[len] = '\0';
+ return(title);
+}
+
+/* Does this window carry @label as the title of a view? */
+static int view_has_label(const FENSTER *f, const char *label)
+{
+ size_t len;
+
+ if (!f || !f->datnam || !label)
+  return(0);
+ len = label_len(label);
+ return(strlen(f->datnam) == len && !memcmp(f->datnam, label, len));
+}
+
+/**
+ * e_window_is_file - Is this window the user's file at this place?
+ * @f: the window; @dir: the folder; @name: the file's own name.
+ *
+ * What the user gains: opening a file that is already open raises that
+ * window and does not make a second one, whatever the file is called.  Only
+ * a window that holds the text of a file the user opened answers yes: the
+ * editor's own windows (Messages, the clipboard, a manual page) and the lists
+ * never do, so a file named like one of them is its own window.
+ * Return: 1 for that file's window, else 0.
+ */
+int e_window_is_file(const FENSTER *f, const char *dir, const char *name)
+{
+ if (!f || !name || !dir || e_window_pane(f) != WPE_PANE_FILE)
+  return(0);
+ if (!e_window_is_text(f) || !f->datnam || !f->dirct)
+  return(0);
+ return(!strcmp(f->datnam, name) && !strcmp(f->dirct, dir));
+}
+
+/* Is @path the folder and the name of this window, joined the way a path is
+   (one separator between them, none when the folder is empty or ends in one)? */
+static int path_joins(const char *dir, const char *name, const char *path)
+{
+ size_t dlen = strlen(dir);
+
+ if (strncmp(path, dir, dlen) != 0)
+  return(0);
+ path += dlen;
+ if (dlen > 0 && dir[dlen - 1] != '/')
+ {
+  if (*path != '/')
+   return(0);
+  path++;
+ }
+ return(!strcmp(path, name));
+}
+
+/**
+ * e_window_is_path - Is this window the user's file that a path names?
+ * @f: the window; @path: what a compiler, a debugger or a definition names;
+ * @whole_path: 1 when @path holds the folder as well (it starts at the root),
+ * 0 when it is the file's own name.
+ *
+ * What the user gets: the line of an error, a stop or a definition opens the
+ * file's own window when it is open, whatever the other windows are called;
+ * a pane titled like the file is never taken for it.
+ * Return: 1 for that file's window, else 0.
+ */
+int e_window_is_path(const FENSTER *f, const char *path, int whole_path)
+{
+ if (!f || !path || e_window_pane(f) != WPE_PANE_FILE || !f->datnam ||
+     !e_window_is_text(f))
+  return(0);
+ if (!whole_path)
+  return(!strcmp(f->datnam, path));
+ return(f->dirct != NULL && path_joins(f->dirct, f->datnam, path));
+}
+
+/**
+ * e_window_title_text - The title of a window, as text to paint or print.
+ * @f: the window.
+ *
+ * What the user gets: a frame, a list and a message name the window by what
+ * its title says.  This is for showing and for joining into a path; whether a
+ * window is a file is a question put to the owner, never read from this text.
+ * Return: the title, "" when the window has none.
+ */
+const char *e_window_title_text(const FENSTER *f)
+{
+ return(f && f->datnam ? f->datnam : "");
+}
+
+/**
+ * e_window_title_detach - Take the window's title away for the caller to keep.
+ * @f: the window.
+ *
+ * What the user gets: Save As keeps the old name until the file is written, so
+ * a write that fails can put it back, and a window with no title never has a
+ * made-up one freed.  The window is left with no title and the caller sets the
+ * new one at once.
+ * Return: the title, owned by the caller, or NULL when the window had none.
+ */
+char *e_window_title_detach(FENSTER *f)
+{
+ char *title;
+
+ if (!f)
+  return(NULL);
+ title = f->datnam;
+ f->datnam = NULL;
+ return(title);
+}
+
+/**
+ * e_window_file_name - The name of the file a window holds.
+ * @f: the window.
+ *
+ * What the user gets: a command about files (a breakpoint, a language, a
+ * debugger) is answered by a file's own name and never by the title of the
+ * editor's own window, so a pane called Messages is not a file named Messages.
+ * Return: the name, or NULL for every window that is not a file of the user's.
+ */
+const char *e_window_file_name(const FENSTER *f)
+{
+ if (!f || !f->datnam || e_window_pane(f) != WPE_PANE_FILE ||
+     !e_window_is_text(f))
+  return(NULL);
+ return(f->datnam);
+}
+
+/* The window of a file the user opened that an ask names: never slot 0 (the
+   clipboard), never a window without text, and never the empty name, which is
+   a new unnamed file and so always a window of its own. */
+static FENSTER *find_file(const ECNT *cn, const WpeWindowAsk *ask)
 {
  int i;
- WpePane pane;
 
- if (!cn)
-  return(0);
- for (i = cn->mxedt; i > 0; i--)
+ if (!ask->name || !ask->name[0])
+  return(NULL);
+ for (i = cn->mxedt; i >= 1; i--)
+  if (e_window_is_file(cn->f[i], ask->dir, ask->name))
+   return(cn->f[i]);
+ return(NULL);
+}
+
+/* The clipboard is the one window in slot 0; any other pane is on the stack.
+   Before the first window is made (mxedt below 0) slot 0 holds nothing yet. */
+static FENSTER *find_clipboard(const ECNT *cn)
+{
+ if (cn->mxedt < 0)
+  return(NULL);
+ return(e_window_pane(cn->f[0]) == WPE_PANE_CLIPBOARD ? cn->f[0] : NULL);
+}
+
+/* The window of a labelled view: its kind and its label. */
+static FENSTER *find_view(const ECNT *cn, const WpeWindowAsk *ask)
+{
+ int i;
+
+ for (i = cn->mxedt; i >= 1; i--)
+  if (e_window_pane(cn->f[i]) == ask->pane && view_has_label(cn->f[i], ask->name))
+   return(cn->f[i]);
+ return(NULL);
+}
+
+/**
+ * e_window_find - The window an ask names, when it is open.
+ * @cn: the desktop; @ask: what is asked for.
+ *
+ * What the user gains: opening a file that is already open, asking for a
+ * manual page that is shown, or writing to the build's Messages, goes to the
+ * window that is there and does not make a second one; and a file the user
+ * named after a pane is never taken for the pane, nor a pane for the file,
+ * because the kind in the ask decides what can answer.  Asks only: it raises
+ * nothing and opens nothing.
+ * Return: the window, or NULL when none is open.
+ */
+FENSTER *e_window_find(const ECNT *cn, const WpeWindowAsk *ask)
+{
+ if (!cn || !ask)
+  return(NULL);
+ switch (ask->pane)
  {
-  pane = e_window_pane(cn->f[i]);
-  if ((pane == WPE_PANE_ASSISTANT || pane == WPE_PANE_REPORT) &&
-      e_window_title_is(cn->f[i], name))
-   return(i);
+  case WPE_PANE_FILE:
+   return(find_file(cn, ask));
+  case WPE_PANE_CLIPBOARD:
+   return(find_clipboard(cn));
+  case WPE_PANE_COMPOSER:
+   return(NULL);                    /* each request writes in its own */
+  case WPE_PANE_REPORT:
+  case WPE_PANE_MANPAGE:
+   return(find_view(cn, ask));
+  default:
+   return(e_window_pane_find(cn, ask->pane));
  }
- return(0);
 }
 
 /**
@@ -524,14 +743,16 @@ int e_window_view_slot(const ECNT *cn, const char *name)
  * @f: the window; @suffix: the ending asked about, such as ".sh".
  *
  * What the user gains: a shell script runs as a script and a worksheet gets
- * its inline results, told by the name of the file the user opened.
+ * its inline results, told by the name of the file the user opened.  Only a
+ * file of the user's has such a name: the editor's own windows answer no.
  * Return: 1 when the title ends with @suffix, else 0.
  */
 int e_window_title_ends_with(const FENSTER *f, const char *suffix)
 {
  size_t len, tail;
 
- if (!f || !f->datnam || !suffix)
+ if (!f || !f->datnam || !suffix || e_window_pane(f) != WPE_PANE_FILE ||
+     !e_window_is_text(f))
   return(0);
  len = strlen(f->datnam);
  tail = strlen(suffix);
@@ -542,15 +763,16 @@ int e_window_title_ends_with(const FENSTER *f, const char *suffix)
  * e_window_title_is - Does a window carry this file name as its title?
  * @f: the window; @name: the file name asked about.
  *
- * What the user gains: opening a file that is already open, or asking for a
- * manual page that is already shown, raises that window and does not make a
- * second one.  This answers a question about a file, never about a pane: the
- * editor's own windows are asked through their tag.
- * Return: 1 when the title is @name, else 0.
+ * What the user gains: a command that asks about a file (a breakpoint, a
+ * build's error list, the file under a stop) is answered by the file's own
+ * window and never by one of the editor's panes that happens to carry the
+ * same words as its title.
+ * Return: 1 when the window is a file of the user's titled @name, else 0.
  */
 int e_window_title_is(const FENSTER *f, const char *name)
 {
- return(f && f->datnam && name && !strcmp(f->datnam, name));
+ return(f && f->datnam && name && e_window_pane(f) == WPE_PANE_FILE &&
+        e_window_is_text(f) && !strcmp(f->datnam, name));
 }
 
 /**

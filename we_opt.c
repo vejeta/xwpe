@@ -476,7 +476,11 @@ static void e_sys_info_rows(FENSTER *f, int avail, int *file_rows, int *dir_rows
   *shown = buf;
  }
  else
-  *shown = f->datnam;
+ {
+  if (wpe_path_copy(buf, size, e_window_title_text(f)) != 0)
+   buf[0] = '\0';
+  *shown = buf;
+ }
  if (avail < 1)
   avail = 1;
  *file_rows = ((int)strlen(*shown) + avail - 1) / avail;

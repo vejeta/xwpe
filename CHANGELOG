@@ -20,6 +20,28 @@ Cannot reproduce:
      past the limit stays alive).
 
 Bugs fixed in 1.6.x:
+* A file named Messages, Watches, Stack, Help, Buffer or AI is always your file
+  and is never overwritten by the editor's own window of that name.  The
+  editor decided which window you meant by comparing names, so `wpe Messages
+  main.c` opened an empty locked pane and never showed the file, a failed build
+  wrote its last line into your Messages and Save All saved it, a watch or the
+  call stack of the debugger and the text of F1 replaced the text of your
+  Watches, Stack or Help file in its window, a chat turn locked your AI file
+  and wrote the transcript into it, and a file called Buffer was never opened
+  because the clipboard answered to its name.  Every window the editor opens
+  for itself now asks for its own kind, and one function finds or makes the
+  window: your file opens as a file at the command line, in File > Open and
+  after a Save As, and the build, the debugger, the help viewer and the
+  assistant open their own windows beside it.  File > New is always a new
+  window.  Help on a word whose page is already shown raises that page, and
+  the Metals Doctor report and the assistant's second multi-line prompt are
+  windows of their own.  The editor no longer reads a window's title to decide
+  what it is, anywhere a build error, a stop, a breakpoint or a language is
+  matched to a file.  Rows: tests/test_window_kind.py and the unit test
+  tests/test_winkind_open.c, which walks every kind against every desk.
+  tests/check-window-kind.sh now also holds that one function makes windows
+  and that no file is opened by a name the editor wrote, and reads
+  statements, not lines, when it looks for a title compared or copied.
 * A dialog opened over a read-only (locked) file or over the Help viewer was
   placed as if that window were a narrow dock pane like Messages, and sat
   centred on the screen instead of on the window.  It now sits on that window

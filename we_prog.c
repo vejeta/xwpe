@@ -723,7 +723,8 @@ static void e_build_path_too_long(FENSTER *f, const char *what);
 
 /**
  * e_prog_source_of - The open file as the program-name owner reads it.
- * @s: filled in; @f: the file's window; @entry: the language's entry whose
+ * @s: filled in; @name: the file's name, as the window's title says it
+ * (the caller hands the owner's text straight in); @entry: the language's entry whose
  * compiler style names the files (the one in force, or the user's own for
  * "Use mine"); @executable: its Executable, or NULL; @exedir: the output
  * folder.
@@ -734,11 +735,11 @@ static void e_build_path_too_long(FENSTER *f, const char *what);
  * name the editor gives to what a build makes goes through the owner from
  * here, so F9, Alt-C and Ctrl-F9 name the same files.
  */
-void e_prog_source_of(WpeProgramSource *s, FENSTER *f, const struct e_s_prog *entry,
+void e_prog_source_of(WpeProgramSource *s, const char *name, const struct e_s_prog *entry,
                       const char *executable, const char *exedir)
 {
  memset(s, 0, sizeof *s);
- s->name = f->datnam;
+ s->name = name;
  s->exedir = exedir;
  s->executable = executable;
  s->self_linked = entry->comp_sw & 1;
@@ -778,7 +779,7 @@ static int e_p_link_operands_of(FENSTER *f, const char *exe_name, const char *ex
 {
  WpeProgramSource s;
 
- e_prog_source_of(&s, f, &e_s_prog, exe_name, exedir);
+ e_prog_source_of(&s, e_window_title_text(f), &e_s_prog, exe_name, exedir);
  if (wpe_progname_program(estr, sz, &s))
   return(-1);
  return(wpe_progname_object(ostr, sz, &s));
@@ -1739,7 +1740,7 @@ static int e_run_program_placed(FENSTER *f, const e_run_values *v, char *out, si
 
  if (e__project)
   return(wpe_path_copy(out, sz, e_prj_program()));
- e_prog_source_of(&s, f, v->entry, v->exe_name, v->exedir);
+ e_prog_source_of(&s, e_window_title_text(f), v->entry, v->exe_name, v->exedir);
  return(wpe_progname_program(out, sz, &s));
 }
 
@@ -1756,7 +1757,7 @@ static int e_run_vm_class(FENSTER *f, const e_run_values *v, char *out, size_t s
 {
  WpeProgramSource s;
 
- e_prog_source_of(&s, f, v->entry, v->exe_name, v->exedir);
+ e_prog_source_of(&s, e_window_title_text(f), v->entry, v->exe_name, v->exedir);
  return(wpe_progname_program_name(out, sz, &s));
 }
 
@@ -1772,7 +1773,7 @@ static int e_run_self_linked(FENSTER *f, const e_run_values *v)
 {
  WpeProgramSource s;
 
- e_prog_source_of(&s, f, v->entry, v->exe_name, v->exedir);
+ e_prog_source_of(&s, e_window_title_text(f), v->entry, v->exe_name, v->exedir);
  return(s.self_linked);
 }
 
@@ -2382,15 +2383,13 @@ static int e_run_program(ECNT *cn)
  }
  for (i = cn->mxedt; i > 0 && e_window_pane(cn->f[i]) != WPE_PANE_MESSAGES; i--)
   ;
- if (i <= 0 && e_edit(cn, "Messages") != 0)
+ mf = (i > 0) ? cn->f[i] : e_window_pane_open(cn, WPE_PANE_MESSAGES);
+ if (mf == NULL)
  {
   wpe_startplan_free(plan);
   WpeMouseRestoreShape();       /* no Messages: the output has nowhere to go */
   return(0);
  }
- if (i <= 0)
-  i = cn->mxedt;
- mf = cn->f[i];
  b = e_window_text(mf);
 
  if (wpe_row_len(b, b->mxlines-1) != 0)
@@ -2810,7 +2809,7 @@ static int e_comp_operands(FENSTER *f, const char *exedir, char *fstr, char *ost
 
  if (wpe_startplan_operand(fstr, sz, f->dirct, f->datnam))
   return(-1);
- e_prog_source_of(&s, f, &e_s_prog, NULL, exedir);
+ e_prog_source_of(&s, e_window_title_text(f), &e_s_prog, NULL, exedir);
  if (wpe_progname_object(ostr, sz, &s))
   return(-2);
  return(0);
@@ -2829,7 +2828,7 @@ static void e_comp_step_begin(FENSTER *f, const char *ostr)
  WpeProgramSource s;
  char estr[WPE_PATH_SIZE], lostr[WPE_PATH_SIZE];
 
- e_prog_source_of(&s, f, &e_s_prog, e_s_prog.exe_name, e_prog.exedir);
+ e_prog_source_of(&s, e_window_title_text(f), &e_s_prog, e_s_prog.exe_name, e_prog.exedir);
  if (s.self_linked &&
      !e_p_link_operands_of(f, e_s_prog.exe_name, e_prog.exedir, estr, lostr, sizeof estr))
  {
@@ -3277,12 +3276,11 @@ int e_print_arg(FILE *fp, char *s, char **argv, int n)
 
 static FENSTER *e_find_or_create_messages(ECNT *cn)
 {
- FENSTER *messages = e_window_pane_find(cn, WPE_PANE_MESSAGES);
+ FENSTER *messages = e_window_pane_open(cn, WPE_PANE_MESSAGES);
+
  if (messages)
   return messages;
- if (e_edit(cn, "Messages"))
-  return cn->f[cn->mxedt];
- return cn->f[cn->mxedt];
+ return cn->f[cn->mxedt];     /* no Messages could be opened: the window on top */
 }
 
 /* e_make_multifile_hint - turn a confusing single-file link failure into
@@ -4697,8 +4695,7 @@ int e_show_error(int n, FENSTER *f)
 {
  ECNT *cn = f->ed;
  BUFFER *b = e_window_text(cn->f[cn->mxedt]);
- int i, bg = 0;
- char *filename;
+ int i, bg = 0, whole_path;
 
  if (!err_li || n >= err_num || n < 0)
   return(1);
@@ -4707,29 +4704,15 @@ int e_show_error(int n, FENSTER *f)
  f = cn->f[cn->mxedt];
  if (err_li[n].file[0] == '.' && err_li[n].file[1] == DIRC)
   bg = 2;
- if (err_li[n].file[0] == DIRC)
- {
-  filename = e_mkfilename(f->dirct, f->datnam);
- }
- else
-  filename = f->datnam;
- if (strcmp(err_li[n].file+bg, filename))
+ whole_path = (err_li[n].file[0] == DIRC);
+ if (!e_window_is_path(f, err_li[n].file+bg, whole_path))
  {
   for (i = cn->mxedt - 1; i > 0; i--)
   {
-   if (filename != cn->f[i+1]->datnam)
+   if (e_window_is_path(cn->f[i], err_li[n].file+bg, whole_path))
    {
-    FREE(filename);
-    filename = e_mkfilename(cn->f[i]->dirct, cn->f[i]->datnam);
-   }
-   else
-    filename = cn->f[i]->datnam;
-   if (!strcmp(err_li[n].file+bg, filename))
-   {
-    if (filename != cn->f[i]->datnam)
-     FREE(filename);
     e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
-    break;  
+    break;
    }
   }
   if (i <= 0)
@@ -4750,8 +4733,6 @@ int e_show_error(int n, FENSTER *f)
    }
    if (i <= 0)
    {
-    if (filename != cn->f[1]->datnam)
-     FREE(filename);
     char *where = e_err_locate_file(cn, err_li[n].file);
 
     if (!where)
@@ -4765,8 +4746,6 @@ int e_show_error(int n, FENSTER *f)
    }
   }
  }
- else if (filename != f->datnam)
-  FREE(filename);
  b = e_window_text(cn->f[cn->mxedt]);
  /* a line past the end of the file lands on its last row: the owner clamps */
  e_buffer_cursor_set(b, err_li[n].line - 1, 0);
@@ -5304,22 +5283,15 @@ int e_check_c_file(char *name)
 static void e_chk_save_if_open(char *file, ECNT *cn)
 {
  int i;
- char *p;
+ int whole_path = (file[0] == DIRC);
 
  for (i = cn->mxedt; i > 0; i--)
  {
-  if (file[0] == DIRC)
-   p = e_mkfilename(cn->f[i]->dirct, cn->f[i]->datnam);
-  else
-   p = cn->f[i]->datnam;
-  if (!strcmp(p, file) && cn->f[i]->save)
+  if (e_window_is_path(cn->f[i], file, whole_path) && cn->f[i]->save)
   {
    e_save(cn->f[i]);
-   if (p != cn->f[i]->datnam) FREE(p);
    break;
   }
-  if (p != cn->f[i]->datnam)
-   FREE(p);
  }
 }
 
@@ -7794,21 +7766,21 @@ static int e_p_message_now(char *str, FENSTER *f, int sw)
   ;
  if (i == 0)
  {
-  if (e_edit(cn, "Messages"))
+  f = e_window_pane_open(cn, WPE_PANE_MESSAGES);
+  if (f == NULL)
    return(-1);
-  else
-   i = cn->mxedt;
  }
  else
-  e_position_messages_window(cn->f[i], cn);
-
- f = cn->f[i];
+ {
+  f = cn->f[i];
+  e_position_messages_window(f, cn);
+ }
 
 /* b - buffer */
- b = e_window_text(cn->f[i]);
+ b = e_window_text(f);
 
 /* s - content of window */
- s = e_window_screen(cn->f[i]);
+ s = e_window_screen(f);
 
  e_view_append_wrapped(b, str);
 
@@ -7833,30 +7805,25 @@ static int e_p_message_now(char *str, FENSTER *f, int sw)
  return(0);
 }
 
-/* Append a line to a window identified by NAME (creating it the first time),
-   like e_d_p_message but for any window -- e.g. a dedicated "Metals Doctor"
-   window, so the server's Doctor report does not pollute "Messages".  Unlike
-   the Messages window this is a plain editor window (no bottom-dock).  sw=1
-   surfaces it; sw=0 writes in the background. */
-int e_d_p_named(char *winname, char *str, FENSTER *f, int sw)
+/**
+ * e_view_append_line - Write one line at the end of a window the editor
+ * writes itself, and show it.
+ * @wf: the window; @str: the line, an empty one is ignored; @sw: 1 to
+ * repaint the whole desk and surface the window, 0 to repaint only it.
+ * Return: 0.
+ *
+ * What the user gets: the language server's Doctor report and the assistant's
+ * lines come into their own window as they are written, scrolled to the end,
+ * without a key of the user's; the window that is asked is the one written, so
+ * a file of the user's that carries the same name is never written to.
+ */
+int e_view_append_line(FENSTER *wf, char *str, int sw)
 {
- ECNT *cn = f->ed;
- FENSTER *wf;
+ ECNT *cn = wf->ed;
  BUFFER *b;
- int i;
 
  if (str[0] == '\0')
   return(0);
- i = e_window_view_slot(cn, winname);
- if (i == 0)
- {
-  if (e_edit_view(cn, winname))
-   return(-1);
-  i = cn->mxedt;
-  e_buffer_mark_view(e_window_text(cn->f[i]));
-  cn->f[i]->ins = WPE_INS_READONLY;   /* a view the editor writes, never the user */
- }
- wf = cn->f[i];
  b = e_window_text(wf);
  e_view_append_wrapped(b, str);
  e_buffer_cursor_set(b, b->mxlines - 1, b->b.x);
@@ -7870,6 +7837,31 @@ int e_d_p_named(char *winname, char *str, FENSTER *f, int sw)
   e_refresh();
  }
  return(0);
+}
+
+/**
+ * e_d_p_named - Append a line to a report window named by its label,
+ * opening it the first time.
+ * @winname: the label; @str: the line; @f: any window of the desk; @sw: as
+ * e_view_append_line.
+ * Return: 0, or -1 when the window could not be opened.
+ *
+ * What the user gets: a dedicated "Metals Doctor" window, so the server's
+ * Doctor report does not pollute Messages.  A report is found by being one,
+ * never by its label alone, so a file of the user's of the same name is a
+ * file and stays untouched.  Unlike Messages it is a plain window without a
+ * dock.
+ */
+int e_d_p_named(char *winname, char *str, FENSTER *f, int sw)
+{
+ FENSTER *wf;
+
+ if (str[0] == '\0')
+  return(0);
+ wf = e_window_view_open(f->ed, WPE_PANE_REPORT, winname, NULL);
+ if (wf == NULL)
+  return(-1);
+ return(e_view_append_line(wf, str, sw));
 }
 
 #if MOUSE
@@ -10878,26 +10870,19 @@ int e_new_message(FENSTER *f)
   e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
   e_close_window(cn->f[cn->mxedt]);
  }
- if (e_edit(cn, "Messages"))
+ if (e_window_pane_open(cn, WPE_PANE_MESSAGES) == NULL)
   return(WPE_ESC);
  return(0);
 }
 
 int e_p_show_messages(FENSTER *f)
 {
- int i;
+ FENSTER *pane = e_window_pane_open(f->ed, WPE_PANE_MESSAGES);
 
- for (i = f->ed->mxedt; i > 0; i--)
-  if (e_window_pane(f->ed->f[i]) == WPE_PANE_MESSAGES)
-  {
-   e_switch_window(f->ed->edt[i], f->ed->f[f->ed->mxedt]);
-   break;
-  }
- if (i <= 0 && e_edit(f->ed, "Messages"))
- {
+ if (pane == NULL)
   return(-1);
- }
- f = f->ed->f[f->ed->mxedt];
+ e_window_raise(f->ed, pane);       /* the user asked to see it */
+ f = pane;
  if (e_window_text(f)->mxlines == 1 && wpe_row_len(e_window_text(f), 0) == 0)
  {
   e_ins_nchar(e_window_text(f), e_window_screen(f), "No Messages", 0, 0, 11);

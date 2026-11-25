@@ -465,54 +465,102 @@ static void e_edit_refuse_file(ECNT *cn, FENSTER *f, FILE *fp)
  e_say_nomem_until_key("opening the file");
 }
 
-/* What e_edit opens: a file the user edits, or one of the views below. */
-#define E_EDIT_A_FILE 0
+/* What the old numbering of a window's kind meant to the open: a window that
+   is no more than an editing window (a file, a view, a prompt) is 0, and the
+   four panes that carry their own bar, help text and buffer are 1 to 4. */
+#define E_EDIT_PLAIN 0
+#define E_EDIT_HELP 1
+#define E_EDIT_MESSAGES 2
+#define E_EDIT_WATCHES 3
+#define E_EDIT_STACK 4
 
-/* The bit of e_we_sw that `-pm` sets: the file named next is read as messages. */
-#define E_EDIT_SW_PARSE_MESSAGES 8
+/* A pane that keeps the mode character the desk gives a new window. */
+#define E_PANE_KEEP_DTMD (-1)
+
+/* Where a pane docks when it is opened. */
+typedef enum {
+ E_DOCK_NONE,        /* where the last text window is, like a file */
+ E_DOCK_MESSAGES,    /* the strip along the bottom, Messages and Watches */
+ E_DOCK_STACK,       /* the corner the debugger's call stack takes */
+ E_DOCK_ASSISTANT    /* the strip along the bottom, beside Messages */
+} EditDock;
+
+/* What a window of one kind is when it is opened.  The one table: the kind
+   of a window decides all of it, never the title the window carries. */
+typedef struct {
+ const char *title;   /* NULL: the title is the label (a labelled view) or the file */
+ int ins;             /* the typing mode: WPE_INS_READONLY, or 1 to type */
+ int hlp;             /* the index of the help line in e_hlp_str */
+ WOPT **blst;         /* the bottom bar, NULL for the editor's own */
+ int nblst;           /* how many entries that bar has */
+ int plain;           /* E_EDIT_PLAIN, or the pane's own number */
+ int dtmd;            /* the mode character, or E_PANE_KEEP_DTMD */
+ EditDock dock;       /* where the window docks */
+ int is_view;         /* its text is a view: no undo, no modified mark */
+ int not_a_file;      /* its title is a label: no file is behind it */
+} EditPaneSpec;
+
+extern WOPT *eblst, *hblst, *mblst, *dblst;
+extern char *e_hlp_str[];
+
+#define E_EDIT_BAR_ENTRIES 7       /* the entries of the editor's own bar */
+#define E_EDIT_MESSAGES_BAR_ENTRIES 8
+#define E_HELP_LINE_EDIT 0          /* e_hlp_str: the editor's own line */
+#define E_HELP_LINE_WATCHES 1
+#define E_HELP_LINE_STACK 2
+#define E_HELP_LINE_MESSAGES 3
+#define E_HELP_LINE_HELP 25
+
+/* The table, indexed by WpePane.  A pane's row takes the values the open used
+   to give a window of that name; nothing about how a pane looks or what keys
+   it takes changed by moving them here. */
+static const EditPaneSpec e_pane_spec[] = {
+ /* FILE */      { NULL, 1, E_HELP_LINE_EDIT, NULL, E_EDIT_BAR_ENTRIES, E_EDIT_PLAIN, E_PANE_KEEP_DTMD, E_DOCK_NONE, 0, 0 },
+ /* MESSAGES */  { "Messages", WPE_INS_READONLY, E_HELP_LINE_MESSAGES, &mblst, E_EDIT_MESSAGES_BAR_ENTRIES, E_EDIT_MESSAGES, E_PANE_KEEP_DTMD, E_DOCK_MESSAGES, 1, 0 },
+ /* WATCHES */   { "Watches", WPE_INS_READONLY, E_HELP_LINE_WATCHES, &dblst, E_EDIT_BAR_ENTRIES, E_EDIT_WATCHES, E_PANE_KEEP_DTMD, E_DOCK_MESSAGES, 1, 0 },
+ /* STACK */     { "Stack", WPE_INS_READONLY, E_HELP_LINE_STACK, &dblst, E_EDIT_BAR_ENTRIES, E_EDIT_STACK, E_PANE_KEEP_DTMD, E_DOCK_STACK, 1, 0 },
+ /* HELP */      { "Help", WPE_INS_READONLY, E_HELP_LINE_HELP, &hblst, E_EDIT_BAR_ENTRIES, E_EDIT_HELP, DTMD_HELP, E_DOCK_NONE, 1, 0 },
+ /* CLIPBOARD */ { BUFFER_NAME, 1, E_HELP_LINE_EDIT, NULL, E_EDIT_BAR_ENTRIES, E_EDIT_PLAIN, E_PANE_KEEP_DTMD, E_DOCK_NONE, 1, 0 },
+ /* ASSISTANT */ { WPE_PANE_ASSISTANT_TITLE, WPE_INS_READONLY, E_HELP_LINE_EDIT, NULL, E_EDIT_BAR_ENTRIES, E_EDIT_PLAIN, E_PANE_KEEP_DTMD, E_DOCK_ASSISTANT, 1, 1 },
+ /* REPORT */    { NULL, WPE_INS_READONLY, E_HELP_LINE_EDIT, NULL, E_EDIT_BAR_ENTRIES, E_EDIT_PLAIN, E_PANE_KEEP_DTMD, E_DOCK_NONE, 1, 1 },
+ /* COMPOSER */  { NULL, 1, E_HELP_LINE_EDIT, NULL, E_EDIT_BAR_ENTRIES, E_EDIT_PLAIN, E_PANE_KEEP_DTMD, E_DOCK_NONE, 0, 1 },
+ /* MANPAGE */   { NULL, WPE_INS_READONLY, E_HELP_LINE_EDIT, NULL, E_EDIT_BAR_ENTRIES, E_EDIT_PLAIN, DTMD_HELP, E_DOCK_NONE, 1, 1 }
+};
+
+/* The table has a row for every kind, in the order of the enum: the build
+   stops here when a kind is added without its row. */
+typedef char e_pane_table_has_a_row_per_kind
+ [(sizeof e_pane_spec / sizeof e_pane_spec[0] == WPE_PANE_MANPAGE + 1) ? 1 : -1];
 
 /**
- * e_edit_read_refused - The read of a window being opened was refused for
- * want of memory: decide whether the window opens.
- * @cn: the editor; @f: the window; @fp: its file; @ftype: E_EDIT_A_FILE, or
- * the view (Help, Messages, Watches, Stack) it is.
- *
- * A file the user edits does not open, so it cannot be saved over as an
- * empty window.  A view the editor writes itself (Messages, Watches, Stack)
- * opens empty, as before: its old file is not the user's text, and the
- * build and the debugger go on writing into it.  The status row says so.
- * Return: 1 when the window was dropped (e_edit returns -1), else 0.
+ * e_pane_of - The table row of a kind of window.
+ * @pane: the kind.
+ * Return: its row; a kind the table does not have is a file.
  */
-static int e_edit_read_refused(ECNT *cn, FENSTER *f, FILE *fp, int ftype)
+static const EditPaneSpec *e_pane_of(WpePane pane)
 {
- if (ftype == E_EDIT_A_FILE)
- {
-  e_edit_refuse_file(cn, f, fp);
-  return(1);
- }
- wpe_buffer_say_nomem(e_window_text(f), "reading the file");
- return(0);
+ if ((unsigned)pane >= sizeof e_pane_spec / sizeof e_pane_spec[0])
+  return(&e_pane_spec[WPE_PANE_FILE]);
+ return(&e_pane_spec[pane]);
 }
 
 /**
- * e_edit_reads_file - Does a window of this kind take its text from a file?
- * @ftype: E_EDIT_A_FILE, or the view (Help, Messages, Watches, Stack) it is.
- * Return: 1 when the window reads the file it is named after.
+ * e_edit_reads_text - Does a window of this ask take its text from a file?
+ * @ask: what the window is asked for.
+ * Return: 1 for a file of the user's, and for a view whose text the editor
+ * took from a file it chose (a manual page, `-pm`'s messages).
  *
- * What the user gets: a view the editor fills itself (the build's Messages,
- * the debugger's Watches and Stack) never shows a file of the same name
- * from the folder, such as a "Messages" of the user's own or one a cloned
- * project brought, and never parses it into the error list.  The one
- * exception is `-pm <file>`, where the user names the file to read as
- * messages on the command line.
+ * What the user gets: the build's Messages, the debugger's Watches and Stack
+ * and every pane never show a file of the same name from the folder, such as
+ * a "Messages" of the user's own or one a cloned project brought, and never
+ * parse it into the error list.  What a view shows from a file it was told,
+ * by its source.
  */
-static int e_edit_reads_file(int ftype)
+static int e_edit_reads_text(const WpeWindowAsk *ask)
 {
-#ifdef PROG
- if (e_we_sw & E_EDIT_SW_PARSE_MESSAGES)
+ if (ask->pane == WPE_PANE_FILE)
   return(1);
-#endif
- return(ftype == E_EDIT_A_FILE);
+ return(ask->source != NULL);
 }
 
 /**
@@ -536,11 +584,10 @@ static void e_edit_drop_fresh_line(FENSTER *f)
 /**
  * e_edit_open_refused - Did the read owner refuse the file of a window being
  * opened, so that the window must not open?
- * @ftype: E_EDIT_A_FILE, or the view (Help, Messages, Watches, Stack) it is;
- * @view: a window the editor writes itself, which reads no file;
+ * @reads: the window takes its text from a file (e_edit_reads_text);
  * @why: the owner's outcome of the open, nothing set when it succeeded or
  * was not tried.
- * Return: 1 for a file the user edits that the owner will not let us read.
+ * Return: 1 for a file that the owner will not let us read.
  *
  * A missing file is not a refusal: the window opens empty and the first Save
  * creates the file.  Any other refusal (a file closed to reading, a name
@@ -548,9 +595,9 @@ static void e_edit_drop_fresh_line(FENSTER *f)
  * show none of the file's text, and a Save over it would destroy the file,
  * so nothing opens.
  */
-static int e_edit_open_refused(int ftype, int view, const WpeReadOutcome *why)
+static int e_edit_open_refused(int reads, const WpeReadOutcome *why)
 {
- if (view || ftype != E_EDIT_A_FILE)
+ if (!reads)
   return(0);
  return(why->why != WPE_READ_DONE && !wpe_read_outcome_missing(why));
 }
@@ -604,106 +651,47 @@ static void e_edit_take_file_state(FENSTER *f, const WpeReadOutcome *read)
 }
 
 /**
- * e_edit_open - The one body of opening an edit window.
- * @cn: the editor; @filename: the window's name or file;
- * @view: 1 for a window the editor writes itself (the assistant's pane, a
- * composer, a named report): named like a file, never read from the disk;
- * @why: gets the owner's outcome when the file was refused (a closed file, a
- * pipe, a device), nothing set (why DONE) when the editor refused for its
- * own reason and already said it (too many windows, no memory), or when the
- * window opened; NULL when the caller does not want it.
- * Return: 0 when the window opened or was already open, -1 when it did not.
- *
- * Nothing is said here for a refusal of the file: the entries below decide
- * who speaks, so a caller with a loop of its own (the debugger's stops, the
- * assistant's list of files) is not stopped by a box for each file.  The file
- * is read through the read owner, so a pipe or a device the user names on
- * File > Open or the command line is refused with its kind and the editor
- * never waits on it.
+ * e_edit_ask_path - The path a FILE ask names, "" when it names none.
+ * @ask: what is asked for.
+ * Return: the path the user gave, or "" for a new unnamed file.
  */
-static int e_edit_open(ECNT *cn, char *filename, int view, WpeReadOutcome *why)
+static const char *e_edit_ask_path(const WpeWindowAsk *ask)
 {
- extern char *e_hlp_str[];
- extern WOPT *eblst, *hblst, *mblst, *dblst;
- extern WOPT *eblst_lsp;                 /* editor bar variant for LSP-backed files */
- extern const char *e_lsp_server_label(FENSTER *);  /* non-NULL => file has a server */
-#ifdef WPE_AI
- extern WOPT *eblst_ai;                  /* editor bar variant while AI is enabled */
- extern WOPT *eblst_lspai;               /* combined bar: LSP server + AI both on   */
- extern int e_ai_bar_wanted(void);       /* AI enabled AND programming mode        */
-#endif
- FILE *fp = NULL;
- FENSTER *f, *fo;
- char *complete_fname, *path, *file;
- int ftype = 0, i, j, st = 0;
- WpeReadOutcome read_why;       /* what the read owner said of the file */
- WpeReadAsk ask = WPE_READ_ASK_LOAD("file");
- struct stat buf[1];
- BUFFER *new_text;               /* the text this window is given */
- SCHIRM *new_screen;             /* its view state */
- WpePane pane = WPE_PANE_FILE;   /* which pane, by the intent that opens it */
+ return(ask->name ? ask->name : "");
+}
 
- memset(&read_why, 0, sizeof read_why);
- e_edit_outcome_set_errno(why, 0);
- /* Check to see if the file is already opened BD */
- WpeFilenameToPathFile(filename, &path, &file);
- /* Should check for error here */
- for (i = cn->mxedt; i >= 0; i--)
- {
-  if (e_window_title_is(cn->f[i], file) &&
-    (strcmp(cn->f[i]->dirct, path) == 0))
-  {
-   e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
-   WpeFree(path);
-   WpeFree(file);
-   return(0);
-  }
- }
+/**
+ * e_edit_syntax_name - The name a new window's syntax is chosen by.
+ * @ask: what the window is asked for; @file: its title.
+ * Return: the path the user gave for a file of his, the title for any other
+ * window.
+ *
+ * What the user gets: a file is highlighted by the ending of its own name,
+ * and a window the editor opens itself is never taken for a source file by
+ * the word it is called.
+ */
+static const char *e_edit_syntax_name(const WpeWindowAsk *ask, const char *file)
+{
+ if (ask->pane == WPE_PANE_FILE)
+  return(e_edit_ask_path(ask));
+ return(file);
+}
 
- if (cn->mxedt >= MAXEDT)
- {
-  e_error(e_msg[ERR_MAXWINS], 0, cn->fb);
-  return(e_edit_stop_before_window(path, file, why, 0));
- }
- if (!view && stat(filename, buf) == 0 && S_ISDIR(buf->st_mode))
-  return(e_edit_stop_before_window(path, file, why, EISDIR));
- for (j = 1; j <= MAXEDT; j++)
- {
-  for (i = 1; i <= cn->mxedt && cn->edt[i] != j; i++);
-  if( i > cn->mxedt) break;
- }
- cn->curedt=j;
- (cn->mxedt)++;
- cn->edt[cn->mxedt]=j;
- e_window_stack_changed();       /* a window came to the front */
+/**
+ * e_edit_place_window - Give a new window the place it opens at.
+ * @cn: the editor; @f: the window, still under construction (only its
+ * pointer is trusted); @spec: the table row of its kind.
+ *
+ * What the user gets: a file opens one step down and right of the text window
+ * under it, Messages and Watches dock along the bottom so the compiler's
+ * output never hides the text being edited, and the call stack takes its own
+ * corner.  Where a window docks comes from its kind in the table, never from
+ * its title.  Only the programming modes dock.
+ */
+static void e_edit_place_window(ECNT *cn, FENSTER *f, const EditPaneSpec *spec)
+{
+ int i, j, st = 0;
 
- if ((f = (FENSTER *)MALLOC(sizeof(FENSTER))) == NULL)
-  e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
- wpe_write_identity_forget(&f->file_id);
- wpe_write_copies_forget(&f->copies);
- f->no_file = 0;
- e_window_held_forget(f);    /* the kind's owner makes its block on first hold */
- if (view)
-  wpe_write_window_set_not_a_file(f);    /* its title is a label: no file behind it */
-
- f->fb = cn->fb;
- cn->f[cn->mxedt] = f;
-
- new_text = MALLOC(sizeof(BUFFER));
- if (new_text == NULL)
-  e_error(e_msg[ERR_LOWMEM], 1, f->fb);
- new_screen = MALLOC(sizeof(SCHIRM));
- if (new_screen == NULL)
-  e_error(e_msg[ERR_LOWMEM], 1, f->fb);
- if (!e_window_hold_text(f, new_text, new_screen))
-  e_error(e_msg[ERR_LOWMEM], 1, f->fb);
- e_window_screen(f)->block_open = 0;
-#ifdef DEBUGGER
- e_window_screen(f)->brp = NULL;
-#endif
- e_buffer_init(e_window_text(f), cn, f, cn->maxcol, E_BUFFER_HISTORY_FULL);
- if (e_window_text(f)->mxlines != 1)
-  e_error(e_msg[ERR_LOWMEM], 1, f->fb);
 #ifdef PROG
  for (i = cn->mxedt-1;
    i > 0 && (e_window_pane(cn->f[i]) == WPE_PANE_MESSAGES || !DTMD_ISTEXT(cn->f[i]->dtmd) ||
@@ -714,18 +702,20 @@ static int e_edit_open(ECNT *cn, char *filename, int view, WpeReadOutcome *why)
   if (e_window_pane(cn->f[j]) == WPE_PANE_STACK)
    st = 1;
 #else
+ (void)spec;
+ (void)j;
+ (void)st;
  for(i = cn->mxedt-1; i > 0 && !DTMD_ISTEXT(cn->f[i]->dtmd); i--)
   ;
 #endif
 #ifdef PROG
  if (WpeIsProg())
  {
-  if ((e_we_sw & 8) || !strcmp(filename, "Messages") ||
-    !strcmp(filename, "Watches"))
+  if (spec->dock == E_DOCK_MESSAGES)
   {
    e_position_messages_window(f, cn);
   }
-  else if (!strcmp(filename, "Stack"))
+  else if (spec->dock == E_DOCK_STACK)
   {
    f->a = e_set_pnt(2*MAXSCOL/3, 1);
    f->e = e_set_pnt(MAXSCOL-1, 2*MAXSLNS/3);
@@ -762,6 +752,231 @@ static int e_edit_open(ECNT *cn, char *filename, int view, WpeReadOutcome *why)
   f->a.x = f->e.x - 26;
  if(NUM_LINES_ON_SCREEN < 3)
   f->a.y = f->e.y - 3;
+}
+
+/**
+ * e_edit_apply_pane - Give a new window what its kind is: its typing mode,
+ * help line and bottom bar.
+ * @f: the window; @spec: the table row of its kind.
+ *
+ * What the user gets: Messages, Watches, Stack and Help are locked and show
+ * their own help line and bar, a file and a prompt take the editor's.  The
+ * values are those the open gave each of these windows by its name before
+ * the kind was asked for; a file keeps the editor's own.
+ */
+static void e_edit_apply_pane(FENSTER *f, const EditPaneSpec *spec)
+{
+ if (spec->dtmd != E_PANE_KEEP_DTMD)
+  f->dtmd = spec->dtmd;
+ f->ins = spec->ins;
+ f->hlp_str = e_hlp_str[spec->hlp];
+ f->nblst = spec->nblst;
+ f->blst = spec->blst ? *spec->blst : eblst;
+}
+
+/**
+ * e_edit_read_path - The file a new window is read from.
+ * @ask: what the window is asked for; @f: the window, titled.
+ * Return: the path, for the caller to free, or NULL when the window reads
+ * nothing.
+ *
+ * A file of the user's is read from where it is.  A view reads only the file
+ * it was told to show; the title it carries is a label and is never read as
+ * a path, so a file in the folder with the same name is not shown in it.
+ */
+static char *e_edit_read_path(const WpeWindowAsk *ask, FENSTER *f)
+{
+ if (ask->pane == WPE_PANE_FILE)
+  return(e_mkfilename(f->dirct, f->datnam));
+ if (ask->source != NULL)
+  return(WpeStrdup(ask->source));
+ return(NULL);
+}
+
+/**
+ * e_edit_parse_messages - The text of a view that was read from a file is
+ * the build's own messages: list its errors.
+ * @f: the window; @pane: its kind.
+ *
+ * What the user gets: `wpe -pm build.log` opens the log as the Messages window
+ * with every compiler line it holds an entry of the error list, so F4 and
+ * Enter go to the lines it names.
+ */
+static void e_edit_parse_messages(FENSTER *f, WpePane pane)
+{
+#ifdef PROG
+ if (WpeIsProg() && pane == WPE_PANE_MESSAGES)
+ {
+  e_buffer_mark_view(e_window_text(f));    /* compiler lines appended later stay one row each */
+  e_make_error_list(f);
+  f->ins = WPE_INS_READONLY;
+ }
+#else
+ (void)f;
+ (void)pane;
+#endif
+}
+
+/**
+ * e_edit_dock_after_open - Dock a window that docks only once it is whole.
+ * @cn: the editor; @f: the window just opened; @spec: the table row of its kind.
+ *
+ * What the user gets: the assistant's pane opens along the bottom, beside
+ * Messages when that is open, and not over the file being edited.  Docking
+ * moves the editor's bottom edge, so every window's save-under is dropped
+ * before the repaint, or a stale one would restore an old strip as a black
+ * column down the left edge.
+ */
+static void e_edit_dock_after_open(ECNT *cn, FENSTER *f, const EditPaneSpec *spec)
+{
+ if (spec->dock != E_DOCK_ASSISTANT)
+  return;
+ e_position_ai_window(f, cn);
+ e_free_all_pics(cn);
+ e_rep_win_tree(cn);
+}
+
+/**
+ * e_edit_names_of - The folder and the title of the window an ask is for.
+ * @ask: what is asked for; @path, @file: receive the folder and the title,
+ * both for the caller to free.
+ * Return: 1, or 0 when the names could not be made (nothing is left to free).
+ *
+ * A file of the user's is split at its last '/', as it always was.  The
+ * editor's own windows are in the folder the editor is in, and their title is
+ * the pane's own or the view's label as it was given: a label is never a
+ * path, so a '/' in it stays.
+ */
+static int e_edit_names_of(const WpeWindowAsk *ask, char **path, char **file)
+{
+ const EditPaneSpec *spec = e_pane_of(ask->pane);
+
+ if (ask->pane == WPE_PANE_FILE)
+ {
+  WpeFilenameToPathFile((char *)(ask->name ? ask->name : ""), path, file);
+  return(*file != NULL && *path != NULL);
+ }
+ *path = WpeGetCurrentDir(WpeEditor);
+ if (spec->title != NULL)
+  *file = WpeStrdup(spec->title);
+ else
+  *file = e_window_label_title(ask->name ? ask->name : "");
+ if (*path != NULL && *file != NULL)
+  return(1);
+ WpeFree(*path);
+ WpeFree(*file);
+ *path = *file = NULL;
+ return(0);
+}
+
+/**
+ * e_window_raise - Bring a window that is open to the front.
+ * @cn: the desktop; @w: the window, as e_window_find answered it.
+ *
+ * What the user gets: asking for something that is already open (a file, a
+ * manual page) shows that window, whichever other windows are on top.
+ */
+void e_window_raise(ECNT *cn, FENSTER *w)
+{
+ int i;
+
+ for (i = cn->mxedt; i >= 1; i--)
+  if (cn->f[i] == w)
+  {
+   e_switch_window(cn->edt[i], cn->f[cn->mxedt]);
+   return;
+  }
+}
+
+/**
+ * e_edit_open - The second half of opening an edit window: the window is
+ * built, once e_window_open found there was none.
+ * @cn: the editor; @ask: what the window is asked for; @path, @file: its
+ * folder and its title, taken over (freed here when no window opens);
+ * @why: gets the owner's outcome when the file was refused (a closed file, a
+ * pipe, a device), nothing set (why DONE) when the editor refused for its
+ * own reason and already said it (too many windows, no memory), or when the
+ * window opened; NULL when the caller does not want it.
+ * Return: 0 when the window opened, -1 when it did not.
+ *
+ * Nothing is said here for a refusal of the file: the entries below decide
+ * who speaks, so a caller with a loop of its own (the debugger's stops, the
+ * assistant's list of files) is not stopped by a box for each file.  The file
+ * is read through the read owner, so a pipe or a device the user names on
+ * File > Open or the command line is refused with its kind and the editor
+ * never waits on it.  What kind of window it is comes from the ask and only
+ * from it: the tag is written here, once, from the kind asked for, so no
+ * name decides it.
+ */
+static int e_edit_open(ECNT *cn, const WpeWindowAsk *ask, char *path, char *file,
+                       WpeReadOutcome *why)
+{
+ extern WOPT *eblst_lsp;                 /* editor bar variant for LSP-backed files */
+ extern const char *e_lsp_server_label(FENSTER *);  /* non-NULL => file has a server */
+#ifdef WPE_AI
+ extern WOPT *eblst_ai;                  /* editor bar variant while AI is enabled */
+ extern WOPT *eblst_lspai;               /* combined bar: LSP server + AI both on   */
+ extern int e_ai_bar_wanted(void);       /* AI enabled AND programming mode        */
+#endif
+ const EditPaneSpec *spec = e_pane_of(ask->pane);
+ const int reads = e_edit_reads_text(ask);
+ FILE *fp = NULL;
+ FENSTER *f, *fo;
+ char *complete_fname;
+ int i, j;
+ WpeReadOutcome read_why;       /* what the read owner said of the file */
+ WpeReadAsk read_ask = WPE_READ_ASK_LOAD("file");
+ struct stat buf[1];
+ BUFFER *new_text;               /* the text this window is given */
+ SCHIRM *new_screen;             /* its view state */
+
+ memset(&read_why, 0, sizeof read_why);
+ if (cn->mxedt >= MAXEDT)
+ {
+  e_error(e_msg[ERR_MAXWINS], 0, cn->fb);
+  return(e_edit_stop_before_window(path, file, why, 0));
+ }
+ if (ask->pane == WPE_PANE_FILE && stat(e_edit_ask_path(ask), buf) == 0 &&
+     S_ISDIR(buf->st_mode))
+  return(e_edit_stop_before_window(path, file, why, EISDIR));
+ for (j = 1; j <= MAXEDT; j++)
+ {
+  for (i = 1; i <= cn->mxedt && cn->edt[i] != j; i++);
+  if( i > cn->mxedt) break;
+ }
+ cn->curedt=j;
+ (cn->mxedt)++;
+ cn->edt[cn->mxedt]=j;
+ e_window_stack_changed();       /* a window came to the front */
+
+ if ((f = (FENSTER *)MALLOC(sizeof(FENSTER))) == NULL)
+  e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
+ wpe_write_identity_forget(&f->file_id);
+ wpe_write_copies_forget(&f->copies);
+ f->no_file = 0;
+ e_window_held_forget(f);    /* the kind's owner makes its block on first hold */
+ if (spec->not_a_file)
+  wpe_write_window_set_not_a_file(f);    /* its title is a label: no file behind it */
+
+ f->fb = cn->fb;
+ cn->f[cn->mxedt] = f;
+
+ new_text = MALLOC(sizeof(BUFFER));
+ if (new_text == NULL)
+  e_error(e_msg[ERR_LOWMEM], 1, f->fb);
+ new_screen = MALLOC(sizeof(SCHIRM));
+ if (new_screen == NULL)
+  e_error(e_msg[ERR_LOWMEM], 1, f->fb);
+ if (!e_window_hold_text(f, new_text, new_screen))
+  e_error(e_msg[ERR_LOWMEM], 1, f->fb);
+ e_window_screen(f)->block_open = 0;
+#ifdef DEBUGGER
+ e_window_screen(f)->brp = NULL;
+#endif
+ e_buffer_init(e_window_text(f), cn, f, cn->maxcol, E_BUFFER_HISTORY_FULL);
+ if (e_window_text(f)->mxlines != 1)
+  e_error(e_msg[ERR_LOWMEM], 1, f->fb);
+ e_edit_place_window(cn, f, spec);
  f->winnum = cn->curedt;
  f->dtmd = cn->dtmd;
  f->ins = 1;
@@ -775,7 +990,7 @@ static int e_edit_open(ECNT *cn, char *filename, int view, WpeReadOutcome *why)
  e_window_text(f)->fb = f->fb;
  f->fd.dirct = NULL;
  if (WpeIsProg())
-  e_add_synt_tl(filename, f);
+  e_add_synt_tl((char *)e_edit_syntax_name(ask, file), f);
  else
  {
   f->c_st = NULL;
@@ -804,18 +1019,20 @@ static int e_edit_open(ECNT *cn, char *filename, int view, WpeReadOutcome *why)
  f->dirct = path;
  for (i = 0; i < E_MARKERS; i++)
   e_buffer_marker_unset(e_window_text(f), i);
- if (cn->mxedt == 0)    /*  Clipboard  */
+ /* What this window is, by the kind it was asked for: never by the title it
+    carries, so a file the user named "Messages" stays the user's writable
+    file.  The one place a window's tag is written. */
+ e_window_set_pane(f, ask->pane);
+ if (ask->pane == WPE_PANE_CLIPBOARD)
  {
   cn->curedt=0;
   cn->edt[cn->mxedt]=0;  /* the clipboard's slot, and mxedt is 0: not the stack top */
-  WpeFree(file);
-  file = f->datnam = WpeStrdup(BUFFER_NAME);
+  f->datnam = file;
 #ifdef UNIX
   f->filemode = 0600;
 #endif
   e_buffer_mark_view(e_window_text(f));
   e_line_make_hard_empty(e_window_text(f), 0);
-  e_window_set_pane(f, WPE_PANE_CLIPBOARD);
   return(0);
  }
  if (strcmp(file,"") == 0)
@@ -827,61 +1044,14 @@ static int e_edit_open(ECNT *cn, char *filename, int view, WpeReadOutcome *why)
  {
   f->datnam = file;
  }
- if (strcmp(filename, "Help") == 0)
- {
-  complete_fname = e_lib_file(HELP_FILE);
-  f->dtmd = DTMD_HELP;
-  f->ins = WPE_INS_READONLY;
-  f->hlp_str = e_hlp_str[25];
-  f->nblst = 7;
-  f->blst = hblst;
-  ftype = 1;
-  pane = WPE_PANE_HELP;
- }
- else
-  complete_fname = e_mkfilename(f->dirct, f->datnam);
-#ifdef PROG
- if (WpeIsProg())
- {
-  if (!strcmp(filename, "Messages"))
-  {
-   f->ins = WPE_INS_READONLY;
-   f->hlp_str = e_hlp_str[3];
-   f->nblst = 8;
-   f->blst = mblst;
-   ftype = 2;
-   pane = WPE_PANE_MESSAGES;
-  }
-  else if (!strcmp(filename, "Watches"))
-  {
-   f->ins = WPE_INS_READONLY;
-   f->hlp_str = e_hlp_str[1];
-   f->blst = dblst;
-   ftype = 3;
-   pane = WPE_PANE_WATCHES;
-  }
-  else if (!strcmp(filename, "Stack"))
-  {
-   f->ins = WPE_INS_READONLY;
-   f->hlp_str = e_hlp_str[2];
-   f->blst = dblst;
-   ftype = 4;
-   pane = WPE_PANE_STACK;
-  }
- }
-#endif
- /* The pane this window is, by the intent that opened it: the requested name
-    above decided it, never the title the window ends up carrying, so a file
-    the user named "Messages" stays the user's writable file. */
- if (view && pane == WPE_PANE_FILE)
-  pane = WPE_PANE_REPORT;   /* a window the editor writes, not a file of the user */
- e_window_set_pane(f, pane);
+ e_edit_apply_pane(f, spec);
+ complete_fname = e_edit_read_path(ask, f);
 #ifdef DEBUGGER
  /* A plain editor window (not Help/Messages/Watches/Stack) holding a file a
     language server understands gets the LSP bottom bar -- the contextual "LSP
     Menu" entry -- so the IDE actions are discoverable.  Per-window: switching to
     a non-LSP file shows its normal bar, exactly the desired contextual behaviour. */
- if (ftype == 0 && e_lsp_bar_wanted(f))
+ if (spec->plain == E_EDIT_PLAIN && e_lsp_bar_wanted(f))
   f->blst = eblst_lsp;
 #endif
 #ifdef WPE_AI
@@ -894,7 +1064,7 @@ static int e_edit_open(ECNT *cn, char *filename, int view, WpeReadOutcome *why)
     flips in Options > AI.  Programming mode only (wpe, xwpe): under we Alt-G is
     Go to Line and a click on the entry would open nothing, so the plain editor
     keeps its classic bar. */
- if (ftype == 0 && e_ai_bar_wanted()) {
+ if (spec->plain == E_EDIT_PLAIN && e_ai_bar_wanted()) {
 #ifdef DEBUGGER
   if (e_lsp_bar_wanted(f))
    f->blst = eblst_lspai;               /* LSP + AI: show both hints */
@@ -905,15 +1075,13 @@ static int e_edit_open(ECNT *cn, char *filename, int view, WpeReadOutcome *why)
 #endif
  /* An editor bar of the programming modes names F9 and has one entry more;
     the window paints and takes clicks on as many entries as its bar has. */
- if (ftype == 0 && !e_give_debug_bar(f))
+ if (spec->plain == E_EDIT_PLAIN && !e_give_debug_bar(f))
   e_use_editor_bar(f, f->blst);
- if (ftype != 0)
-  e_buffer_mark_view(e_window_text(f));       /* Help, Messages, Watches and Stack */
- if (!view && e_edit_reads_file(ftype))
- {
-  fp = wpe_read_stream_open(complete_fname, &ask, &read_why);
- }
- if (e_edit_open_refused(ftype, view, &read_why))
+ if (spec->is_view && !reads)
+  e_buffer_mark_view(e_window_text(f));       /* a view the editor writes itself */
+ if (reads)
+  fp = wpe_read_stream_open(complete_fname, &read_ask, &read_why);
+ if (e_edit_open_refused(reads, &read_why))
  {
   FREE(complete_fname);
   e_edit_drop_window(cn, f);
@@ -921,10 +1089,10 @@ static int e_edit_open(ECNT *cn, char *filename, int view, WpeReadOutcome *why)
    *why = read_why;
   return(-1);
  }
- if (fp != NULL && access(complete_fname, 2) != 0)
+ if (fp != NULL && ask->pane == WPE_PANE_FILE && access(complete_fname, 2) != 0)
   f->ins = WPE_INS_READONLY;
 #ifdef UNIX
- if (fp != NULL)
+ if (fp != NULL && ask->pane == WPE_PANE_FILE)
   e_edit_take_file_state(f, &read_why);
  else
  {
@@ -934,46 +1102,30 @@ static int e_edit_open(ECNT *cn, char *filename, int view, WpeReadOutcome *why)
 #endif
  FREE(complete_fname);
 
- if (fp != NULL && ftype != 1 && e_edit_read_file(f, fp) != E_BUFFER_OK &&
-     e_edit_read_refused(cn, f, fp, ftype))
+ if (fp != NULL && e_edit_read_file(f, fp) != E_BUFFER_OK)
+ {
+  e_edit_refuse_file(cn, f, fp);
   return(-1);
- if (fp != NULL && ftype != 1)
+ }
+ if (fp != NULL)
  {
   e_edit_drop_fresh_line(f);
   if (fclose(fp) != 0)
    e_error(e_msg[ERR_FCLOSE], 0, cn->fb);
   if (cn->dtmd == DTMD_HELP)
    cn->dtmd = DTMD_NORMAL;
-#ifdef PROG
-  if (WpeIsProg())
-  {
-   if (e_we_sw & E_EDIT_SW_PARSE_MESSAGES)
-   {
-    /* the window's name is "Noname" or the file given: shorter than the word */
-    WpeFree(f->datnam);
-    f->datnam = WpeStrdup("Messages");
-    /* `-pm` asked for the build's own pane: that intent, and not the title
-       the window now carries, is what makes it one. */
-    e_window_set_pane(f, WPE_PANE_MESSAGES);
-    e_we_sw &= ~E_EDIT_SW_PARSE_MESSAGES;
-   }
-   if (e_window_pane(f) == WPE_PANE_MESSAGES)
-   {
-    e_buffer_mark_view(e_window_text(f));    /* compiler lines appended later stay one row each */
-    e_make_error_list(f);
-    f->ins = WPE_INS_READONLY;
-   }
-  }
-#endif
+  if (spec->is_view)
+   e_buffer_mark_view(e_window_text(f));
+  e_edit_parse_messages(f, ask->pane);
  }
  else
  {
   e_line_make_hard_empty(e_window_text(f), 0);
-  if (ftype == E_EDIT_A_FILE)
+  if (spec->plain == E_EDIT_PLAIN)
    e_eol_buffer_fresh(e_window_text(f), cn);       /* a new file takes the default style */
  }
 #ifdef PROG
- if (ftype == 2)
+ if (spec->plain == E_EDIT_MESSAGES && !reads)
  {
   if(e_p_m_buffer != NULL)
   {
@@ -991,7 +1143,7 @@ static int e_edit_open(ECNT *cn, char *filename, int view, WpeReadOutcome *why)
   }
  }
 #ifdef DEBUGGER
- if (ftype == 3)
+ if (spec->plain == E_EDIT_WATCHES)
  {
   if (e_p_w_buffer != NULL)
   {
@@ -1028,25 +1180,145 @@ static int e_edit_open(ECNT *cn, char *filename, int view, WpeReadOutcome *why)
   e_lsp_open_eager(f);
  }
 #endif
+ e_edit_dock_after_open(cn, f, spec);
  return(0);
 }
 
 /**
+ * e_window_open - Open the window an ask names: the one that is open, or a
+ * new one on top.
+ * @cn: the editor; @ask: what the window is asked for; @why: as e_edit_open.
+ * Return: 0 when the window is open on top, -1 when it did not open.
+ *
+ * What the user gets: one function decides which window a request means, and
+ * it asks the kind, not the title.  A file named like one of the editor's own
+ * windows opens as the user's file, takes his typing and is saved, and the
+ * editor's own window of that name is a window of its own.  A file already
+ * open is raised and not opened twice, a new unnamed file is always a new
+ * window, and a window of the editor's the user asks for again is raised.
+ */
+int e_window_open(ECNT *cn, const WpeWindowAsk *ask, WpeReadOutcome *why)
+{
+ WpeWindowAsk named = *ask;
+ FENSTER *found;
+ char *path, *file;
+
+ e_edit_outcome_set_errno(why, 0);
+ if (!e_edit_names_of(ask, &path, &file))
+  return(e_edit_stop_before_window(path, file, why, 0));
+ if (ask->pane == WPE_PANE_FILE)
+ {
+  named.name = file;
+  named.dir = path;
+ }
+ found = e_window_find(cn, &named);
+ if (found != NULL)
+ {
+  e_window_raise(cn, found);
+  WpeFree(path);
+  WpeFree(file);
+  return(0);
+ }
+ return(e_edit_open(cn, ask, path, file, why));
+}
+
+/**
+ * e_window_pane_open - The window of a pane of the editor's own, opened when
+ * it is missing.
+ * @cn: the editor; @pane: which pane (Messages, Watches, Stack, Help, the
+ * assistant's pane).
+ * Return: the pane, or NULL when it could not be opened.
+ *
+ * What the user gets: the build's output, the debugger's watches and stack,
+ * the help viewer and the assistant's pane each have one window, found by
+ * what it is.  The window found is not raised; one made is on top and docked
+ * where its kind docks.
+ */
+FENSTER *e_window_pane_open(ECNT *cn, WpePane pane)
+{
+ WpeWindowAsk ask;
+ FENSTER *at;
+
+ memset(&ask, 0, sizeof ask);
+ ask.pane = pane;
+ at = e_window_find(cn, &ask);
+ if (at != NULL)
+  return(at);
+ if (e_window_open(cn, &ask, NULL) != 0)
+  return(NULL);
+ return(cn->f[cn->mxedt]);
+}
+
+/**
+ * e_window_view_open - A window the editor writes itself, named by a label,
+ * opened when it is missing.
+ * @cn: the editor; @kind: WPE_PANE_REPORT, WPE_PANE_COMPOSER or
+ * WPE_PANE_MANPAGE; @label: its name, kept as given; @source: the file whose
+ * text it shows, or NULL.
+ * Return: the window (a composer is always a new one), or NULL when it could
+ * not be opened.
+ *
+ * What the user gets: a file or a folder of the same name in the current
+ * folder is never read into the window and never refuses it, and a report
+ * that is open goes on being written to, whatever the files around it are
+ * called.
+ */
+FENSTER *e_window_view_open(ECNT *cn, WpePane kind, const char *label, const char *source)
+{
+ WpeWindowAsk ask;
+ FENSTER *at;
+
+ memset(&ask, 0, sizeof ask);
+ ask.pane = kind;
+ ask.name = label;
+ ask.source = source;
+ at = e_window_find(cn, &ask);
+ if (at != NULL)
+  return(at);
+ if (e_window_open(cn, &ask, NULL) != 0)
+  return(NULL);
+ return(cn->f[cn->mxedt]);
+}
+
+/**
+ * e_edit_outcome - Open an edit window on a file, and leave the words about
+ * a refusal of the file to the caller.
+ * @cn: the editor; @filename: the file; @why: gets the owner's outcome of
+ * the refusal, its why DONE when the window opened or the editor already
+ * said why.
+ * Return: 0 when the window opened or was already open, -1 when it did not.
+ *
+ * For a caller that has a report of its own and a loop that a box would
+ * stop: the debugger on every stop in a file, the assistant applying a list
+ * of files.  wpe_read_reason gives the words of the refusal.  The name is a
+ * file of the user's whatever it is called.
+ */
+int e_edit_outcome(ECNT *cn, char *filename, WpeReadOutcome *why)
+{
+ WpeWindowAsk ask;
+
+ memset(&ask, 0, sizeof ask);
+ ask.pane = WPE_PANE_FILE;
+ ask.name = filename;
+ return(e_window_open(cn, &ask, why));
+}
+
+/**
  * e_edit - Open an edit window on a file, the way File > Open does.
- * @cn: the editor; @filename: the file, or one of the views Help, Messages,
- * Watches, Stack.
+ * @cn: the editor; @filename: the file the user named, whatever it is called.
  * Return: 0 when the window opened or was already open, -1 when it did not.
  *
  * What the user gets: a file the editor will not read (closed to reading,
  * under a file, a loop of links, a folder, a pipe, a device) opens no window
  * and a box names the file and the reason ("it is a pipe"), so no empty
  * window invites a Save over the real file and the editor never waits for a
- * pipe nobody writes to.  A file that does not exist opens as a new file.
+ * pipe nobody writes to.  A file that does not exist opens as a new file.  A
+ * file named Messages, Help or Buffer is the user's file like any other.
  */
 int e_edit(ECNT *cn, char *filename)
 {
  WpeReadOutcome why;
- int ret = e_edit_open(cn, filename, 0, &why);
+ int ret = e_edit_outcome(cn, filename, &why);
 
  if (ret != 0 && why.why != WPE_READ_DONE)
   e_say_read_refused(cn->f[cn->mxedt], "file", filename, &why);
@@ -1054,34 +1326,46 @@ int e_edit(ECNT *cn, char *filename)
 }
 
 /**
- * e_edit_outcome - Open an edit window like e_edit, and leave the words about
- * a refusal of the file to the caller.
- * @cn: the editor; @filename: the file; @why: gets the owner's outcome of
- * the refusal, its why DONE when the window opened or the editor already
- * said why.
- * Return: 0 or -1, as e_edit.
+ * e_edit_new_unnamed - Open a new, unnamed edit window: File > New.
+ * @cn: the editor.
+ * Return: 0 when the window opened, -1 when it did not.
  *
- * For a caller that has a report of its own and a loop that a box would
- * stop: the debugger on every stop in a file, the assistant applying a list
- * of files.  wpe_read_reason gives the words of the refusal.
+ * What the user gets: each File > New is a window of its own, even when an
+ * earlier unnamed window is still open.
  */
-int e_edit_outcome(ECNT *cn, char *filename, WpeReadOutcome *why)
+int e_edit_new_unnamed(ECNT *cn)
 {
- return(e_edit_open(cn, filename, 0, why));
+ WpeWindowAsk ask;
+
+ memset(&ask, 0, sizeof ask);
+ ask.pane = WPE_PANE_FILE;
+ ask.name = "";
+ return(e_window_open(cn, &ask, NULL));
 }
 
 /**
- * e_edit_view - Open a window the editor writes itself, named like a file.
- * @cn: the editor; @name: the window's name (the assistant's pane, a
- * composer, a named report).
- * Return: 0 when the window opened or was already open, -1 when it did not.
+ * e_open_messages_file - Open the file named after -pm as the build's
+ * Messages window.
+ * @cn: the editor; @name: the file whose text is read as compiler messages.
+ * Return: 0 when it opened, -1 when it did not.
  *
- * What the user gets: a file or a folder of the same name in the current
- * folder is never read into the window nor refuses it.
+ * What the user gets: `wpe -pm build.log` shows the log as Messages with its
+ * errors listed, so F4 goes to the lines the compiler named.  A file that
+ * cannot be read says why, as File > Open does.
  */
-int e_edit_view(ECNT *cn, char *name)
+int e_open_messages_file(ECNT *cn, char *name)
 {
- return(e_edit_open(cn, name, 1, NULL));
+ WpeWindowAsk ask;
+ WpeReadOutcome why;
+ int ret;
+
+ memset(&ask, 0, sizeof ask);
+ ask.pane = WPE_PANE_MESSAGES;
+ ask.source = name;
+ ret = e_window_open(cn, &ask, &why);
+ if (ret != 0 && why.why != WPE_READ_DONE)
+  e_say_read_refused(cn->f[cn->mxedt], "file", name, &why);
+ return(ret);
 }
 
 /* The line that names a paint the screen's owner could not keep. */

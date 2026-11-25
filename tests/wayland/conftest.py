@@ -606,6 +606,13 @@ def xwpe(xserver, gui_owner, tmp_path, request):
     if name is not None:
         src = tmp_path / name
         src.write_text(source or "")
+    # XWPE_TEST_ALSO: files of the user's, {name: text}, opened before the
+    # program, so a row can name one after one of the editor's own windows.
+    # They are window 1 up, and the program is on top of them.
+    also = param.pop("XWPE_TEST_ALSO", None) or {}
+    for also_name, also_text in also.items():
+        (tmp_path / also_name).write_text(also_text)
+    also_args = ["./" + also_name for also_name in also]
     # XWPE_TEST_HELP: the help file F1 opens, which the editor finds in its
     # HOME (the row's folder) through XWPE_LIB.  XWPE_TEST_OPTIONS is the
     # xwperc that goes with it, so a long page row stays one row.
@@ -632,7 +639,7 @@ def xwpe(xserver, gui_owner, tmp_path, request):
     request.addfinalizer(lambda: _wait_dump_stopped(dump))
     _force_output_size()
     try:
-        owned = launch_editor(gui_owner, tmp_path, request, [str(src)], param,
+        owned = launch_editor(gui_owner, tmp_path, request, also_args + [str(src)], param,
                               detached_from_terminal=detached,
                               terminal_fd=pty_slave)
     finally:

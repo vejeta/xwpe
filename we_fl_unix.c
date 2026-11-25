@@ -1738,7 +1738,7 @@ int WpeHandleFileManager(ECNT * cn)
         {
           /* the window's own name, kept until the file is written */
           dtp = fe->dirct;
-          ftp = fe->datnam;
+          ftp = e_window_title_detach(fe);
           WpeFilenameToPathFile(filen, &fe->dirct, &fe->datnam);
           WpeSaveAsSettleName(fe, dtp, ftp, wpe_write_save(fe, WPE_WRITE_THEN_NAME_KEPT, ftp));
         }
@@ -3936,11 +3936,37 @@ static void e_man_give_up(const char *tstr)
   WpeMouseRestoreShape();
 }
 
+/**
+ * e_man_page_shown - Raise the manual page of this word when it is open.
+ * @cn: the editor; @word: what the user asked for, as given.
+ * Return: 1 when the page was open and is now in front, else 0.
+ *
+ * What the user gets: asking for the same word twice shows the page that is
+ * there and does not run man again.  The page is found by being a manual page
+ * of that word, so a file of the user's that happens to carry the word's name
+ * is never shown in its place.
+ */
+static int e_man_page_shown(ECNT *cn, const char *word)
+{
+  WpeWindowAsk ask;
+  FENSTER *shown;
+
+  memset(&ask, 0, sizeof ask);
+  ask.pane = WPE_PANE_MANPAGE;
+  ask.name = word;
+  shown = e_window_find(cn, &ask);
+  if(shown == NULL)
+    return(0);
+  e_window_raise(cn, shown);
+  return(1);
+}
+
 int e_ed_man(char *str, FENSTER * f)
 {
   char            tstr[WPE_PATH_SIZE], msg[WPE_PATH_MSG_MAX];
   char            cc, hstr[E_MAN_WORD_MAX], nstr[E_MAN_SECT_MAX];
-  int             mdsv = f->ed->dtmd, bg, i, j = 0, opened;
+  int             bg, i, j = 0;
+  FENSTER        *page;
   BUFFER         *b;
 
   if(!str)
@@ -3948,14 +3974,8 @@ int e_ed_man(char *str, FENSTER * f)
   while(isspace(*str++));
   if(!*--str)
     return(0);
-  for(i = f->ed->mxedt; i >= 0; i--)
-  {
-    if(e_window_title_is(f->ed->f[i], str))
-    {
-      e_switch_window(f->ed->edt[i], f);
-      return(0);
-    }
-  }
+  if(e_man_page_shown(f->ed, str))
+    return(0);
   WpeMouseChangeShape(WpeWorkingShape);
   if(e_man_outfile(tstr, sizeof tstr, str) != 0)
   {
@@ -3974,18 +3994,14 @@ int e_ed_man(char *str, FENSTER * f)
       return(0);
     }
     chmod(tstr, 0400);
-    f->ed->dtmd = DTMD_HELP;
-    opened = e_edit(f->ed, tstr);
-    f->ed->dtmd = mdsv;
-    if(opened != 0)
+    page = e_window_view_open(f->ed, WPE_PANE_MANPAGE, str, tstr);
+    if(page == NULL)
     {
       e_man_give_up(tstr);       /* no page window: the user's window is untouched */
       return(0);
     }
-    f = f->ed->f[f->ed->mxedt];
-    b = e_window_text(f);
-    e_buffer_mark_view(b);
-    f->ins = WPE_INS_READONLY;     /* a man page is closed whoever runs it */
+    f = page;
+    b = e_window_text(f);          /* a man page is a closed view whoever runs it */
     if(b->mxlines > 1 || !nstr[1])
       break;
     nstr[1] = '\0';

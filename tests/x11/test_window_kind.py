@@ -237,3 +237,95 @@ def test_x11_a_build_that_ends_behind_a_menu_is_not_read_as_the_project_windows_
         "xwpe wrote a crash report: %s" % crash_reports(xwpe)
     sources_unchanged(xwpe, "the replayed build's end wrote a letter",
                       source=SLOW_SOURCE)
+
+
+# --- K23, K24: a file the user named like one of the editor's own windows ---
+
+USER_NOTES = "the user's own notes\n"
+# A source that does not build: F9 puts the compiler's lines in Messages.
+FAILING_SOURCE = "int main(void)\n{\n    undef_x = 1;\n    return 0;\n}\n"
+REPLY_MARK = "PANEREPLY"
+PANE_OPENS_PIXELS = 2000     # a docked pane opening changes more than this
+CHAT_ENV = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock",
+            "XWPE_AI_MOCK_REPLY": REPLY_MARK}
+
+
+def user_file(xwpe, name):
+    return os.path.join(workdir(xwpe), name)
+
+
+def wait_for_a_pane(xwpe, before):
+    """Wait until the screen has changed as a docked pane opening changes it."""
+    assert wait_for(lambda: changed_pixels(before, xwpe.screenshot()) >
+                    PANE_OPENS_PIXELS, "the pane to open", proc=xwpe.proc), \
+        "no pane opened"
+    wait_until_still(xwpe)
+
+
+def wait_until_still(xwpe):
+    """Wait until two screenshots in a row are the same: the editor has
+    painted what it was going to."""
+    last = [xwpe.screenshot()]
+
+    def still():
+        now = xwpe.screenshot()
+        same = changed_pixels(last[0], now) == 0
+        last[0] = now
+        return same
+
+    assert wait_for(still, "the screen to settle", proc=xwpe.proc), \
+        "the screen never settled"
+
+
+def users_window_takes_a_letter(xwpe):
+    """Window 1 is the user's file: it comes to the front, takes a letter,
+    and Save, then Save All, write what is open."""
+    xwpe.key("alt+1", delay=1.0)
+    xwpe.key("X", delay=0.8)
+    xwpe.key("F2", delay=1.0)
+    xwpe.key("alt+f", delay=0.8)
+    xwpe.key("l", delay=1.0)
+
+
+def file_text(path):
+    with open(path) as fh:
+        return fh.read()
+
+
+@pytest.mark.parametrize("xwpe", [{"XWPE_TEST_SOURCE": FAILING_SOURCE,
+                                   "XWPE_TEST_ALSO": {"Messages": USER_NOTES}}],
+                         indirect=True)
+def test_x11_a_build_leaves_a_file_named_messages_to_its_user(xwpe):
+    """`xwpe ./Messages t.c` with a t.c that does not build: F9 puts the
+    compiler's lines in the pane, and the user's file named Messages takes a
+    letter and saves it without them.  Red on the base, where the pane
+    request takes the user's window for the pane."""
+    before = xwpe.screenshot()
+    xwpe.key("F9", delay=1.0)
+    wait_for_a_pane(xwpe, before)
+    users_window_takes_a_letter(xwpe)
+    assert xwpe.proc.poll() is None, "xwpe died building with a file named Messages"
+    assert file_text(user_file(xwpe, "Messages")) == "X" + USER_NOTES, \
+        "the build wrote into the user's file named Messages"
+    assert file_text(xwpe.srcfile) == FAILING_SOURCE
+
+
+@pytest.mark.parametrize("xwpe", [dict(CHAT_ENV, XWPE_TEST_ALSO={"AI": USER_NOTES})],
+                         indirect=True)
+def test_x11_a_chat_turn_leaves_a_file_named_ai_to_its_user(xwpe):
+    """`xwpe ./AI t.c`, one chat turn on the mock backend: the transcript goes
+    to the assistant's pane and the user's file named AI keeps its text and
+    takes a letter.  Red on the base, where the pane request takes the user's
+    window, locks it and writes the transcript into it."""
+    before = xwpe.screenshot()
+    xwpe.key("alt+g", delay=0.8)
+    xwpe.key("a", delay=1.0)
+    xwpe.key("h", "i", delay=0.4)
+    xwpe.key("Return", delay=1.5)
+    wait_for_a_pane(xwpe, before)
+    xwpe.key("Escape", delay=0.8)
+    users_window_takes_a_letter(xwpe)
+    assert xwpe.proc.poll() is None, "xwpe died on a chat turn with a file named AI"
+    assert file_text(user_file(xwpe, "AI")) == "X" + USER_NOTES, \
+        "the transcript was written into, or the save refused for, the user's file named AI"
+    assert file_text(xwpe.srcfile) == DEFAULT_SOURCE

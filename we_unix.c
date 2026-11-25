@@ -1738,6 +1738,34 @@ void end_repaint()
    e_refresh();
 }
 
+/* The suffix an emergency copy of a window's text carries on disk. */
+#define E_RECOVER_SUFFIX ".ESV"
+
+/**
+ * e_recover_is_clipboard_copy - Is this emergency copy the clipboard's?
+ * @esv_name: the name of the copy on disk, as the folder lists it.
+ * Return: 1 for the copy the clipboard left (its name is the clipboard's with
+ * the emergency suffix), else 0.
+ *
+ * What the user gets: after a crash, `wpe -r` puts the clipboard's text back
+ * into the clipboard and opens a window for every other copy.  The question
+ * is about a file on disk, so it is asked of the name on disk and not of a
+ * window the editor has just made from it.  A file of the user's named
+ * Buffer leaves the same copy name and is told from the clipboard's by
+ * nothing on disk: that is the write owner's to settle.
+ */
+static int e_recover_is_clipboard_copy(const char *esv_name)
+{
+ const char *base = strrchr(esv_name, '/');
+ size_t len, clip = strlen(BUFFER_NAME);
+
+ base = base ? base + 1 : esv_name;
+ len = strlen(base);
+ return(len == clip + strlen(E_RECOVER_SUFFIX) &&
+        !strncmp(base, BUFFER_NAME, clip) &&
+        !strcmp(base + clip, E_RECOVER_SUFFIX));
+}
+
 int e_recover(ECNT *cn)
 {
  struct dirfile *files;
@@ -1758,7 +1786,7 @@ int e_recover(ECNT *cn)
      there is one. */
   wpe_write_identity_set(&f->copies.esv, &f->file_id);
   (void)wpe_write_identity_of_name(f->dirct, f->datnam, &f->file_id);
-  if (e_window_title_is(f, BUFFER_NAME))
+  if (e_recover_is_clipboard_copy(files->name[i]))
   {
    b = e_window_text(cn->f[cn->mxedt]);
    e_buffer_mark_set(b, E_BUFFER_MARK_END, b->mxlines - 1,

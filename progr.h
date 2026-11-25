@@ -149,7 +149,7 @@ const char *e_prj_program(void);
 /* The open file as the program-name owner (we_progname.h) reads it: the
    debugger names the program it loads and the binary it compiles through
    the same adapter F9 and Run use. */
-void e_prog_source_of(WpeProgramSource *s, FENSTER *f, const struct e_s_prog *entry,
+void e_prog_source_of(WpeProgramSource *s, const char *name, const struct e_s_prog *entry,
                       const char *executable, const char *exedir);
 int e_run_options(FENSTER *f);
 int e_run_c_options(FENSTER *f);
@@ -159,6 +159,7 @@ void e_messages_scroll_to_bottom(FENSTER *f);
 int e_p_show_messages(FENSTER *f);
 int e_p_show_program_output(FENSTER *f);
 int e_d_p_message(char *str, FENSTER *f, int sw);
+int e_view_append_line(FENSTER *wf, char *str, int sw);
 int e_install(FENSTER *f);
 int e_exec_make(FENSTER *f);
 int e_run_sh(FENSTER *f);

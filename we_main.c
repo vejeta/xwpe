@@ -384,10 +384,32 @@ char *e_xdg_config_file_or_none(void)
  return WpeStrdup("");
 }
 
+/**
+ * e_open_named_arg - Open one file named on the command line.
+ * @cn: the editor; @name: the file; @as_messages: set by `-pm`, taken back
+ * here once the file it names is opened.
+ *
+ * What the user gets: `wpe -pm build.log` shows the log as the Messages window
+ * with its compiler lines listed as errors; every other name is a file of
+ * his own, whatever it is called.  Only the programming modes read a log as
+ * messages.
+ */
+static void e_open_named_arg(ECNT *cn, char *name, int *as_messages)
+{
+ if (*as_messages && WpeIsProg())
+ {
+  *as_messages = 0;
+  e_open_messages_file(cn, name);
+  return;
+ }
+ e_open_named_file(cn, name);
+}
+
 int main(int argc, char **argv)
 {
  FARBE *fb;
  ECNT *cn;
+ int as_messages = 0;     /* `-pm` was given: the next file is read as messages */
  int i, err = 0, g[4];
  int so = 0, sd = 1;
  char *tp;
@@ -499,7 +521,7 @@ int main(int argc, char **argv)
 #ifdef WPE_AI
  wpe_ai_config_init();  /* bake defaults + apply XWPE_AI_* env over the config */
 #endif
- e_edit(cn, ""); /* Clipboard (must first read option file) */
+ e_window_pane_open(cn, WPE_PANE_CLIPBOARD); /* Clipboard (must first read option file) */
  if ((tp = getenv("INFOPATH")) != NULL)
  {
   if (info_file) FREE(info_file);
@@ -535,11 +557,11 @@ int main(int argc, char **argv)
    if (*(argv[i]+1) == 's' && *(argv[i]+2) == 'f') i++;
    else if (e_keys_arg_takes_value(argv[i])) i++;   /* the style, not a file */
 #if defined(UNIX) && defined(PROG)
-   else if (*(argv[i]+1) == 'p' && *(argv[i]+2) == 'm') e_we_sw |= 8;
+   else if (*(argv[i]+1) == 'p' && *(argv[i]+2) == 'm') as_messages = 1;
 #endif
    continue;
   }
-  else e_open_named_file(cn, argv[i]);
+  else e_open_named_arg(cn, argv[i], &as_messages);
  }
  if (cn->mxedt == 0) WpeManager(cn->f[cn->mxedt]);
  do

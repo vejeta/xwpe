@@ -2267,6 +2267,36 @@ static e_win_kind e_win_kind_of(FENSTER *f)
  return(WIN_DOCUMENT);
 }
 
+/**
+ * e_ed_rahmen_listed - Draw the frame of a window that holds no text, with
+ * its title in the top row.
+ * @f: the File Manager, a list window or a dropdown; @sw: as e_ed_rahmen.
+ *
+ * What the user sees: the window's own words in its top bar, and none when
+ * it has none.  The title goes to the frame as the owner's text handed
+ * straight in; a dropdown takes the frame colours of an open box.
+ */
+static void e_ed_rahmen_listed(FENSTER *f, int sw)
+{
+ int frame, shadow;
+
+ if (f->dtmd == DTMD_FILEDROPDOWN)
+ {
+  frame = f->fb->er.fb;
+  shadow = f->fb->es.fb;
+ }
+ else
+ {
+  frame = f->fb->nr.fb;
+  shadow = f->fb->ne.fb;
+ }
+ if (e_window_title_text(f)[0])
+  e_std_rahmen(f->a.x, f->a.y, f->e.x, f->e.y, (char *)e_window_title_text(f),
+    sw, frame, shadow);
+ else
+  e_std_rahmen(f->a.x, f->a.y, f->e.x, f->e.y, NULL, sw, frame, shadow);
+}
+
 /*    Frame for edit window   */
 void e_ed_rahmen(FENSTER *f, int sw)
 {
@@ -2277,13 +2307,7 @@ void e_ed_rahmen(FENSTER *f, int sw)
 
  if (!DTMD_ISTEXT(f->dtmd))
  {
-  if (f->datnam[0]) header = f->datnam;
-  if (f->dtmd == DTMD_FILEDROPDOWN)
-   e_std_rahmen(f->a.x, f->a.y, f->e.x, f->e.y, header, sw, f->fb->er.fb,
-     f->fb->es.fb);
-  else
-   e_std_rahmen(f->a.x, f->a.y, f->e.x, f->e.y, header, sw, f->fb->nr.fb,
-     f->fb->ne.fb);
+  e_ed_rahmen_listed(f, sw);
   if (f->winnum < 10 && f->winnum >= 0)
    e_pr_char(f->e.x-7, f->a.y, '0' + f->winnum, f->fb->nr.fb);
   else if (f->winnum >= 0)

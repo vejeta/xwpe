@@ -32,11 +32,7 @@
 #include <time.h>
 #include <errno.h>
 
-/* e_d_p_named is defined in we_prog.c; declared here in case progr.h predates it. */
-int e_d_p_named(char *winname, char *str, FENSTER *f, int sw);
-
-#define AI_PANE_NAME  "AI"
-#define AI_CTX_MAX    16000     /* cap the current-file context we send        */
+#define AI_CTX_MAX   16000     /* cap the current-file context we send        */
 /* The bytes one request may hold, in the input row, the composer and the
    prompt field alike: room for a pasted function or a log excerpt.  A buffer
    that holds a request is AI_PROMPT_BUF, the limit plus its terminator. */
@@ -637,7 +633,7 @@ static void ai_pane_put1(FENSTER *f, const char *line, int role, int surface)
     Edit/Plan/Agent output opened as a full window over the file being edited. */
  if (!ai_pane_take_first_row(wf, line, role)) {
   before = e_window_text(wf)->mxlines;
-  e_d_p_named(AI_PANE_NAME, (char *)line, f, surface ? 1 : 0);
+  e_view_append_line(wf, (char *)line, surface != 0);
   ai_roles_set_appended(e_window_text(wf), before, role);
  }
  ai_pane_show(wf);
@@ -1126,32 +1122,7 @@ static void ai_chat_finish(ai_chat_session *s)
  */
 static FENSTER *ai_pane_win(FENSTER *f)
 {
- ECNT *cn = f->ed;
- int i;
- for (i = cn->mxedt; i > 0 && e_window_pane(cn->f[i]) != WPE_PANE_ASSISTANT; i--)
-  ;
- if (i == 0) {
-  if (e_edit_view(cn, AI_PANE_NAME))
-   return NULL;
-  i = cn->mxedt;
-  /* The pane is a view the assistant writes, like Messages: its rows carry no
-     Undo history and no modified mark, while the user's block marks stay so
-     a copy from the pane works. */
-  e_buffer_mark_view(e_window_text(cn->f[i]));
-  /* Mark it a tool/output pane like Messages (ins == 8, backs no file): it is
-     never offered for saving on quit and wears the gear marker, not the padlock.
-     The chat input still works -- e_ai_chat_key consumes those keys before the
-     ins-gated editing path (we_edit.c). */
-  cn->f[i]->ins = WPE_INS_READONLY;
-  e_window_set_pane(cn->f[i], WPE_PANE_ASSISTANT);   /* a dialog over it centres on the screen */
-  e_position_ai_window(cn->f[i], cn);   /* dock at the bottom, not over the editor */
-  /* Free every window's save-under before the relayout repaint: docking moves
-     the editor's bottom edge, and a stale save-under would restore an old strip
-     (a black column down the left edge).  This is what e_switch_window does. */
-  e_free_all_pics(cn);
-  e_rep_win_tree(cn);
- }
- return cn->f[i];
+ return e_window_pane_open(f->ed, WPE_PANE_ASSISTANT);
 }
 
 /**
@@ -4603,8 +4574,8 @@ static int e_ai_compose(char *out, size_t outsz, const char *title,
  FENSTER *w;
  char *text;
 
- if (e_edit_view(cn, (char *)title)) return 0; /* scratch window, empty buffer   */
- w = cn->f[cn->mxedt];
+ w = e_window_view_open(cn, WPE_PANE_COMPOSER, title, NULL);
+ if (!w) return 0;                           /* scratch window, empty buffer   */
  if (seed && *seed)                          /* carry over what was already typed */
   ai_compose_show_seed(w, seed);
  text = ai_compose_run(cn, w);
@@ -4693,9 +4664,8 @@ static int e_ai_prompt1(char *out, const char *title, FENSTER *f)
    return 0;
   /* Spell out the two-step exit: in a full editor Esc reads as "cancel", but
      here it FINISHES the prompt and a Send? Y/N confirm follows -- say so.
-     The name is the scratch window's file name, so it holds no slash: e_edit
-     would split it at the slash into a directory and a file, and the frame
-     would then show the resolved directory path with the hint cut off. */
+     The title is the window's label, kept whole whatever it holds, so the
+     frame shows the hint in full. */
   snprintf(ct, sizeof ct, "%.40s  [Esc = done, then Y sends, N cancels]", title);
   r = e_ai_compose(out, AI_PROMPT_BUF, ct, seed, f);
   free(seed);
@@ -14370,21 +14340,37 @@ static int ai_build_command(FENSTER *f, char *out, size_t sz)
 }
 
 /**
+ * ai_fix_build_say_none - Put the "no build command" line in the assistant
+ * pane.
+ * @f: the window it was asked from.
+ * @name: what the line calls that window: its file name, or a stand-in.
+ *
+ * The user reads which file has no build command and where to set one.
+ */
+static void ai_fix_build_say_none(FENSTER *f, const char *name)
+{
+ char line[AI_CHAT_NOTE_MAX];
+
+ snprintf(line, sizeof line, AI_FIX_BUILD_NONE_FMT, name);
+ wpe_ai_trace("fix-build none for %s", name);
+ ai_pane(f, line, AI_ROLE_MACHINERY, 1);
+}
+
+/**
  * ai_fix_build_refuse - Say that Build & fix has nothing to run for this file.
  * @f: the window it was asked from.
  *
  * With no makefile and no compiler check for the file's type, a build
  * command would only fail, and the agent would chase that failure; the user
  * reads which file has no build command and where to set one, and nothing
- * runs.
+ * runs.  A window without a file name is called "this window".
  */
 static void ai_fix_build_refuse(FENSTER *f)
 {
- char line[AI_CHAT_NOTE_MAX];
- const char *name = (f->datnam && f->datnam[0]) ? f->datnam : "this window";
- snprintf(line, sizeof line, AI_FIX_BUILD_NONE_FMT, name);
- wpe_ai_trace("fix-build none for %s", name);
- ai_pane(f, line, AI_ROLE_MACHINERY, 1);
+ if (e_window_title_text(f)[0])
+  ai_fix_build_say_none(f, e_window_title_text(f));
+ else
+  ai_fix_build_say_none(f, "this window");
 }
 
 /* e_ai_fix_build - run the build, and if it fails let the agent fix it in a loop:

@@ -64,7 +64,7 @@ int e_read_file_into(FILE *fp, BUFFER *b, int x, int y, int manpage, WpeEolInfo 
 /*   Open new edit window   */
 int e_new(FENSTER *f)
 {
- e_edit(f->ed, "");
+ e_edit_new_unnamed(f->ed);
  return(0);
 }
 
@@ -1627,6 +1627,7 @@ int e_help_loc(FENSTER *f, int sw)
  int i;
  char *tmp = NULL;
  struct help_ud *next;
+ FENSTER *help = NULL;
 
  if (!sw)
   tmp = e_hlp;
@@ -1634,17 +1635,20 @@ int e_help_loc(FENSTER *f, int sw)
  {
   if (e_window_pane(f->ed->f[i]) == WPE_PANE_HELP)
   {
+   help = f->ed->f[i];
    e_switch_window(f->ed->edt[i], f);
    if (ud_help && sw != ud_help->sw)
    {
-    e_close_window(f->ed->f[f->ed->mxedt]);
+    e_close_window(help);
     i = -1;
    }
    break;
   }
  }
  if (i < 0)
-  e_edit(f->ed, "Help");
+  help = e_window_pane_open(f->ed, WPE_PANE_HELP);
+ if (help == NULL)
+  return(0);                     /* no Help window: nothing to show it in */
  if ((tmp || sw) && (next = MALLOC(sizeof(struct help_ud))))
  {
   if (tmp)
@@ -1663,10 +1667,10 @@ int e_help_loc(FENSTER *f, int sw)
   ud_help = next;
  }
  if (sw)
-  e_read_xwpe_info(f->ed->f[f->ed->mxedt]);
+  e_read_xwpe_info(help);
  else
-  e_read_help(tmp, f->ed->f[f->ed->mxedt], 0);
- e_schirm(f->ed->f[f->ed->mxedt], 1);
+  e_read_help(tmp, help, 0);
+ e_schirm(help, 1);
  return(0);
 }
 

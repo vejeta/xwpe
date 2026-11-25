@@ -20,14 +20,19 @@ through a list's corner numbers taken for a row pointer.
 
 What the user gets once these rows are green: a command that works on text,
 asked of a window that has none, says "<Action> needs a text window" on the
-status row and changes nothing; and a key pressed after a build is handled
-by the window the user is looking at.
+status row and changes nothing; a key pressed after a build is handled
+by the window the user is looking at; and a file named like one of the
+editor's own windows (Messages, Watches, Stack, Help, Buffer, AI, Metals
+Doctor, a manual page) is the user's file, opened, typed in and saved as any
+other, while the editor's own window of that name is a window beside it (the
+rows from K23 on, which read the user's file back from the disk).
 
 Run: tests/.venv/bin/python -m pytest -v tests/test_window_kind.py
 """
 import os
 import re
 import subprocess
+import sys
 
 import pytest
 
@@ -635,7 +640,7 @@ PANE_NAMES = [
     pytest.param("Watches", id="Watches"),
     pytest.param("Stack", id="Stack"),
     pytest.param("Help", id="Help"),
-    pytest.param("Clipboard", id="Clipboard"),
+    pytest.param("Buffer", id="Buffer"),
     pytest.param("AI", id="AI"),
     pytest.param("Messages", id="Messages"),
 ]
@@ -927,3 +932,473 @@ def test_a_build_that_ends_while_the_composer_is_open_returns_to_the_composer(
         assert COMPOSER_TEXT + "z" in screen_text(w), \
             "the key after the build did not reach the composer:\n%s" % \
             screen_text(w)
+
+
+# --- K23 to K34: the window the editor opens for itself, and a user's file ---
+#
+# One request names its kind and one function finds or makes the window.  A
+# file the user names like one of the editor's own windows is the user's file
+# at every entry (the command line, File > Open, File > New and Save As), and
+# a pane the editor opens never takes a user's file for itself.  Every row
+# below drives the pane through its own command and reads the user's file
+# back from the disk, because what is lost when the two are mixed is the
+# file's text.
+
+ALT_H = "\033h"                  # the Help menu
+CTRL_F1 = "\033[11;5~"           # Help > Topic Search
+CTRL_INS = "\033[2;5~"           # copy the marked block
+SHIFT_INS = "\033[2;2~"          # paste
+SHIFT_RIGHT = "\033[1;2C"        # mark a character
+TOPIC_SEARCH = "t"               # Help > Topic Search
+BUILD_ERROR_WORD = "1 error"     # the count Messages ends a failed build of BUILD_SRC with
+BUILD_FAILED_WORD = "build failed"  # the line the base appends to a window it took for Messages
+HELP_PAGE_MARK = "Programming Environment"
+MAN_PAGE_MARK = "PRINTF"
+REPLY_MARK = "PANEREPLY"
+DEBUG_SOURCE = (
+    "#include <stdio.h>\n"
+    "int main(void)\n"
+    "{\n"
+    "  int x = 3;\n"
+    "  int y = x * x;\n"
+    "  printf(\"%d\\n\", y);\n"
+    "  return 0;\n"
+    "}\n"
+)
+DEBUG_BREAK_LINE = 4             # int x = 3;
+DEBUG_START_WAIT_S = 30
+# The user's file is open under p.c, so p.c opens one row down and right of
+# it, and the driver's mark_line (which counts rows from the top border of a
+# single window) reports the stopped line one row further down.
+CASCADE_ROWS_BELOW = 1
+DEBUG_STEP_WAIT_S = 10
+UNDEFINED_WATCH = "xyz"
+STACK_FRAME_MARK = "#0"          # the innermost frame, as gdb prints it
+GDB_INTERFACE_ENV = "XWPE_GDB_INTERFACE"   # which of gdb's two interfaces the debugger speaks
+GDB_INTERFACE = "cli"
+DOWN_KEY = "\033OB"
+CTRL_G_PREFIX = "\x07"
+
+
+def users_file(tmp_path, name, text=USER_NOTES):
+    """A file of the user's, named like one of the editor's own windows."""
+    (tmp_path / name).write_text(text)
+    return tmp_path / name
+
+
+def users_window_takes_a_letter(w):
+    """The user's own file is window 1: it comes to the front, takes a letter
+    and File > Save writes it.  The disk is what the rows read after."""
+    w.key(ALT_1, delay=0.8)
+    w.key("X", delay=0.5)
+    w.save()
+    w.key(ALT.FILE, "l", delay=0.8)      # File > Save aLl: any other window changed too
+
+
+def other_file_is_unchanged(tmp_path, name, text):
+    """The file the pane's own command ran from keeps its text on the disk
+    after Save All: a pane that wrote into it, in place of its own window,
+    would have changed it."""
+    assert (tmp_path / name).read_text() == text, \
+        "the pane wrote into %s instead of its own window" % name
+
+
+def wait_for_a_failed_build(w):
+    """Wait until the build of BUILD_SRC has said why it failed."""
+    assert wait_until(
+        w, lambda: BUILD_ERROR_WORD in screen_text(w) or
+        BUILD_FAILED_WORD in screen_text(w),
+        tmo=BUILD_WAIT_S, what="the build to say it failed"), screen_text(w)
+
+
+# K23
+def test_a_build_leaves_a_file_named_messages_to_its_user(tmp_path):
+    """`wpe ./Messages main.c` with a main.c that does not build: F9 puts the
+    compiler's lines in the pane the editor opens, and the user's own file
+    named Messages takes a letter and saves it without them.  On the base the
+    pane request takes the user's window for the pane, the build line is
+    appended to it and Save writes it."""
+    require("gcc")
+    notes = users_file(tmp_path, "Messages")
+    with session_in(tmp_path, filename=MAIN_C, seed=BUILD_SRC,
+                    args=("./Messages",)) as w:
+        w.key(F9, delay=0.6)
+        wait_for_a_failed_build(w)
+        users_window_takes_a_letter(w)
+        assert w.alive(), "the editor died building with a file named Messages"
+    assert notes.read_text() == "X" + USER_NOTES, \
+        "the build wrote into the user's file named Messages"
+    other_file_is_unchanged(tmp_path, MAIN_C, BUILD_SRC)
+
+
+# K24
+@pytest.mark.skipif(not assistant_in_the_build(),
+                    reason="wpe built without the assistant")
+def test_a_chat_turn_leaves_a_file_named_ai_to_its_user(tmp_path):
+    """`wpe ./AI main.c`, one chat turn on the mock backend: the transcript
+    goes to the assistant's own pane, and the user's file named AI stays
+    writable and keeps its text.  On the base the pane request takes the
+    user's window, locks it as the pane and writes the transcript into it."""
+    notes = users_file(tmp_path, "AI")
+    env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock",
+           "XWPE_AI_MOCK_REPLY": REPLY_MARK}
+    with session_in(tmp_path, args=("./AI",), env_extra=env) as w:
+        w.key(ALT.AI, "a", delay=0.8)
+        w.key("hi", delay=0.4)
+        w.key(ENTER, delay=1.2)
+        assert wait_screen(w, REPLY_MARK, tmo=OPEN_WAIT_S), screen_text(w)
+        w.key(ESC, delay=0.6)
+        users_window_takes_a_letter(w)
+        assert w.alive(), "the editor died on a chat turn with a file named AI"
+    assert notes.read_text() == "X" + USER_NOTES, \
+        "the transcript was written into, or the save was refused for, the " \
+        "user's file named AI"
+    other_file_is_unchanged(tmp_path, MAIN_C, SOURCE)
+
+
+# A language server that, once it has the file, pushes the Doctor report the
+# way Metals does (metals/executeClientCommand), so the editor writes it into
+# a window named "Metals Doctor".
+FAKE_DOCTOR_SERVER = r'''#!%(python)s -I
+import json, sys
+inp, out = sys.stdin.buffer, sys.stdout.buffer
+
+def send(obj):
+    body = json.dumps(obj).encode()
+    out.write(b"Content-Length: %%d\r\n\r\n" %% len(body) + body)
+    out.flush()
+
+def read():
+    head = b""
+    while b"\r\n\r\n" not in head:
+        ch = inp.read(1)
+        if not ch:
+            return None
+        head += ch
+    for line in head.split(b"\r\n"):
+        if line.lower().startswith(b"content-length:"):
+            return json.loads(inp.read(int(line.split(b":")[1])))
+    return None
+
+while True:
+    msg = read()
+    if msg is None:
+        break
+    method = msg.get("method")
+    if method == "exit":
+        break
+    if "id" in msg and method is not None:
+        result = {"capabilities": {}} if method == "initialize" else None
+        send({"jsonrpc": "2.0", "id": msg["id"], "result": result})
+    elif method == "textDocument/didOpen":
+        send({"jsonrpc": "2.0", "method": "metals/executeClientCommand",
+              "params": {"command": "metals-doctor-run",
+                         "arguments": ["<h1>%(report)s</h1><p>fine</p>"]}})
+        with open(%(sent)r, "w") as fh:
+            fh.write("sent")
+'''
+DOCTOR_SENT = "doctor.sent"       # written by the server once it pushed the report
+DOCTOR_SETTLE_S = 2.0             # the editor paints what it was pushed
+DOCTOR_TITLE = "Metals Doctor"
+DOCTOR_REPORT = "DOCTORREPORT"
+CLANGD_NAME = "clangd"
+
+
+def install_doctor_server(tmp_path):
+    """A clangd on the PATH of the editor that pushes the Doctor report."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    server = bindir / CLANGD_NAME
+    server.write_text(FAKE_DOCTOR_SERVER % {
+        "python": sys.executable, "report": DOCTOR_REPORT,
+        "sent": str(tmp_path / DOCTOR_SENT)})
+    server.chmod(0o755)
+    return {"PATH": "%s:%s" % (bindir, os.environ.get("PATH", ""))}
+
+
+# K25
+def test_a_pushed_report_leaves_a_file_named_metals_doctor_to_its_user(tmp_path):
+    """`wpe "./Metals Doctor" a.c`, the language server pushes its Doctor
+    report: the report goes to a window of its own, and the user's file of
+    that name keeps its text and takes a letter.  On the base the report is
+    written into the user's window (locked as a view) and Save writes it."""
+    notes = users_file(tmp_path, DOCTOR_TITLE)
+    env = install_doctor_server(tmp_path)
+    with session_in(tmp_path, filename="a.c", seed=SOURCE,
+                    args=("./" + DOCTOR_TITLE,), env_extra=env) as w:
+        w.key(ALT_Q, "e", delay=2.0)
+        assert wait_until(w, lambda: (tmp_path / DOCTOR_SENT).exists(),
+                          tmo=OPEN_WAIT_S, what="the server to push its report"), \
+            screen_text(w)
+        w.key(ESC, delay=DOCTOR_SETTLE_S)
+        users_window_takes_a_letter(w)
+        assert w.alive(), "the editor died on the pushed report"
+        titled = windows_titled(window_list_rows(w), DOCTOR_TITLE)
+        assert len(titled) == 2, \
+            "the report is not a window of its own:\n%s" % screen_text(w)
+    assert notes.read_text() == "X" + USER_NOTES, \
+        "the report was written into the user's file named Metals Doctor"
+    other_file_is_unchanged(tmp_path, "a.c", SOURCE)
+
+
+def debug_session(tmp_path, name):
+    """`wpe ./<name> p.c` with the debugger stopped at line DEBUG_BREAK_LINE
+    of p.c; returns the session after the stop."""
+    require("gcc", "gdb")
+    users_file(tmp_path, name)
+    return session_in(tmp_path, filename="p.c", seed=DEBUG_SOURCE,
+                      args=("./" + name,), wait=1.5,
+                      env_extra={GDB_INTERFACE_ENV: GDB_INTERFACE})
+
+
+def stop_at_the_breakpoint(w):
+    """A breakpoint on DEBUG_BREAK_LINE, Ctrl-G R, and the stop's mark."""
+    for _ in range(DEBUG_BREAK_LINE - 1):
+        w.key(DOWN_KEY, delay=0.1)
+    w.key(CTRL_G_PREFIX, "b", delay=0.4)
+    w.key(CTRL_G_PREFIX, "r", delay=1.0)
+    stop_row = DEBUG_BREAK_LINE + CASCADE_ROWS_BELOW
+    assert wait_until(w, lambda: w.mark_line() == stop_row,
+                      tmo=DEBUG_START_WAIT_S,
+                      what="the stop mark on line %d" % DEBUG_BREAK_LINE), \
+        screen_text(w)
+
+
+# K26C
+def test_a_stop_paints_its_mark_with_a_file_of_another_name_open(tmp_path):
+    """The control of K26 and K27: the same session with a file called notes
+    open before p.c, stopped at the breakpoint.  The stop's mark is painted
+    on the stopped line."""
+    with debug_session(tmp_path, "notes") as w:
+        stop_at_the_breakpoint(w)
+        assert w.alive(), "the editor died at the stop"
+
+
+# K26
+def test_a_watch_leaves_a_file_named_watches_to_its_user(tmp_path):
+    """`wpe ./Watches p.c`, debugged to a stop, a watch on a name the program
+    has not: the Watches pane the editor opens shows it, and the user's file
+    named Watches keeps its text and takes a letter.  On the base the watch
+    is written into the user's window and Save writes it."""
+    with debug_session(tmp_path, "Watches") as w:
+        stop_at_the_breakpoint(w)
+        w.key(CTRL_G_PREFIX, "w", delay=0.8)
+        w.key(UNDEFINED_WATCH, delay=0.4)
+        w.key(ENTER, delay=0.8)
+        assert wait_until(w, lambda: UNDEFINED_WATCH + ": " in screen_text(w),
+                          tmo=DEBUG_STEP_WAIT_S,
+                          what="the watch in the Watches pane"), screen_text(w)
+        users_window_takes_a_letter(w)
+    assert (tmp_path / "Watches").read_text() == "X" + USER_NOTES, \
+        "the watch was written into the user's file named Watches"
+    other_file_is_unchanged(tmp_path, "p.c", DEBUG_SOURCE)
+
+
+# K27
+def test_the_stack_leaves_a_file_named_stack_to_its_user(tmp_path):
+    """`wpe ./Stack p.c`, debugged to a stop (the mark is painted on the
+    stopped line), Ctrl-G K: the call stack is shown in the pane the editor
+    opens and the user's file named Stack keeps its text.  On the base the
+    frames are written into the user's window."""
+    with debug_session(tmp_path, "Stack") as w:
+        stop_at_the_breakpoint(w)
+        w.key(CTRL_G_PREFIX, "k", delay=1.0)
+        assert wait_until(w, lambda: STACK_FRAME_MARK in screen_text(w),
+                          tmo=DEBUG_STEP_WAIT_S,
+                          what="the frames in the Stack pane"), screen_text(w)
+        users_window_takes_a_letter(w)
+    assert (tmp_path / "Stack").read_text() == "X" + USER_NOTES, \
+        "the call stack was written into the user's file named Stack"
+    other_file_is_unchanged(tmp_path, "p.c", DEBUG_SOURCE)
+
+
+# K28
+def test_help_leaves_a_file_named_help_to_its_user(tmp_path):
+    """`wpe ./Help main.c`, F1: the viewer opens in a window of its own with
+    the help text, and the user's file named Help keeps its text.  On the base
+    the help text replaces the user's text in the user's window."""
+    notes = users_file(tmp_path, "Help")
+    with session_in(tmp_path, args=("./Help",)) as w:
+        w.key(HELP_KEY, delay=1.0)
+        assert wait_screen(w, HELP_PAGE_MARK, tmo=OPEN_WAIT_S), screen_text(w)
+        w.key(ESC, delay=0.8)
+        users_window_takes_a_letter(w)
+        assert w.alive(), "the editor died on F1 with a file named Help open"
+    assert notes.read_text() == "X" + USER_NOTES, \
+        "the help text replaced the user's file named Help"
+    other_file_is_unchanged(tmp_path, MAIN_C, SOURCE)
+
+
+# K29
+def test_a_file_named_buffer_is_edited_and_the_clipboard_is_separate(tmp_path):
+    """`wpe ./Buffer ./Buffer main.c`: the user's file named Buffer opens as
+    window 1 and, named twice, is not opened twice; a block copied in it is
+    pasted in it, and Save writes it.  On the base the open finds the
+    clipboard (slot 0, titled Buffer) and the user's file never opens, so
+    window 1 is main.c."""
+    notes = users_file(tmp_path, "Buffer")
+    with session_in(tmp_path, args=("./Buffer", "./Buffer")) as w:
+        w.key(ALT_1, delay=0.8)
+        assert wait_screen(w, USER_NOTES.strip(), tmo=OPEN_WAIT_S), \
+            screen_text(w)
+        w.key(SHIFT_RIGHT, SHIFT_RIGHT, delay=0.3)
+        w.key(CTRL_INS, delay=0.4)
+        w.key(SHIFT_INS, delay=0.5)
+        w.save()
+        assert w.alive(), "the editor died with a file named Buffer open"
+        rows = window_list_rows(w)
+        assert len(windows_titled(rows, "Buffer")) == 1, "\n".join(rows)
+    assert notes.read_text() == USER_NOTES[:2] + USER_NOTES, \
+        "the copied block was not pasted into the user's file named Buffer"
+    assert (tmp_path / MAIN_C).read_text() == SOURCE
+
+
+# K30
+def test_help_on_a_word_that_is_an_open_file_shows_the_manual_page(tmp_path):
+    """A file named printf is open and Topic Search is asked for the word
+    printf: the manual page opens in a view of its own and the file is not
+    raised in its place.  On the base the page is found by its title and the
+    user's file answers."""
+    require("man")
+    with session_in(tmp_path, filename="printf", seed="printf\n", wait=2.0) as w:
+        w.key(ALT_H, TOPIC_SEARCH, delay=6.0)
+        assert wait_until(w, lambda: MAN_PAGE_MARK in screen_text(w),
+                          tmo=OPEN_WAIT_S, what="the manual page"), \
+            screen_text(w)
+        assert w.alive(), "the editor died on Topic Search"
+        rows = window_list_rows(w)
+        assert len(windows_titled(rows, "printf")) == 2, "\n".join(rows)
+    assert (tmp_path / "printf").read_text() == "printf\n"
+
+
+def window_list_rows(w):
+    """The screen while the window list is open, as rows; the list is opened
+    with Alt-0, read and closed again."""
+    open_window_list(w)
+    rows = list(w.display(drain=0))
+    w.key(ESC, delay=0.6)
+    return rows
+
+
+def windows_titled(rows, title):
+    """The rows of the window list that name @title: a row of the list is the
+    title alone, set off from the list's border and scroll bar by blanks."""
+    return [r for r in rows if re.search(r"x {2,}%s {2,}" % re.escape(title), r)]
+
+
+# K33
+def test_help_on_the_same_word_twice_gives_one_page_window(tmp_path):
+    """Topic Search on printf, back to the source, Topic Search again: the
+    second ask raises the page that is open, so the window list names it
+    once.  A guard on the find the manual page asks at its entry."""
+    require("man")
+    with session_in(tmp_path, filename="p.c", seed="printf\n", wait=2.0) as w:
+        w.key(ALT_H, TOPIC_SEARCH, delay=6.0)
+        assert wait_until(w, lambda: MAN_PAGE_MARK in screen_text(w),
+                          tmo=OPEN_WAIT_S, what="the manual page"), \
+            screen_text(w)
+        w.key(ALT_1, delay=0.8)
+        w.key(ALT_H, TOPIC_SEARCH, delay=3.0)
+        assert w.alive(), "the editor died on the second Topic Search"
+        rows = window_list_rows(w)
+        assert len(windows_titled(rows, "printf")) == 1, "\n".join(rows)
+
+
+# K31
+def test_a_file_given_by_a_bare_pane_name_is_the_users_file(tmp_path):
+    """`wpe Messages main.c`, without the ./ of K18B: the file named Messages
+    opens as a file, takes a letter and saves it, and a build that fails puts
+    its lines in the pane, a second window.  On the base the bare name is the
+    pane: it opens empty and locked and the file is never shown."""
+    require("gcc")
+    notes = users_file(tmp_path, "Messages")
+    with session_in(tmp_path, filename=MAIN_C, seed=BUILD_SRC,
+                    args=("Messages",)) as w:
+        users_window_takes_a_letter(w)
+        w.key(ALT_2, delay=0.8)
+        w.key(F9, delay=0.6)
+        wait_for_a_failed_build(w)
+        w.key(ALT.FILE, "l", delay=0.8)
+        assert w.alive(), "the editor died building with a file named Messages"
+    assert notes.read_text() == "X" + USER_NOTES, \
+        "the bare name Messages was taken for the pane"
+    other_file_is_unchanged(tmp_path, MAIN_C, BUILD_SRC)
+
+
+# K31, second way in
+def test_a_file_opened_by_the_pane_s_name_after_a_build_is_the_users_file(tmp_path):
+    """The build has failed, so the Messages pane is open; File > Open of the
+    user's file named Messages then opens that file as a window of its own
+    (it takes a letter and saves it) and does not raise the pane in its
+    place.  On a find that lets the pane answer a file's request, the pane
+    is raised and the file is never shown."""
+    require("gcc")
+    notes = users_file(tmp_path, "Messages")
+    with session_in(tmp_path, filename=MAIN_C, seed=BUILD_SRC) as w:
+        w.key(F9, delay=0.6)
+        wait_for_a_failed_build(w)
+        w.key(F3, delay=1.0)
+        w.key("Messages", delay=0.4)
+        w.key(ENTER, delay=1.2)
+        assert wait_screen(w, USER_NOTES.strip(), tmo=OPEN_WAIT_S), screen_text(w)
+        w.key("X", delay=0.5)
+        w.save()
+        w.key(ALT.FILE, "l", delay=0.8)
+        assert w.alive(), "the editor died opening a file named Messages"
+    assert notes.read_text() == "X" + USER_NOTES, \
+        "File > Open of Messages raised the pane or wrote into it"
+    other_file_is_unchanged(tmp_path, MAIN_C, BUILD_SRC)
+
+
+# K32
+def test_a_file_saved_as_messages_stays_the_users_file_through_a_build(tmp_path):
+    """File > New, a line typed, Save As Messages, then a failed build of
+    main.c and Save All: the file is the user's and the build wrote nothing
+    into it.  On the base the build finds the renamed window by its title and
+    appends its line to it."""
+    require("gcc")
+    with session_in(tmp_path, filename=MAIN_C, seed=BUILD_SRC) as w:
+        w.key(ALT.FILE, "n", delay=1.0)
+        w.key("mine", delay=0.4)
+        w.key(ALT.FILE, "a", delay=1.0)
+        w.key("Messages", delay=0.4)
+        w.key("\033s", delay=1.0)
+        written = (tmp_path / "Messages").read_text()
+        assert written.startswith("mine"), written
+        w.key(ALT_1, delay=0.8)
+        w.key(F9, delay=0.6)
+        wait_for_a_failed_build(w)
+        w.key(ALT.FILE, "l", delay=1.0)
+        assert w.alive(), "the editor died building with a file saved as Messages"
+    assert (tmp_path / "Messages").read_text() == written, \
+        "the build wrote into the file the user saved as Messages"
+
+
+# K34
+@pytest.mark.skipif(not assistant_in_the_build(),
+                    reason="wpe built without the assistant")
+def test_a_second_composer_opened_in_the_first_is_a_window_of_its_own(tmp_path):
+    """The multi-line composer is open and Alt-G g asks for another: the
+    second is its own window, Esc and N close it and the first is still open
+    with its text.  On the base the request finds the open composer by its
+    title, the second loop runs on the same window and closes it, and the
+    first loop goes on with a window that is gone."""
+    require("make")
+    env = {"XWPE_AI_ENABLE": "1", "XWPE_AI_BACKEND": "mock",
+           "XWPE_AI_MOCK_REPLY": "ok"}
+    with session_in(tmp_path, filename="b.c", seed=BUILD_SRC,
+                    env_extra=env) as w:
+        w.key(ALT.AI, "g", delay=1.0)
+        w.key(COMPOSER_TEXT, delay=0.5)
+        w.key("\033m", delay=1.0)
+        assert wait_screen(w, COMPOSER_TITLE_MARK, tmo=OPEN_WAIT_S), \
+            screen_text(w)
+        w.key(ALT.AI, "g", delay=1.0)
+        w.key("second", delay=0.5)
+        w.key("\033m", delay=1.0)
+        w.key(ESC, delay=0.8)
+        w.key("n", delay=0.8)
+        assert w.alive(), "the editor died closing a second composer"
+        assert wait_screen(w, COMPOSER_TITLE_MARK, tmo=KEY_WAIT_S), \
+            "the first composer is gone:\n%s" % screen_text(w)
+        assert COMPOSER_TEXT in screen_text(w), screen_text(w)

@@ -1531,9 +1531,11 @@ def _assert_the_users_window_is_whole(s, before):
 def test_a_manual_page_that_cannot_be_read_for_memory_leaves_the_users_window(tmp_path):
     """Help > Topic Search on a word, the page's file refused for memory:
     no page window opens, and the window the user typed in keeps its lines
-    and its Undo (the page's clean-up must not run on it)."""
+    and its Undo (the page's clean-up must not run on it).  The file named
+    Help is the user's file, read at the start; the fault waits for the second
+    read, the page's."""
     with WpeSession(str(tmp_path), "seed\n", filename="Help",
-                    env_extra=_fault_env(tmp_path, "read:1")) as s:
+                    env_extra=_fault_env(tmp_path, "read:1@2")) as s:
         _a_new_window_with_the_users_lines(s)
         before = _window_rows(s)
         assert before[0] == "printf" and before[-1] == "end", "the lines were not typed:\n" + \
@@ -1550,10 +1552,12 @@ def test_a_manual_page_that_cannot_be_read_for_memory_leaves_the_users_window(tm
 # @scenario SC-buffer-08
 def test_a_file_opened_from_the_file_manager_without_memory_leaves_the_users_window(tmp_path):
     """File > Open of a file whose read is refused for memory: it does not
-    open, and the window the user typed in keeps its lines and its Undo."""
+    open, and the window the user typed in keeps its lines and its Undo.  The
+    file named Help is the user's file, read at the start; the fault waits for
+    the second read, the one of u.c."""
     (tmp_path / "u.c").write_text(SEED)
     with WpeSession(str(tmp_path), "seed\n", filename="Help",
-                    env_extra=_fault_env(tmp_path, "read:1")) as s:
+                    env_extra=_fault_env(tmp_path, "read:1@2")) as s:
         _a_new_window_with_the_users_lines(s)
         before = _window_rows(s)
         s.key(F3, delay=1.0)

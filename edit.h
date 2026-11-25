@@ -590,7 +590,15 @@ void e_find_resume_check(BUFFER *b);
 /*   we_edit.c   */
 int e_edit(ECNT *cn, char *filename);
 int e_edit_outcome(ECNT *cn, char *filename, WpeReadOutcome *why);
-int e_edit_view(ECNT *cn, char *name);
+int e_edit_new_unnamed(ECNT *cn);
+int e_open_messages_file(ECNT *cn, char *name);
+/* The one opener of windows: a file of the user's, or one of the editor's
+   own, by the kind asked for (we_winkind.h).  A window found is raised by
+   e_window_open and left where it is by the two below. */
+int e_window_open(ECNT *cn, const WpeWindowAsk *ask, WpeReadOutcome *why);
+FENSTER *e_window_pane_open(ECNT *cn, WpePane pane);
+FENSTER *e_window_view_open(ECNT *cn, WpePane kind, const char *label, const char *source);
+void e_window_raise(ECNT *cn, FENSTER *w);
 int e_eingabe(ECNT *e);
 void e_paint_desk_ready(void);
 void e_layout_desk_ready(void);

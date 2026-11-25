@@ -85,12 +85,14 @@
 #     the table words match that is about something other than a path is
 #     listed in TABLE_NOT_A_PATH below.  R11a keeps the project's own
 #     sentences in the project reporter.
-# 14. A window the editor writes opens through e_edit_view.  A call of e_edit
-#     whose second argument is a string literal other than "", "Help",
-#     "Messages", "Watches" or "Stack", or a macro ending in _NAME, names a
-#     window that no file backs (the assistant's pane, a report); such a
-#     name opens through e_edit_view, which never reads the disk.  A name
-#     held in a variable is not seen.
+# 14. A window the editor writes opens through e_window_view_open or
+#     e_window_pane_open.  A call of e_edit whose second argument is a string
+#     literal other than "", "Help", "Messages", "Watches" or "Stack", or a
+#     macro ending in _NAME, names a window that no file backs (the
+#     assistant's pane, a report); such a name opens through e_window_view_open,
+#     which never reads the disk.  A name held in a variable is not seen.
+#     (tests/check-window-kind.sh rule 8 refuses every literal, including
+#     those five, and holds the one maker.)
 # 12. A buffer that holds a path is the owner's size.  A char array, local or
 #     file scope, passed as a path to a libc call that takes one (stat, fopen,
 #     getcwd, unlink ...), as the destination of the owner's writers, or as
@@ -960,8 +962,8 @@ scan_tree() {
       for (k in gs) if (!(k in gsseen)) print "R11b: stale allow line, delete it: GUESS " k
     }' "$allow" "$t/words.sorted" >> "$out"
 
-  # Rule 14: a window the editor writes opens through e_edit_view.  A call of
-  # e_edit (a word of its own: lsp_apply_workspace_edit does not match) whose
+  # Rule 14: a window the editor writes opens through e_window_view_open.  A
+  # call of e_edit (a word of its own: lsp_apply_workspace_edit does not match) whose
   # second argument is a string literal other than the views the editor knows
   # by name, or a macro ending in _NAME, is named.  The argument is read to
   # the comma or the closing parenthesis of its own level, so a call that
@@ -1092,7 +1094,7 @@ scan_tree() {
             arg = second_arg(rest, st)
             pre = substr(txt, 1, base + st); ln = gsub(/\n/, "\n", pre) + 1
             if (names_a_window(arg))
-              print "R14: " rel ":" ln ": " arg " names a window the editor writes: open it with e_edit_view, which never reads the disk"
+              print "R14: " rel ":" ln ": " arg " names a window the editor writes: open it with e_window_view_open, which never reads the disk"
             base += st - 1; rest = substr(rest, st)
           }
         }
@@ -1101,7 +1103,7 @@ scan_tree() {
         while (match(rest, /(^|[^A-Za-z0-9_.>])e_edit([^A-Za-z0-9_(]|$)/)) {
           st = RSTART + RLENGTH
           pre = substr(plain, 1, base + st); ln = gsub(/\n/, "\n", pre) + 1
-          print "R14: " rel ":" ln ": e_edit is named without a call (a pointer to it): the name of the window it opens cannot be read, call e_edit or e_edit_view directly"
+          print "R14: " rel ":" ln ": e_edit is named without a call (a pointer to it): the name of the window it opens cannot be read, call e_edit or e_window_view_open directly"
           base += st - 1; rest = substr(rest, st)
         }
       }' "$f" >> "$out"
@@ -1509,13 +1511,13 @@ quiet_canary R11c 'void planted(FENSTER *f, const char *p) { if (access(p, 0) !=
 quiet_canary R11c 'void planted(FENSTER *f) { e_error(e_msg[ERR_ACCFILE], 0, f->fb); }' || blind=1
 quiet_canary R11c 'void planted(FENSTER *f, const char *p) { struct stat st; if (stat(p, &st) != 0) e_error(e_msg[ERR_ACCFILE], 0, f->fb); }' 'GUESS|we_planted.c|planted|keep|the word is about something else' || blind=1
 canary R11b 'void planted(FENSTER *f, const char *p) { if (stat(p, 0) != 0) e_error(e_msg[ERR_ACCFILE], 0, f->fb); }' 'GUESS|we_planted.c|gone|keep|stale' || blind=1
-# Rule 14: a window the editor writes opens through e_edit_view.
+# Rule 14: a window the editor writes opens through e_window_view_open.
 canary R14 'void planted(ECNT *cn) { e_edit(cn, "Doctor"); }' || blind=1
 canary R14 'void planted(ECNT *cn) { if (e_edit(cn, AI_PANE_NAME)) return; }' || blind=1
 canary R14 'void planted(ECNT *cn) { e_edit(
    cn,
    "Report"); }' || blind=1
-quiet_canary R14 'void planted(ECNT *cn) { e_edit_view(cn, "Doctor"); e_edit_view(cn, AI_PANE_NAME); }' || blind=1
+quiet_canary R14 'void planted(ECNT *cn) { e_window_view_open(cn, WPE_PANE_REPORT, "Doctor", NULL); e_window_view_open(cn, WPE_PANE_COMPOSER, PROMPT_NAME, NULL); }' || blind=1
 quiet_canary R14 'void planted(ECNT *cn) { e_edit(cn, "Messages"); e_edit(cn, "Help"); e_edit(cn, ""); e_edit(cn, "Watches"); e_edit(cn, "Stack"); }' || blind=1
 quiet_canary R14 'void planted(ECNT *cn, char *w) { e_edit(cn, w); e_edit(cn, wpe_listsel_name(cn->df, cn->nf, "x")); }' || blind=1
 quiet_canary R14 'void planted(struct json_object *resp) { lsp_apply_workspace_edit(obj_obj(resp, "result"), "x"); }' || blind=1
