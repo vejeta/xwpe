@@ -290,10 +290,15 @@ def test_the_selftest_of_the_planner_passes():
 
 def test_the_tracked_record_fits_the_ids_it_holds():
     """The record the tree carries is one `fit` accepts: it holds a time for
-    every id it is asked about and no row longer than a job."""
+    every id it is asked about and no row longer than a job.  It is either a
+    seed measured off the runner or a record a CI run measured and the tree
+    took as its own; each layer says which, since the plan stretches only a
+    seed by its factor."""
     record = suite_plan.load_record(suite_plan.TRACKED_RECORD)
     assert record["rows"], "the tracked record is empty"
-    assert record["layers"]["ncurses"]["host_kind"] == suite_plan.HOST_SEED
+    for layer in suite_plan.LAYER_ORDER:
+        assert record["layers"][layer]["host_kind"] in (
+            suite_plan.HOST_SEED, suite_plan.HOST_RUNNER), layer
     ids = sorted(record["rows"])
     assert suite_plan.fit_problems(record, ids) == []
 
