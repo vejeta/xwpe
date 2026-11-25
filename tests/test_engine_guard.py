@@ -569,6 +569,19 @@ def test_a_machine_program_in_a_shell_string_of_the_arguments_is_refused(machine
     assert not machine.ran(FAKE_ENGINE)
 
 
+@pytest.mark.skipif(not os.path.exists("/usr/bin/timeout"),
+                    reason="this machine has no timeout to refuse")
+def test_a_row_that_starts_the_image_cut_program_is_refused(machine):
+    """`timeout` is not in the baseline: its grace differs from image to image
+    and a job is cut by tests/harness/job_cut.py, so a row that starts it hits
+    a stub and fails naming it."""
+    before = machine.row()
+    assert machine.run("timeout 5 true") == engine_guard.STUB_EXIT_CODE
+    with pytest.raises(gui_owner.EngineReached) as hit:
+        machine.finish_row(before)
+    assert "timeout" in str(hit.value)
+
+
 # @scenario SC-test-real-tools-23
 def test_a_link_to_a_machine_program_in_the_rows_own_path_folder_is_refused(machine):
     """Door: the row links the real binary into its own bin, so the PATH

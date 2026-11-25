@@ -1,8 +1,8 @@
 """One job of the CI plan, run as the workflow runs it (tests/ci-shard.sh).
 
 The Linux workflow runs each shard of the plan with `sh tests/ci-shard.sh K`:
-pytest on the node ids of the shard, cut by `timeout -s INT`, with its exit
-status kept in a status file the gate reads.  These rows run the script on
+pytest on the node ids of the shard, cut by tests/harness/job_cut.py, with its
+exit status kept in a status file the gate reads.  These rows run the script on
 planted rows (tests/inner_row_clock.py) with a plan made by the planner, so
 the cut, the junit a cut keeps, the status and the gate's reading of both are
 proved without CI.
@@ -34,11 +34,15 @@ SCRIPT_TIMEOUT_S = 150
 # The seconds a shard may take to reach the row that hangs and leave its mark.
 # The cut waits for that mark and comes as soon as it is there, so a runner
 # that is still bringing its test workers up delays the cut instead of losing
-# it; the shard's own `timeout` deadline is a net derived from this
+# it; the shard's own deadline is a net derived from this
 # (gui_owner.cut_deadline_s), never the cut.
 MARK_WAIT_S = 30
+# A folder with a cut program that keeps no grace, as the runner's image did:
+# first on the PATH of a row, it is the program a job that calls one gets.
+NO_GRACE_CUT_DIR = os.path.join(HERE, "stubs", "no-grace")
 LONG_BUDGET_S = "600"
-# The mark the row that hangs leaves on entry (tests/inner_row_clock.py).
+# The mark left once the rows that finished are reported and the row that
+# hangs has started (tests/inner_row_clock.py).
 HANG_MARK = "hang"
 
 needs_the_job_plugins = pytest.mark.skipif(
@@ -67,7 +71,7 @@ def make_plan(tmp_path, ids):
 
 def shard_command(tmp_path, plan_dir, cut):
     """`sh tests/ci-shard.sh 0` on the plan, with the clock out of the way and
-    the shard's own `timeout` deadline at @cut: (its argv, its environment, the
+    the shard's own deadline at @cut: (its argv, its environment, the
     folder the shard writes its junit and status in)."""
     out = tmp_path / "shard-out"
     env = {"HOME": str(tmp_path), "TERM": "xterm", "PY": sys.executable,
@@ -76,7 +80,11 @@ def shard_command(tmp_path, plan_dir, cut):
            "XWPE_INNER_COUNT_FILE": str(tmp_path / "count"),
            "XWPE_INNER_STARTED_FILE": str(tmp_path / "started"),
            "XWPE_INNER_CLOSED_FILE": str(tmp_path / "closed"),
-           "XWPE_INNER_HANG_FILE": str(tmp_path / HANG_MARK)}
+           "XWPE_INNER_HANG_FILE": str(tmp_path / HANG_MARK),
+           # The planted rows leave the mark the cut waits for from the
+           # process that collects the reports, once the rows that finished
+           # are in it (tests/inner_row_clock.py).
+           "PYTHONPATH": HERE, "PYTEST_ADDOPTS": "-p inner_row_clock"}
     return ["sh", "tests/ci-shard.sh", "0"], env, out
 
 
@@ -88,12 +96,15 @@ def run_shard(tmp_path, plan_dir, cut):
     return done.returncode, out, done.stdout.decode("utf-8", "replace")
 
 
-def run_cut_shard(tmp_path, plan_dir):
+def run_cut_shard(tmp_path, plan_dir, first_on_path=None):
     """Run the shard and cut it once the row that hangs has left its mark, the
-    way the job's own `timeout` cuts a shard that reached its minutes; returns
-    (exit status, the output folder, what the script printed)."""
+    way the job's own cut ends a shard that reached its minutes; returns
+    (exit status, the output folder, what the script printed).  With
+    @first_on_path, that folder is first on the shard's PATH."""
     argv, env, out = shard_command(
         tmp_path, plan_dir, "%ds" % gui_owner.cut_deadline_s(MARK_WAIT_S))
+    if first_on_path:
+        env["PATH"] = first_on_path + os.pathsep + os.environ["PATH"]
     done = gui_owner.run_nested_cut_on_mark(
         argv, SCRIPT_TIMEOUT_S, str(tmp_path / HANG_MARK), MARK_WAIT_S,
         cwd=TOP, extra_env=env)
@@ -121,6 +132,23 @@ def test_a_cut_shard_keeps_exit_124_and_the_junit_of_the_rows_it_finished(tmp_pa
     assert status == 124, "the cut is not masked: %s\n%s" % (status, text[-1500:])
     written = json.loads((out / "shard-0-status.json").read_text())
     assert written["exit"] == 124 and written["cut"], written
+    junit = (out / "suite-junit-0.xml").read_text()
+    for node in QUICK:
+        assert node.split("::")[1] in junit, "a finished row is not in the junit"
+
+
+@needs_the_job_plugins
+# @scenario SC-platform-ci-shard-04
+def test_a_cut_shard_keeps_its_grace_and_its_junit_whatever_cut_program_the_image_ships(tmp_path):
+    """The runner's image shipped a cut program that sent its kill at the
+    deadline, with no grace, so the interrupted pytest never wrote its junit
+    and the shard ended 137.  The shard is cut by the tree's own tool, so a
+    program of the image first on PATH changes nothing: 124 and the junit."""
+    plan_dir = make_plan(tmp_path, QUICK + [HANGS])
+    status, out, text = run_cut_shard(tmp_path, plan_dir, first_on_path=NO_GRACE_CUT_DIR)
+    assert status == 124, "the image's cut program decided the cut: %s\n%s" % (status, text[-1500:])
+    written = json.loads((out / "shard-0-status.json").read_text())
+    assert written["exit"] == 124 and written["cut"] and not written["killed"], written
     junit = (out / "suite-junit-0.xml").read_text()
     for node in QUICK:
         assert node.split("::")[1] in junit, "a finished row is not in the junit"

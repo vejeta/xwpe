@@ -84,7 +84,7 @@ BASELINE_TOOLS = (
     "true", "false", "echo", "printf", "sleep", "date", "dirname", "basename",
     "readlink", "realpath", "stat", "mktemp", "id", "whoami", "uname",
     "hostname", "test", "[", "expr", "seq", "yes", "od", "md5sum", "sha256sum",
-    "timeout", "nice", "nohup", "kill", "ps", "pgrep", "stty", "tty", "clear",
+    "nice", "nohup", "kill", "ps", "pgrep", "stty", "tty", "clear",
     "reset", "tput", "infocmp", "tic", "locale", "true", "pwd", "which",
     "command", "touch", "du", "df", "ldd", "strings", "nm", "objdump", "file",
     "sync", "install", "tac", "rev", "fold", "fmt", "nl", "comm", "join",

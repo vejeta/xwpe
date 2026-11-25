@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""A `timeout` that keeps no grace: the one a CI image may ship.
+
+The runner of 2026-11 ended a cut job at its deadline with the kill at once:
+the signal went out, and the `-k` seconds the job asked for were never waited.
+A run that was interrupted never got the seconds it needs to write its junit.
+This stand-in does the same, so a row can show that a job is not cut by
+whatever `timeout` the image has.
+
+  timeout [-s SIGNAL] [-k GRACE] DURATION COMMAND...
+
+DURATION is `<n>`, `<n>s`, `<n>m`, `<n>h` or `<n>d`.  This program makes a
+process group of its own and COMMAND runs in it, as GNU's timeout does.  When
+DURATION has passed, or SIGALRM arrives (the alarm GNU's timeout arms for its
+deadline, which a row uses to make the deadline come now), the signal goes to
+the group and COMMAND is killed in the same breath; the exit status is 137.  A
+COMMAND that ends first gives its own status.
+"""
+import os
+import select
+import signal
+import subprocess
+import sys
+
+UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+KILLED_EXIT = 137
+USAGE_EXIT = 125
+
+
+def seconds_of(text):
+    """The seconds of a DURATION."""
+    unit = UNITS.get(text[-1:])
+    return float(text[:-1]) * unit if unit else float(text)
+
+
+def parse(argv):
+    """(signal, duration in seconds, COMMAND) of the command line."""
+    sig = signal.SIGTERM
+    index = 0
+    while index < len(argv) and argv[index].startswith("-"):
+        option = argv[index]
+        if option in ("-s", "--signal"):
+            sig = signal.Signals["SIG" + argv[index + 1].upper().removeprefix("SIG")]
+            index += 2
+        elif option in ("-k", "--kill-after"):
+            index += 2
+        else:
+            index += 1
+    return sig, seconds_of(argv[index]), argv[index + 1:]
+
+
+def cut(proc, sig):
+    """Signal the group, then kill COMMAND at once: no grace.
+
+    The group is this program's own (as GNU's timeout makes it), so it
+    ignores the signal itself while it sends it."""
+    signal.signal(sig, signal.SIG_IGN)
+    os.killpg(0, sig)
+    proc.kill()
+    proc.wait()
+    return KILLED_EXIT
+
+
+def main(argv):
+    """Run COMMAND and cut it the runner's way."""
+    try:
+        sig, duration, command = parse(argv)
+    except (IndexError, KeyError, ValueError):
+        sys.stderr.write("timeout: usage: timeout [-s SIG] [-k GRACE] DURATION COMMAND...\n")
+        return USAGE_EXIT
+    woken, wake = os.pipe()
+    os.set_blocking(wake, False)
+    signal.set_wakeup_fd(wake)
+    expired = []
+    signal.signal(signal.SIGALRM, lambda _n, _f: expired.append(True))
+    signal.signal(signal.SIGCHLD, lambda _n, _f: None)
+    os.setpgid(0, 0)
+    proc = subprocess.Popen(command)
+    signal.setitimer(signal.ITIMER_REAL, duration)
+    while proc.poll() is None and not expired:
+        select.select([woken], [], [])
+        os.read(woken, 64)
+    if expired and proc.poll() is None:
+        return cut(proc, sig)
+    return proc.returncode if proc.returncode >= 0 else 128 - proc.returncode
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

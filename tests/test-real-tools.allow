@@ -4,7 +4,9 @@
 # None of them can reach an AI engine: each runs a tool of the baseline, a
 # program the row itself built, or a stand-in of its own.
 tests/edit_model/cdriver.py T1 1 compiler command of the C model's own build
+tests/harness/job_cut.py T1 1 the job's cut tool starts the command it cuts (the run under cut, run by the workflow and by the rows of tests/test_job_cut.py, never a tool of a row)
 tests/harness/suite_plan.py T1 3 the CI planner, run by the workflow and never by a row: pytest --collect-only with the suite's own interpreter (argv built from a list, so not a literal), and two read-only `gh api` calls for the newest timing record with the job's own token
+tests/inner_job_cut.py T1 1 a child of the commands tests/test_job_cut.py cuts, started in a session of its own to stand for what an owner starts
 tests/host_tools.py T1 1 runs `<tool> --version` for a baseline tool only (a name outside the baseline is checked for presence, never run)
 tests/maintainability.py T1 2 compiler of the maintainability scan
 tests/procinfo.py T1 3 ps and tool probes of the process-table owner

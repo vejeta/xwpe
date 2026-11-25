@@ -36,7 +36,7 @@ bare):
     cut-min                          the minutes after which a job is cut
     workers                          the test workers of one job
     status OUT.json --shard K --exit RC --started T --ended T --ids N
-                                     how one job ended, for the gate
+           [--cut-report R.json]     how one job ended, for the gate
     fetch --repo R --branch B --out OUT.json
                                      the newest unexpired `suite-timings`
                                      artifact of that branch (gh api)
@@ -73,8 +73,9 @@ MAX_JOBS = 8
 SHARD_TARGET_MIN = 60
 # Each job runs this many test workers (pytest -n).
 SHARD_WORKERS = 4
-# A job is cut by `timeout -s INT` after this many minutes; the step's own
-# limit and the job's limit sit above it, so GitHub never ends a job.
+# A job is cut by tests/harness/job_cut.py after this many minutes; the
+# step's own limit and the job's limit sit above it, so GitHub never ends a
+# job.
 SHARD_CUT_MIN = 100
 STEP_LIMIT_MIN = 110
 JOB_LIMIT_MIN = 130
@@ -121,9 +122,9 @@ SHARD_STATUS_NAME = "shard-%d-status.json"
 SHARD_JUNIT_NAME = "suite-junit-%d.xml"
 ARGS_NAME = "args-%d.txt"
 CUT_EXIT = 124
-# `timeout -s INT -k <grace>` kills a job the interrupt did not end and exits
-# 128 + 9: the shard was cut all the same, two minutes after its cut, and its
-# junit holds whatever it had finished.
+# The cut tool kills a job the interrupt did not end and exits 128 + 9: the
+# shard was cut all the same, a grace after its cut, and its junit holds
+# whatever it had finished.
 KILL_EXIT = 137
 CUT_EXITS = (CUT_EXIT, KILL_EXIT)
 
@@ -620,12 +621,44 @@ def cmd_collect(args):
 # What a job writes about how it ended
 
 
+def read_cut_report(path):
+    """The report tests/harness/job_cut.py wrote about a job's end, or None
+    when there is none (the tool never ran or died before it wrote)."""
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            report = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    return report if isinstance(report, dict) else None
+
+
+def cut_facts(exit_code, report):
+    """(cut, killed) of a job: what the cut tool says it did, else the exit
+    code alone (124 a cut, 137 a cut that was killed).
+
+    The report is the fact: a command that died of a signal of its own (the
+    kernel's OOM killer) before the deadline also ends 137, and only the
+    tool can tell it from a cut.  A status written before the tool said
+    whether it killed holds `cut` and no `killed`: the exit code then says
+    it (137), so a shard that was killed is never read as one that ended in
+    its grace."""
+    if report is not None and "cut" in report:
+        if "killed" not in report:
+            return bool(report["cut"]), exit_code == KILL_EXIT
+        return bool(report["cut"]), bool(report["killed"])
+    return exit_code in CUT_EXITS, exit_code == KILL_EXIT
+
+
 def cmd_status(args):
-    """Write how a shard's pytest ended: the exit code (124 is a cut, 137 a
-    cut the interrupt did not end), the times, the number of rows it was
-    given."""
+    """Write how a shard's pytest ended: the exit code, whether the job was
+    cut and whether the cut had to kill it (from the cut tool's report when it
+    left one, else from the exit code: 124 and 137), the times, the number of
+    rows it was given."""
+    cut, killed = cut_facts(args.exit, read_cut_report(args.cut_report))
     status = {"shard": args.shard, "exit": args.exit,
-              "cut": args.exit in CUT_EXITS,
+              "cut": cut, "killed": killed,
               "cut_min": SHARD_CUT_MIN, "started": args.started,
               "ended": args.ended, "ids": args.ids}
     with open(args.out, "w", encoding="utf-8") as fh:
@@ -652,9 +685,10 @@ def shard_reason(shard, statuses):
     status = statuses.get(shard)
     if status is None:
         return "shard %d uploaded nothing" % shard
-    if status["exit"] == CUT_EXIT:
+    cut, killed = cut_facts(status["exit"], status)
+    if cut and not killed:
         return "not run: shard %d was cut at %d min" % (shard, status["cut_min"])
-    if status["exit"] == KILL_EXIT:
+    if cut:
         return ("not run: shard %d was cut at %d min and killed, for the "
                 "interrupt did not end it" % (shard, status["cut_min"]))
     if status["exit"] in (0, 1):
@@ -792,6 +826,7 @@ def build_parser():
     status.add_argument("--started", default="")
     status.add_argument("--ended", default="")
     status.add_argument("--ids", type=int, default=0)
+    status.add_argument("--cut-report", default="")
     fetch = sub.add_parser("fetch")
     fetch.add_argument("--repo", required=True)
     fetch.add_argument("--branch", required=True)

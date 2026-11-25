@@ -30,7 +30,10 @@ LONG_BUDGET_S = "600"
 # (gui_owner.cut_deadline_s), never the cut.
 MARK_WAIT_S = 30
 KILL_AFTER_GRACE_S = "20"
-# The mark the row that hangs leaves on entry (tests/inner_row_clock.py).
+# The job's own cut, which every cut run here goes through.
+JOB_CUT = os.path.join(HERE, "harness", "job_cut.py")
+# The mark left once the rows that finished are reported and the row that
+# hangs has started (tests/inner_row_clock.py).
 HANG_MARK = "hang"
 
 
@@ -174,10 +177,12 @@ def test_without_rerun_except_the_same_row_runs_three_times(tmp_path):
 
 
 def interrupted_run(tmp_path, signal_name, in_workers):
-    """Two quick rows and a row that hangs, under the job's
-    `timeout -s <signal>` with the clock out of the way, cut once the row that
+    """Two quick rows and a row that hangs, under the job's own cut
+    (tests/harness/job_cut.py, `--signal <signal>`) with the clock out of the way, cut once the row that
     hangs has left its mark; in two test workers when @in_workers and xdist is
-    installed.  Returns (status, junit path)."""
+    installed.  The cut waits for the mark the collecting process leaves once
+    the rows that finished are reported to it (tests/inner_row_clock.py), so
+    the junit holds them.  Returns (status, junit path)."""
     junit = tmp_path / "inner.xml"
     workers = ["-n", "2"] if in_workers and importlib.util.find_spec("xdist") else []
     argv, env, marks = inner_command(
@@ -186,9 +191,11 @@ def interrupted_run(tmp_path, signal_name, in_workers):
          "test_another_quick_row_before_the_hang",
          "test_a_row_that_hangs_with_no_clock_of_its_own"],
         LONG_BUDGET_S,
-        pytest_args=workers + ["--junitxml", str(junit)],
-        wrapper=["timeout", "-s", signal_name, "-k", KILL_AFTER_GRACE_S,
-                 str(gui_owner.cut_deadline_s(MARK_WAIT_S))])
+        pytest_args=workers + ["-p", "inner_row_clock", "--junitxml", str(junit)],
+        wrapper=[sys.executable, JOB_CUT, "--signal", signal_name,
+                 "--grace", KILL_AFTER_GRACE_S,
+                 "--after", "%ds" % gui_owner.cut_deadline_s(MARK_WAIT_S), "--"],
+        extra_env={"PYTHONPATH": HERE})
     done = gui_owner.run_nested_cut_on_mark(
         argv, INNER_TIMEOUT_S, str(marks / HANG_MARK), MARK_WAIT_S,
         cwd=str(tmp_path), extra_env=env)

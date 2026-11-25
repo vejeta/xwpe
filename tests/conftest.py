@@ -9,8 +9,10 @@ editor on their own.  A row that asks the first-run question, or runs another
 style, removes or changes the variable in its own environment (test_first_run.py,
 test_keys_session.py).
 """
+import faulthandler
 import json
 import os
+import signal
 import sys
 
 import pytest
@@ -143,7 +145,37 @@ def tell_rerunfailures_the_row_failed(item, report, call):
     xfailed[report.when] = False
 
 
+def register_cut_stacks():
+    """Make this process write every thread's stack to its stderr when it gets
+    SIGUSR1.
+
+    The job's cut (tests/harness/job_cut.py) sends SIGUSR1 to a run that did
+    not end inside its grace, just before it kills it.  Without this the log of
+    a shard that had to be killed names no row and no line: the stacks of the
+    controller and of each worker are what tell which wait the run was in.  No
+    row of the suite uses the signal in its own process.  Where the signal or
+    the module's registration does not exist (Windows) or the process has no
+    stderr, nothing is registered."""
+    signum = getattr(signal, "SIGUSR1", None)
+    if signum is None or not hasattr(faulthandler, "register") or sys.__stderr__ is None:
+        return
+    faulthandler.register(signum, file=sys.__stderr__, all_threads=True)
+
+
+def unregister_cut_stacks():
+    """Give SIGUSR1 back at its default when the session ends."""
+    signum = getattr(signal, "SIGUSR1", None)
+    if signum is not None and hasattr(faulthandler, "unregister"):
+        faulthandler.unregister(signum)
+
+
+def pytest_unconfigure(config):
+    """End of the session: stop answering SIGUSR1 with the stacks."""
+    unregister_cut_stacks()
+
+
 def pytest_configure(config):
+    register_cut_stacks()
     config.addinivalue_line(
         "markers",
         "wpe_requires(*words): skip, by name, unless the binary under test was "

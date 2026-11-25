@@ -22,9 +22,9 @@
 #          (tests/harness/suite_plan.py) and fails the run in minutes when the
 #          suite no longer fits;
 #   pyte   one job per shard of the plan: a shard runs its node ids and is cut
-#          by `timeout -s INT` (100 min) inside its step (110 min) inside its
-#          job (130 min), so GitHub's six-hour limit never ends a job and a cut
-#          keeps its junit, its status and its trace;
+#          by tests/harness/job_cut.py (100 min) inside its step (110 min)
+#          inside its job (130 min), so GitHub's six-hour limit never ends a
+#          job and a cut keeps its junit, its status and its trace;
 #   gui    the X11 suite and the native Wayland gates and suite;
 #   gate   reads every shard's junit and status, judges each capability, and
 #          records the time of each row for the next run's plan.
@@ -85,6 +85,21 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Which cut program this image ships
+        # Evidence only: every cut of this workflow goes through
+        # tests/harness/job_cut.py, which does not depend on it.  The runner's
+        # own cut program once ended its grace at once, so an interrupted run
+        # never got the seconds it needs to write its junit; this line names
+        # the program, its package and the signal dispositions of a step.
+        run: |
+          TIMEOUT_PATH=$(command -v timeout || true)
+          echo "cut program of this image: ${TIMEOUT_PATH:-none}"
+          if [ -n "$TIMEOUT_PATH" ]; then
+            readlink -f "$TIMEOUT_PATH"
+            "$TIMEOUT_PATH" --version 2>&1 | head -n 2
+          fi
+          grep -E '^(SigBlk|SigIgn|SigCgt)' /proc/self/status
+
       - name: Install build, tool and GUI-test dependencies
         run: sh tests/ci-install.sh
 
@@ -135,11 +150,12 @@ jobs:
         # byte that changed.  The same step takes any further unit that reads
         # or writes rows of the text.
         #
-        # Cut like every other long step of this workflow: `timeout -s INT`
-        # (25 min) inside the step (30 min) inside the job, so a row that
-        # hangs under the sanitizers ends the step and the job still reports
-        # what it got, instead of running to GitHub's own limit.  The
-        # interrupt, not a kill, is what lets pytest write what it finished.
+        # Cut like every other long step of this workflow: by
+        # tests/harness/job_cut.py (25 min) inside the step (30 min) inside
+        # the job, so a row that hangs under the sanitizers ends the step and
+        # the job still reports what it got, instead of running to GitHub's
+        # own limit.  The interrupt, not a kill, is what lets pytest write
+        # what it finished.
         timeout-minutes: 30
         run: |
           tests/run-tests.sh --asan-units
@@ -152,7 +168,8 @@ jobs:
           export ASAN_OPTIONS=detect_leaks=0:abort_on_error=1
           export XWPE_TEST_WAIT_SCALE=2
           export WPE_BIN="$PWD/wpe-asan"
-          timeout -s INT -k 120 25m /tmp/asanenv/bin/python -m pytest -q \
+          python3 tests/harness/job_cut.py --after 25m --grace 120 -- \
+            /tmp/asanenv/bin/python -m pytest -q \
             tests/test_fmt_sites.py tests/test_ai_formatted_requests.py \
             tests/test_debugger_command_length.py
 
@@ -167,7 +184,7 @@ jobs:
         # syntax colours, the painters of a help page) run under one.  The
         # editor is started as wpe-asan: under the name we the programming
         # layer is off and the rows would test nothing.  Cut like the step
-        # above: `timeout -s INT` inside the step inside the job.
+        # above: job_cut.py inside the step inside the job.
         timeout-minutes: 30
         env:
           ASAN_OPTIONS: "detect_leaks=0:abort_on_error=1:allow_user_segv_handler=0"
@@ -177,7 +194,8 @@ jobs:
           /tmp/test_rowread-asan
           tests/run-tests.sh --asan-build
           export XWPE_LIB="$PWD"
-          WPE_BIN="$PWD/wpe-asan" XWPE_TEST_WAIT_SCALE=2 timeout -s INT -k 120 25m \
+          WPE_BIN="$PWD/wpe-asan" XWPE_TEST_WAIT_SCALE=2 \
+            python3 tests/harness/job_cut.py --after 25m --grace 120 -- \
             /tmp/ptenv/bin/python -m pytest -q \
             tests/test_row_readers.py tests/test_help_paint.py \
             tests/test_help_check.py tests/test_error_search_text.py -n 4

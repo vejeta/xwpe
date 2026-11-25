@@ -1726,6 +1726,11 @@ EXTRA_DIST = \
   tests/ci-install.sh \
   tests/ci-venv.sh \
   tests/ci-shard.sh \
+  tests/ci-uncut-steps.txt \
+  tests/stubs/no-grace/timeout \
+  tests/inner_job_cut.py \
+  tests/test_job_cut.py \
+  tests/harness/job_cut.py \
   tests/program_gate.py \
   tests/test-waits.allow \
   tests/harness/suite_plan.py \

@@ -328,16 +328,51 @@ def descendants(ppid):
 
     A test needs it to see a debugger's whole tree (the debugger, the
     program it launched, what that started) and to check, once a session is
-    over, that none of it is left behind."""
+    over, that none of it is left behind.
+
+    The process table is read once for the whole walk, so a tree of hundreds
+    of processes on a busy host costs one pass and not one per process."""
+    children = _children_by_parent(process_table())
     found = []
     pending = [ppid]
     while pending:
-        for pid in _child_pids(pending.pop()):
-            if run_state(pid) in (GONE, ZOMBIE):
+        for pid, state in children.get(pending.pop(), []):
+            if state in (GONE, ZOMBIE):
                 continue
             found.append(pid)
             pending.append(pid)
     return found
+
+
+def process_table():
+    """{pid: (ppid, run state)} of every process, read once.
+
+    A caller that has to look at many processes (the walk of a tree, the
+    kill of a run) reads it once instead of asking per process."""
+    if has_procfs():
+        return _proc_process_table()
+    return {pid: (ppid, state[:1])
+            for pid, ppid, state, _comm in _ps_table_rows()}
+
+
+def _proc_process_table():
+    """The process table, read from /proc: one stat file per process."""
+    table = {}
+    for entry in os.listdir(PROC_ROOT):
+        if not entry.isdigit():
+            continue
+        fields = _proc_stat_fields(int(entry))
+        if fields is not None:
+            table[int(entry)] = (int(fields[1]), fields[0])
+    return table
+
+
+def _children_by_parent(table):
+    """{ppid: [(pid, state), ...]} from a process table."""
+    children = {}
+    for pid, (parent, state) in table.items():
+        children.setdefault(parent, []).append((pid, state))
+    return children
 
 
 def _ps_table_rows():

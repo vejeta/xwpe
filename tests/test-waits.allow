@@ -13,6 +13,7 @@
 # check prints the current list with --list.
 tests/edit_model/oracle.py WS=11
 tests/frames_compare.py WS=1
+tests/harness/job_cut.py WS=5
 tests/live_ai.py WS=2
 tests/test_ai_agent_answer.py WS=2
 tests/test_ai_agent_dial_contracts.py WD=1 WS=5

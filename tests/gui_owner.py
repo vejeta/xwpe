@@ -33,8 +33,8 @@ lived on).  This module is where all of that is decided once:
   ledger, with an environment built from the whitelist and never a copy of the
   machine's; ``inherit=`` names the one more variable a row needs.
 - ``run_nested_cut_on_mark``: a nested run cut once a row of it has left its
-  mark, the way a job's ``timeout -s INT`` cuts it, so the cut is an event and
-  not a deadline a loaded runner runs out of first.
+  mark, the way a job's own cut (tests/harness/job_cut.py) cuts it, so the cut
+  is an event and not a deadline a loaded runner runs out of first.
 - ``current`` / ``install``: the process's owner, for code that is not a
   fixture.
 - ``OwnedProcess.end_for_row``: the end a driver calls where an error would
@@ -2935,25 +2935,18 @@ def run_nested(argv, timeout, input=None, cwd=None, check=False,
 # ---------------------------------------------------------------------------
 # Cutting a nested run once a row of it has started
 
-# The wrapper a cut run is measured through: the job's own `timeout -s INT`.
-CUT_WRAPPER = "timeout"
-# What makes that wrapper take its deadline now.  `timeout` arms its deadline
-# with an alarm, so an alarm from outside is that deadline arriving early: the
-# wrapper sends the job's signal to the run, keeps its grace for it and ends
-# with the 124 a cut job ends with.  The job's signal sent to the run instead
-# leaves the wrapper with the run's own status, so the 124 a gate reads a cut
-# by is gone, and a signal to the wrapper itself ends it with 130 and no
-# junit.  Measured on GNU coreutils 9.12: the run gets the `-s` signal and the
-# wrapper's status is 124.
-CUT_EXPIRY_SIGNAL = signal.SIGALRM
-# The wrapper's own deadline is this many seconds longer than the stretched
-# wait for the mark, so a host that stretches the wait still cuts at the mark
-# and not at the deadline.
+# The variable that names the FIFO a cut run (tests/harness/job_cut.py) takes
+# its deadline from, and the byte that is the deadline arriving now.
+CUT_NOW_VARIABLE = "XWPE_JOB_CUT_NOW"
+CUT_NOW_BYTE = b"x"
+# The tool's own deadline is this many seconds longer than the stretched wait
+# for the mark, so a host that stretches the wait still cuts at the mark and
+# not at the deadline.
 CUT_DEADLINE_MARGIN_S = 5
 
 
 def cut_deadline_s(mark_wait_s):
-    """The seconds a cut run's own `timeout` deadline gets.
+    """The seconds a cut run's own deadline gets.
 
     That deadline is a net for a run that never reaches the row that leaves
     the mark; it is never the cut, so it outlives the stretched wait for the
@@ -2961,65 +2954,56 @@ def cut_deadline_s(mark_wait_s):
     return int(scaled(mark_wait_s)) + CUT_DEADLINE_MARGIN_S
 
 
-def cut_wrapper_pid(owned):
-    """The pid of the wrapper that cuts this run: the run itself when the row
-    wrapped its own command, else the leader of the one process group below it
-    (a script that wrapped the run, as tests/ci-shard.sh does).
+def make_cut_now_fifo(owner):
+    """Make the FIFO a cut run is told its deadline arrived through, in a
+    folder of its own under the owner's tool folder; returns (the folder, the
+    FIFO's path, a descriptor open on it for writing).
 
-    `timeout` runs its command in a group of its own, so that the signal it
-    sends reaches the whole of it, and a group's id is its leader's pid: the
-    process table names the leader, with nothing read of it but its group."""
-    groups = {group_of(pid) for pid in procinfo.descendants(owned.pid)}
-    groups.discard(None)
-    groups.discard(owned.pgid)
-    if not groups:
-        return owned.pid
-    if len(groups) > 1:
-        raise OwnerFailure(
-            "%s has %d process groups of their own below it, so the one the "
-            "cut wrapper leads cannot be told: %s"
-            % (owned.describe(), len(groups),
-               ", ".join(str(group) for group in sorted(groups))))
-    return groups.pop()
+    Opened for reading and writing, so the write never waits for the tool to
+    open its end and never meets one that has closed."""
+    folder = tempfile.mkdtemp(prefix="cut-now.", dir=owner.tool_home())
+    path = os.path.join(folder, "cut-now")
+    os.mkfifo(path)
+    return folder, path, os.open(path, os.O_RDWR | os.O_NONBLOCK)
 
 
-def expire_the_cut(owned):
-    """Make the wrapper of this run take its deadline now, so that the wrapper
-    cuts the run the way the job's own deadline does."""
-    watch = watch_process(cut_wrapper_pid(owned))
-    try:
-        watch.signal(CUT_EXPIRY_SIGNAL)
-    finally:
-        watch.close()
+def remove_cut_now_fifo(folder, path, fd):
+    """Close and remove what make_cut_now_fifo made."""
+    os.close(fd)
+    os.unlink(path)
+    os.rmdir(folder)
 
 
 def run_nested_cut_on_mark(argv, timeout, mark, mark_wait, cwd=None,
                            extra_env=None):
     """Run a nested command of the harness and cut it once @mark is there.
 
-    @argv runs under its own `timeout` wrapper, whose deadline is a net
-    (cut_deadline_s) and not the cut.  The cut is the mark: the nested run
-    leaves that file when the row that hangs has started, this waits for it
-    with wait_for and then makes the wrapper's deadline arrive, so the wrapper
-    does what it does in the job.  It sends the job's signal to the run, keeps
-    its grace for it, and ends with the status a cut job ends with.
+    @argv is a command that runs its work under tests/harness/job_cut.py (the
+    job's own cut: tests/ci-shard.sh does, a row's own command line does), and
+    the tool's deadline is a net (cut_deadline_s), never the cut.  The cut is
+    the mark: the nested run leaves that file when the row that hangs has
+    started, this waits for it with wait_for and then writes one byte to the
+    FIFO the tool reads its deadline from (XWPE_JOB_CUT_NOW), so the tool does
+    what it does in the job: it sends the interrupt to the run, keeps its grace
+    for it, and ends with the 124 a cut job ends with.
 
-    A deadline of its own cannot be the cut.  On a loaded runner it arrives
-    while pytest-xdist is still bringing its workers up, an interrupt is not
-    served there, and the job ends with the wrapper's kill (137) and no junit
-    of the rows it finished.
+    A deadline of its own cannot be the cut: on a loaded runner it arrives
+    before the row that hangs has started, and the junit would be that of a run
+    that never got there.
 
     Returns the CompletedProcess of the ended run, as run_nested does; its
     stdout is what the run wrote to its log."""
     owner = current()
-    env = tool_env(inherit=HARNESS_VARS, extra_env=extra_env)
+    folder, fifo, fd = make_cut_now_fifo(owner)
+    env = tool_env(inherit=HARNESS_VARS,
+                   extra_env=dict(extra_env or {}, **{CUT_NOW_VARIABLE: fifo}))
     owned = owner.launch(list(argv), env, cwd, owner.tool_home(), "tool",
                          os.path.basename(str(argv[0])), stdio=LOG)
     try:
         wait_for(lambda: os.path.exists(mark),
                  "the row that hangs to leave its mark (%s)" % mark,
                  mark_wait, state_fn=owned.log_text)
-        expire_the_cut(owned)
+        os.write(fd, CUT_NOW_BYTE)
         if not owned.watch.wait(scaled(timeout)):
             raise OwnerTimeout(
                 "%s was cut at its mark and did not end within %.1f s "
@@ -3028,6 +3012,8 @@ def run_nested_cut_on_mark(argv, timeout, mark, mark_wait, cwd=None,
     except BaseException:
         owned.end_collect()
         raise
+    finally:
+        remove_cut_now_fifo(folder, fifo, fd)
     owned.end()
     with open(owned.log, "rb") as fh:
         out = fh.read()

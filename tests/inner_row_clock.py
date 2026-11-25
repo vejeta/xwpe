@@ -33,11 +33,46 @@ def note_in(variable):
         fh.write("x\n")
 
 
-def note_when_named(variable):
-    """Append a line to the file the parent named in @variable, when it named
-    one: a row run by a parent that has no mark to wait for leaves none."""
-    if variable in os.environ:
-        note_in(variable)
+FINISHED_ROWS = ("test_a_quick_row_before_the_hang",
+                 "test_another_quick_row_before_the_hang")
+# The file the process that collects the reports writes once it has the last
+# (teardown) report of every row that finished, beside the hang file.
+REPORTED_SUFFIX = ".reported"
+# The seconds the row that hangs waits for that file before it leaves its mark.
+REPORTED_WAIT_S = 120
+_reported = set()
+
+
+def is_a_test_worker():
+    """True in a worker of pytest-xdist, which sees the reports of its own
+    rows only; the process that collects every report is its controller."""
+    return "PYTEST_XDIST_WORKER" in os.environ
+
+
+def reported_file():
+    """The path of the file that says the rows that finished are reported."""
+    return os.environ[HANG_FILE_VAR] + REPORTED_SUFFIX
+
+
+def pytest_runtest_logreport(report):
+    """Say, in a file, that the process that writes the junit has the last
+    report of every row that finished.
+
+    The row that hangs waits for that file before it leaves its mark, so the
+    parent cuts a run whose junit holds those rows.  A mark left on entry
+    says only that the row began: under pytest-xdist the reports of the rows
+    that finished may still be on their way to the controller, and an
+    interrupt then finds a junit with rows that were opened and never
+    closed.  The parent loads this module as a plugin (-p), in the controller
+    and the workers; the workers do nothing here."""
+    if is_a_test_worker() or HANG_FILE_VAR not in os.environ:
+        return
+    name = report.nodeid.rpartition("::")[2]
+    if report.when == "teardown" and name in FINISHED_ROWS:
+        _reported.add(name)
+    if _reported == set(FINISHED_ROWS):
+        with open(reported_file(), "a", encoding="utf-8") as fh:
+            fh.write("x\n")
 
 
 def test_a_row_holding_an_editor_waits_forever(tmp_path):
@@ -112,8 +147,15 @@ def test_another_quick_row_before_the_hang():
 
 
 def test_a_row_that_hangs_with_no_clock_of_its_own():
-    """The row a cut job is measured on: it leaves its mark on entry, so the
-    cut arrives once it has started, and then it hangs with no clock of its
-    own for the job's own `timeout` to end."""
-    note_when_named(HANG_FILE_VAR)
+    """The row a cut job is measured on: it hangs with no clock of its own
+    for the job's cut to end.  It leaves its mark once the process that
+    collects the reports has those of the rows that finished
+    (pytest_runtest_logreport), so the cut arrives with them in the junit;
+    a parent that has no mark to wait for names no file and the row hangs
+    at once."""
+    if HANG_FILE_VAR in os.environ:
+        gui_owner.wait_for(lambda: os.path.exists(reported_file()),
+                           "the reports of the rows that finished",
+                           REPORTED_WAIT_S)
+        note_in(HANG_FILE_VAR)
     gui_owner.wait_for(lambda: False, "an event that never comes", NEVER_S)
