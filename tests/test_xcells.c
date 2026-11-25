@@ -340,6 +340,10 @@ COLOR e_n_x_clr(int fb)
 }
 int e_tast_sim(int c) { (void)c; return 0; }
 int e_t_deb_out(FENSTER *f) { (void)f; return 0; }
+/* The window stack and the paint owner, which e_x_getch asks whether the
+   window in front changed while it waited; no window changes here. */
+unsigned long e_window_top_count(void) { return 0; }
+int wpe_paint_modal_depth(void) { return 0; }
 void ini_repaint(ECNT *cn) { (void)cn; }
 int wpe_key_code(WpeBaseKey base, unsigned mods) { (void)base; (void)mods; return 0; }
 int wpe_key_code_char(int codepoint, unsigned mods)
