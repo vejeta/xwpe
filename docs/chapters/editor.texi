@@ -475,6 +475,11 @@ a name under a file, a loop of links) opens no window: a box names the
 file and the system's reason, such as @samp{Cannot open file
 /home/you/locked.c: Permission denied}.  The box names the path the File
 Manager built; only a name given on the command line is shown as typed.
+A pipe or a device (for example @file{/dev/zero}) is refused the same way
+with what it is, @samp{Cannot open file /home/you/p: it is a pipe.} or
+@samp{it is a device}, and the editor never waits for it.  The same box
+appears for a pipe or a device named on the command line.  Reading text
+from a pipe comes with a later change.
 @item
 A file mask (e.g.@: @code{*.c}, @code{[a-z]*}): pressing @key{Return}
 filters the file list.

@@ -18136,9 +18136,9 @@ static void e_d_show_stop_position(FENSTER *f)
 /**
  * e_d_say_source_refused - Tell the user the system will not let the editor
  * read the source the debugger wants to show.
- * @f: the window on top; @file: the source; @err: the errno of the refusal,
- * 0 when the editor already said why; @asked: E_D_SOURCE_ASKED or
- * E_D_SOURCE_STOP.
+ * @f: the window on top; @file: the source; @why: the read owner's outcome
+ * of the refusal, its why DONE when the editor already said why; @asked:
+ * E_D_SOURCE_ASKED or E_D_SOURCE_STOP.
  *
  * A source the user picked (a frame in the Stack window, a reference) gets
  * the box every time, since they asked.  A stop repeats with every step in
@@ -18146,20 +18146,20 @@ static void e_d_show_stop_position(FENSTER *f)
  * stops in that file stay quiet: no box is left waiting while the program
  * runs, and the stop, the Stack and the Watches are shown as usual.
  */
-static void e_d_say_source_refused(FENSTER *f, const char *file, int err, int asked)
+static void e_d_say_source_refused(FENSTER *f, const char *file, const WpeReadOutcome *why, int asked)
 {
  char line[WPE_PATH_REFUSED_MAX];
 
- if (err == 0)
+ if (why->why == WPE_READ_DONE)
   return;
  if (asked == E_D_SOURCE_ASKED)
  {
-  e_say_path_refused(f, "source", file, err);
+  e_say_read_refused(f, "source", file, why);
   return;
  }
  if (e_d_said_once(E_D_SAID_SOURCE, file))
   return;
- (void)wpe_path_say_refused(line, sizeof line, "source", file, err);
+ (void)wpe_read_say(line, sizeof line, "source", file, why);
  e_status_say_until_key(f, line);
 }
 
@@ -18177,7 +18177,8 @@ static int e_d_show_source(char *file, int line, FENSTER *f, int asked)
  BUFFER *b;
  SCHIRM *s;
  FENSTER ftmp;
- int i, open_err = 0;
+ int i;
+ WpeReadOutcome open_why;
  char str[WPE_PATH_SIZE + 64];
 
 /*   if(schirm != e_d_save_schirm) e_d_switch_out(0);  */
@@ -18213,9 +18214,9 @@ static int e_d_show_source(char *file, int line, FENSTER *f, int asked)
    WPE_FMT_SHOWN(str, e_d_msg[ERR_CANTFILE], file);
    return(e_error(str, 0, f->fb));
   }
-  if (e_edit_outcome(cn, file, &open_err))
+  if (e_edit_outcome(cn, file, &open_why))
   {
-   e_d_say_source_refused(f, file, open_err, asked);
+   e_d_say_source_refused(f, file, &open_why, asked);
    return(WPE_ESC);
   }
   b = e_window_text(cn->f[cn->mxedt]);

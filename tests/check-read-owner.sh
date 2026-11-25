@@ -53,6 +53,10 @@
 #     takes the project by name, whatever form it asks with.  A local variable
 #     holding the path escapes it; the rows of test_project_hold.py are the net
 #     for that.  No allow line.
+#  s. in e_edit_open and e_edit_take_file_state: wpe_write_identity_of_name,
+#     wpe_write_identity_take_fd, wpe_seen_look_name, fstat or lstat.  The
+#     window opened on a file takes its mode and identity from the outcome of
+#     the read, so they describe the object its text came from.  No allow line.
 # In we_read.c itself:
 #  i. a string that holds "Cannot", "not found", "it is" or "larger": the
 #     words are we_path.c's.
@@ -346,6 +350,8 @@ scan() {
       if (fn ~ /^(e_find_(files|dir|open_folder|entry_is_[a-z]+|look_rows?)|e_file_info[a-z_]*|fm_folder_has_entries|WpeGraphicalFileList|WpeFileListRows)$/)
         count_call(m, "stat|lstat|fstatat|access|faccessat|eaccess|stat64|lstat64|fstatat64", "r22n")
       count_word(m, "WPE_READ_KIND_PIPE", "r22h")
+      if (fn ~ /^(e_edit_open|e_edit_take_file_state)$/)
+        count_call(m, "wpe_write_identity_of_name|wpe_write_identity_take_fd|wpe_seen_look_name|fstat|lstat|fstat64|lstat64", "r22s")
       if (m ~ /(^|[^A-Za-z0-9_.>])(fmemopen|fopencookie|funopen|tmpfile)([^A-Za-z0-9_]|$)/) note("r22j", 1)
     }
     BEGIN { blank_incom = 0; fn = "-"; stmt = "" }
@@ -485,6 +491,14 @@ int fake_reader(ECNT *cn)
  WpeReadAsk b = WPE_READ_ASK_PROJECT_SEEN("project file", seen);
  FILE *c = wpe_read_stream_open(e_prog.project, &cfg, &o);
  char *d = wpe_read_text(e_prj_open_path(cn), &cfg, &n, &o);
+ return(0);
+}
+
+int e_edit_take_file_state(FENSTER *f, int fd)
+{
+ wpe_write_identity_of_name(f->dirct, f->datnam, &f->file_id);
+ wpe_write_identity_take_fd(&f->file_id, fd);
+ fstat(fd, &st);
  return(0);
 }
 
@@ -631,6 +645,7 @@ EOF
     "r22h we_fake.c fake_h 1" \
     "r22p we_fake.c fake_reader 2" \
     "r22q we_fake.c fake_reader 2" \
+    "r22s we_fake.c e_edit_take_file_state 3" \
     "r22j we_fake.c fake_j 4" \
     "r22n we_fake.c e_file_info_look 3" \
     "r22z we_fake.c fake_z 3" \
@@ -797,6 +812,8 @@ awk -F'|' -v kscan=$kscan -v nbobjs=" $(tr '\n' ' ' < "$WORK/notbuilt_objs")" '
         print "offender: " $1 " " $2 ": WPE_READ_ASK_PROJECT or WPE_READ_ASK_PROJECT_SEEN is named outside e_prj_read_open (and its two steps), e_project_open_error and e_select_project.  The open project is read by one opener, which asks the read owner for the file the editor holds: call e_prj_read_open.  No allow line"
       else if (rule == "r22q")
         print "offender: " $1 " " $2 ": a read owner face is given e_prog.project or e_prj_open_path( as its path.  The open project is read by e_prj_read_open, which asks for the file the editor holds and asks the user when the name leads to another.  No allow line"
+      else if (rule == "r22s")
+        print "offender: " $1 " " $2 ": the window opened on a file takes its mode and identity by a second look at the file (a name or a descriptor) instead of from the outcome of the read.  The window must describe the very object its text came from: use the mode and the seen of the WpeReadOutcome.  No allow line"
       else if (rule == "r22h")
         print "offender: " $1 " " $2 ": WPE_READ_KIND_PIPE is named outside the owner.  Only the load of a pipe may accept one, and it is not built yet.  No allow line"
       else if (rule == "r22i")

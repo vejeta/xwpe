@@ -569,6 +569,15 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* A pipe or a device named on File > Open, on the command line or with -pm
+  ("wpe /dev/zero", "wpe <(command)", a pipe made with mkfifo) was skipped
+  without a word.  It still opens no window, but a box now says why ("Cannot
+  open file /w/p: it is a pipe.", "it is a device"), and the file is read
+  through the editor's one reader, which never waits for a writer or reads a
+  device until the memory ends.  Reading text from a pipe comes with a later
+  change.  A pipe in the folder named Messages, Watches, Stack or Buffer no
+  longer stops the build's Messages window from opening.  A regular file still
+  opens whole, whatever its size.
 * The X11 editor no longer crashes when the X server ends during a drag.  The
   end of a scrollbar drag let go of the pointer and repainted the window, and
   both calls went to a server that was already gone.  On an X stack that keeps

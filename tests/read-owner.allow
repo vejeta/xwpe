@@ -9,13 +9,13 @@
 # the file is the object and the function the symbol.  "count" may only fall,
 # and a line that matches nothing is stale.  "pass" is the pass that moves the
 # site onto the owner and deletes the line (P2 the assistant's reads, P3a the
-# plain callers, P3b the load of a pipe, P3c Find in files); a pass ending in
+# plain callers, P3a2 the load of a regular file, P3b the load of a pipe, P3c
+# Find in files); a pass ending in
 # /cfg is a row only some configurations meet, so a build without it is not
 # stale.  "keep" is a permanent row, and the reason says why the name is the
 # editor's own and not one a user, a folder, a model or a server chose.
 
-# the load of a pipe (P3b) and Find in files (P3c)
-we_edit.c|r22a:e_edit_open|1|P3b|File > Open and the command line
+# Find in files (P3c)
 we_fl_unix.c|r22a:WpeGrepFile|1|P3c|every entry of a folder
 
 # not a name a user, a folder, a model or a server chose
@@ -28,6 +28,7 @@ we_fl_fkt.c|r22c:e_tmp_remove|1|keep|removes the editor's own temporary folder w
 we_fl_fkt.o|r22k:nftw|1|keep|e_tmp_remove
 we_opt.c|r22f:e_opt_read_line|1|keep|its stream is the owner's memory stream of at most 1 MiB
 we_fileop.c|r22g:fileop_source_ask|2|keep|the copy reads its source to the end with constant memory, below the folder the walk holds, and a file ends
+we_edit.c|r22g:e_edit_open|1|keep|File > Open and the command line: the user asked for that file, so its size is not limited
 we_fl_fkt.c|r22g:e_i_open_judged|1|keep|a help or info file is read a node at a time from its descriptor (libc.info is over 10 MB), in the build with zlib and in the one without
 we_fl_unix.c|r22g:fm_open_block_source|1|keep|Block > Read: the user asked for that file, so its size is not limited
 we_prog.c|r22g:e_algol68_sniff|1|keep|reads the first 200 lines with constant memory, and a regular file ends

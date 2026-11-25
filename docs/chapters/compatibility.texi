@@ -855,7 +855,11 @@ what it found: @samp{Cannot open project file p.prj: it is a pipe.},
 @samp{it is a device}, @samp{it is a link} (for the @file{xwperc} of the
 folder you started in), or @samp{it is larger than 1 MiB} (16 MiB for a
 project).  An option file or project file over its limit is refused whole,
-because a file read cut short would be saved short.  After a refused option
+because a file read cut short would be saved short.  The same holds for
+a file named on File > Open or the command line: a pipe or a device is
+refused with @samp{it is a pipe} or @samp{it is a device} (reading from a
+pipe comes with a later change), and a regular file of any size opens
+whole.  After a refused option
 file your own options are in force, and Options > Save writes your own
 file.  A header that an @code{#include} names and that cannot be read counts
 as changed, so F9 builds and the compiler reports it.  The assistant's reads

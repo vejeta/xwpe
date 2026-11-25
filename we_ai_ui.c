@@ -14934,21 +14934,26 @@ static void ai_plan_register_rows(FENSTER *f, ai_plan_rows *rows)
 /**
  * ai_plan_say_not_opened - Say in the pane that a file of the plan could not
  * be opened, and why.
- * @f: the window the pane belongs to; @path: the file; @err: the errno of the
- * system's refusal, or 0 when the editor already said why in its own box.
+ * @f: the window the pane belongs to; @path: the file; @why: the read
+ * owner's outcome of the refusal, its why DONE when the editor already said
+ * why in its own box.
  *
  * While a plan is applied the editor opens each file in turn.  A refused
  * file does not stop the others and does not raise a box for each: the pane
- * line names the file and the system's own words ("Permission denied", "Is a
- * directory"), so the user can see which files were skipped and fix them.
+ * line names the file and the reason ("Permission denied", "Is a
+ * directory", "it is a pipe"), so the user can see which files were skipped
+ * and fix them.
  */
-static void ai_plan_say_not_opened(FENSTER *f, const char *path, int err)
+static void ai_plan_say_not_opened(FENSTER *f, const char *path, const WpeReadOutcome *why)
 {
  char line[AI_PLAN_SKIP_LINE_MAX];
+ char reason[WPE_PATH_MSG_MAX];
 
- if (err != 0)
-  WPE_FMT_SHOWN(line, AI_MULTIFILE_PREFIX " could not open %s: %s",
-                path, wpe_path_refused_reason(err));
+ if (why->why != WPE_READ_DONE)
+ {
+  (void)wpe_read_reason(reason, sizeof reason, why);
+  WPE_FMT_SHOWN(line, AI_MULTIFILE_PREFIX " could not open %s: %s", path, reason);
+ }
  else
   WPE_FMT_SHOWN(line, AI_MULTIFILE_PREFIX " could not open %s", path);
  ai_pane(f, line, AI_ROLE_ERROR, 0);
@@ -14990,9 +14995,10 @@ static void ai_plan_finish(ai_async_op *op)
   FENSTER *w;
   const char *path = pd->props[i].path;
   char *before, *after;
-  int done, open_err = 0;
-  if (e_edit_outcome(cn, pd->props[i].path, &open_err) != 0) {
-   ai_plan_say_not_opened(f, path, open_err);
+  int done;
+  WpeReadOutcome open_why;
+  if (e_edit_outcome(cn, pd->props[i].path, &open_why) != 0) {
+   ai_plan_say_not_opened(f, path, &open_why);
    continue;
   }
   w = cn->f[cn->mxedt];

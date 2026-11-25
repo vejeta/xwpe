@@ -534,40 +534,73 @@ static void e_edit_drop_fresh_line(FENSTER *f)
 }
 
 /**
- * e_edit_open_refused_by_system - Did the system refuse the file of a window
- * being opened, so that the window must not open?
+ * e_edit_open_refused - Did the read owner refuse the file of a window being
+ * opened, so that the window must not open?
  * @ftype: E_EDIT_A_FILE, or the view (Help, Messages, Watches, Stack) it is;
  * @view: a window the editor writes itself, which reads no file;
- * @err: the errno of the open, 0 when it succeeded or was not tried.
- * Return: 1 for a file the user edits that the system will not let us read.
+ * @why: the owner's outcome of the open, nothing set when it succeeded or
+ * was not tried.
+ * Return: 1 for a file the user edits that the owner will not let us read.
  *
  * A missing file is not a refusal: the window opens empty and the first Save
- * creates the file.  Any other errno (a file closed to reading, a name under
- * a file, a loop of links) means the window would show none of the file's
- * text, and a Save over it would destroy the file, so nothing opens.
+ * creates the file.  Any other refusal (a file closed to reading, a name
+ * under a file, a loop of links, a pipe, a device) means the window would
+ * show none of the file's text, and a Save over it would destroy the file,
+ * so nothing opens.
  */
-static int e_edit_open_refused_by_system(int ftype, int view, int err)
+static int e_edit_open_refused(int ftype, int view, const WpeReadOutcome *why)
 {
  if (view || ftype != E_EDIT_A_FILE)
   return(0);
- return(err != 0 && err != ENOENT);
+ return(why->why != WPE_READ_DONE && !wpe_read_outcome_missing(why));
+}
+
+/**
+ * e_edit_outcome_set_errno - Record in @why a refusal the system gave before
+ * the owner was asked, or that the editor said itself.
+ * @why: the outcome, or NULL; @code: the errno, 0 when the editor's own
+ * message was already said or nothing is to be said.
+ */
+static void e_edit_outcome_set_errno(WpeReadOutcome *why, int code)
+{
+ if (why == NULL)
+  return;
+ if (code == 0)
+  memset(why, 0, sizeof *why);
+ else
+  wpe_read_outcome_errno(why, code);
 }
 
 /**
  * e_edit_stop_before_window - A window cannot be opened on this name: give
- * back the names taken for it, and say why in @err when the system did.
+ * back the names taken for it, and say why in @why when the system did.
  * @path, @file: the name split in its folder and its file, freed here;
- * @err: where the errno goes, or NULL; @why: the errno, 0 when the editor's
- * own message was already said or nothing is to be said.
+ * @why: where the outcome goes, or NULL; @code: the errno, 0 when the
+ * editor's own message was already said or nothing is to be said.
  * Return: -1, what e_edit returns for a window that did not open.
  */
-static int e_edit_stop_before_window(char *path, char *file, int *err, int why)
+static int e_edit_stop_before_window(char *path, char *file, WpeReadOutcome *why, int code)
 {
  WpeFree(path);
  WpeFree(file);
- if (err != NULL)
-  *err = why;
+ e_edit_outcome_set_errno(why, code);
  return(-1);
+}
+
+/**
+ * e_edit_take_file_state - A file was read for a new window: the window takes
+ * the file's mode and its identity, both from the one look the owner took.
+ * @f: the new window; @read: the owner's outcome of the read.
+ *
+ * The identity is what the next Save compares the file on disk with, so a
+ * file swapped for another since it was read is asked about, never replaced
+ * unseen.  Taking both from the owner's look means they describe the very
+ * object the text came from.
+ */
+static void e_edit_take_file_state(FENSTER *f, const WpeReadOutcome *read)
+{
+ f->filemode = read->mode;
+ wpe_write_identity_set(&f->file_id, &read->seen);
 }
 
 /**
@@ -575,16 +608,20 @@ static int e_edit_stop_before_window(char *path, char *file, int *err, int why)
  * @cn: the editor; @filename: the window's name or file;
  * @view: 1 for a window the editor writes itself (the assistant's pane, a
  * composer, a named report): named like a file, never read from the disk;
- * @err: gets the errno when the system refused the file, 0 when the editor
- * refused for its own reason and already said it (too many windows, no
- * memory), or when the window opened.
+ * @why: gets the owner's outcome when the file was refused (a closed file, a
+ * pipe, a device), nothing set (why DONE) when the editor refused for its
+ * own reason and already said it (too many windows, no memory), or when the
+ * window opened; NULL when the caller does not want it.
  * Return: 0 when the window opened or was already open, -1 when it did not.
  *
- * Nothing is said here for a refusal of the system: the entries below decide
+ * Nothing is said here for a refusal of the file: the entries below decide
  * who speaks, so a caller with a loop of its own (the debugger's stops, the
- * assistant's list of files) is not stopped by a box for each file.
+ * assistant's list of files) is not stopped by a box for each file.  The file
+ * is read through the read owner, so a pipe or a device the user names on
+ * File > Open or the command line is refused with its kind and the editor
+ * never waits on it.
  */
-static int e_edit_open(ECNT *cn, char *filename, int view, int *err)
+static int e_edit_open(ECNT *cn, char *filename, int view, WpeReadOutcome *why)
 {
  extern char *e_hlp_str[];
  extern WOPT *eblst, *hblst, *mblst, *dblst;
@@ -599,14 +636,15 @@ static int e_edit_open(ECNT *cn, char *filename, int view, int *err)
  FENSTER *f, *fo;
  char *complete_fname, *path, *file;
  int ftype = 0, i, j, st = 0;
- int open_err = 0;
+ WpeReadOutcome read_why;       /* what the read owner said of the file */
+ WpeReadAsk ask = WPE_READ_ASK_LOAD("file");
  struct stat buf[1];
  BUFFER *new_text;               /* the text this window is given */
  SCHIRM *new_screen;             /* its view state */
  WpePane pane = WPE_PANE_FILE;   /* which pane, by the intent that opens it */
 
- if (err != NULL)
-  *err = 0;
+ memset(&read_why, 0, sizeof read_why);
+ e_edit_outcome_set_errno(why, 0);
  /* Check to see if the file is already opened BD */
  WpeFilenameToPathFile(filename, &path, &file);
  /* Should check for error here */
@@ -625,18 +663,10 @@ static int e_edit_open(ECNT *cn, char *filename, int view, int *err)
  if (cn->mxedt >= MAXEDT)
  {
   e_error(e_msg[ERR_MAXWINS], 0, cn->fb);
-  return(e_edit_stop_before_window(path, file, err, 0));
+  return(e_edit_stop_before_window(path, file, why, 0));
  }
- if (!view && stat(filename, buf) == 0)
- {
-  if (S_ISDIR(buf->st_mode))
-   return(e_edit_stop_before_window(path, file, err, EISDIR));
-  if (!S_ISREG(buf->st_mode))
-  {
-   /* error message should go here */
-   return(e_edit_stop_before_window(path, file, err, 0));
-  }
- }
+ if (!view && stat(filename, buf) == 0 && S_ISDIR(buf->st_mode))
+  return(e_edit_stop_before_window(path, file, why, EISDIR));
  for (j = 1; j <= MAXEDT; j++)
  {
   for (i = 1; i <= cn->mxedt && cn->edt[i] != j; i++);
@@ -879,26 +909,21 @@ static int e_edit_open(ECNT *cn, char *filename, int view, int *err)
   e_buffer_mark_view(e_window_text(f));       /* Help, Messages, Watches and Stack */
  if (!view && e_edit_reads_file(ftype))
  {
-  fp = fopen(complete_fname, "rb");
-  if (fp == NULL)
-   open_err = errno;
+  fp = wpe_read_stream_open(complete_fname, &ask, &read_why);
  }
- if (e_edit_open_refused_by_system(ftype, view, open_err))
+ if (e_edit_open_refused(ftype, view, &read_why))
  {
   FREE(complete_fname);
   e_edit_drop_window(cn, f);
-  if (err != NULL)
-   *err = open_err;
+  if (why != NULL)
+   *why = read_why;
   return(-1);
  }
  if (fp != NULL && access(complete_fname, 2) != 0)
   f->ins = WPE_INS_READONLY;
 #ifdef UNIX
- if (fp != NULL && fstat(fileno(fp), buf) == 0)
- {
-  f->filemode = buf->st_mode;
-  wpe_write_identity_take_fd(&f->file_id, fileno(fp));
- }
+ if (fp != NULL)
+  e_edit_take_file_state(f, &read_why);
  else
  {
   umask(i = umask(077));
@@ -1010,35 +1035,37 @@ static int e_edit_open(ECNT *cn, char *filename, int view, int *err)
  * Watches, Stack.
  * Return: 0 when the window opened or was already open, -1 when it did not.
  *
- * What the user gets: a file the system will not let the editor read (closed
- * to reading, under a file, a loop of links, a folder) opens no window and a
- * box names the file and the system's reason, so no empty window invites a
- * Save over the real file.  A file that does not exist opens as a new file.
+ * What the user gets: a file the editor will not read (closed to reading,
+ * under a file, a loop of links, a folder, a pipe, a device) opens no window
+ * and a box names the file and the reason ("it is a pipe"), so no empty
+ * window invites a Save over the real file and the editor never waits for a
+ * pipe nobody writes to.  A file that does not exist opens as a new file.
  */
 int e_edit(ECNT *cn, char *filename)
 {
- int err = 0;
- int ret = e_edit_open(cn, filename, 0, &err);
+ WpeReadOutcome why;
+ int ret = e_edit_open(cn, filename, 0, &why);
 
- if (ret != 0 && err != 0)
-  e_say_path_refused(cn->f[cn->mxedt], "file", filename, err);
+ if (ret != 0 && why.why != WPE_READ_DONE)
+  e_say_read_refused(cn->f[cn->mxedt], "file", filename, &why);
  return(ret);
 }
 
 /**
  * e_edit_outcome - Open an edit window like e_edit, and leave the words about
- * a refusal of the system to the caller.
- * @cn: the editor; @filename: the file; @err: gets the errno of the
- * refusal, 0 when the window opened or the editor already said why.
+ * a refusal of the file to the caller.
+ * @cn: the editor; @filename: the file; @why: gets the owner's outcome of
+ * the refusal, its why DONE when the window opened or the editor already
+ * said why.
  * Return: 0 or -1, as e_edit.
  *
  * For a caller that has a report of its own and a loop that a box would
  * stop: the debugger on every stop in a file, the assistant applying a list
- * of files.
+ * of files.  wpe_read_reason gives the words of the refusal.
  */
-int e_edit_outcome(ECNT *cn, char *filename, int *err)
+int e_edit_outcome(ECNT *cn, char *filename, WpeReadOutcome *why)
 {
- return(e_edit_open(cn, filename, 0, err));
+ return(e_edit_open(cn, filename, 0, why));
 }
 
 /**

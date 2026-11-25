@@ -589,7 +589,7 @@ void e_find_resume_check(BUFFER *b);
 
 /*   we_edit.c   */
 int e_edit(ECNT *cn, char *filename);
-int e_edit_outcome(ECNT *cn, char *filename, int *err);
+int e_edit_outcome(ECNT *cn, char *filename, WpeReadOutcome *why);
 int e_edit_view(ECNT *cn, char *name);
 int e_eingabe(ECNT *e);
 void e_paint_desk_ready(void);
