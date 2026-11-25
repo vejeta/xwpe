@@ -28,6 +28,7 @@
 #include <unistd.h>
 
 #include "testdir.h"
+#include "seen_rows.h"
 #include "../we_ai_ckrec.h"
 
 #define ROW_NO_VERDICT   (-1)
@@ -586,16 +587,27 @@ static void row_removed_beside_a_cut_place(void)
 }
 
 /**
- * clear_no_birth_hook - Stop playing a system whose birth time proves nothing.
+ * clear_seen_hook - Stop playing a system whose birth time proves nothing, or only goes back.
  *
  * What the user gets: the rows after this one judge identity on the file
  * system they really run on.  The hook is a lie told to every look made while
  * it is set, so a row that sets it clears it on every way out of itself, and
  * the clearing lives here in one place instead of one copy per path.
  */
-static void clear_no_birth_hook(void)
+static void clear_seen_hook(void)
 {
  unsetenv(WPE_SEEN_TEST_FAIL_ENV);
+}
+
+/**
+ * play_back_only_system - Play FreeBSD: the owner can move a birth back and no call moves it forward.
+ *
+ * Every look made until clear_seen_hook reads its statx birth as back-only,
+ * which is how the real system's stat reports it there.
+ */
+static void play_back_only_system(void)
+{
+ setenv(WPE_SEEN_TEST_FAIL_ENV, WPE_SEEN_TEST_FAIL_BIRTH_BACK_ONLY, 1);
 }
 
 /**
@@ -624,7 +636,7 @@ static void row_claimed_removal_under_a_cut(void)
  path_of(p, sizeof p, w, "gone");
  if (stat(p, &removed) != 0) {
   say_fail(row, "stat gone: %s", strerror(errno));
-  clear_no_birth_hook();
+  clear_seen_hook();
   wpe_ckrec_free(r);
   return;
  }
@@ -637,13 +649,13 @@ static void row_claimed_removal_under_a_cut(void)
  path_of(p, sizeof p, w, "a/taken");
  if (stat(p, &taken) != 0) {
   say_fail(row, "stat a/taken: %s", strerror(errno));
-  clear_no_birth_hook();
+  clear_seen_hook();
   wpe_ckrec_free(r);
   return;
  }
  reused = removed.st_dev == taken.st_dev && removed.st_ino == taken.st_ino;
  if (!test_observation(reused, row, "this folder's file system never gives a removed file's number back")) {
-  clear_no_birth_hook();
+  clear_seen_hook();
   wpe_ckrec_free(r);
   return;
  }
@@ -653,10 +665,310 @@ static void row_claimed_removal_under_a_cut(void)
   put_file(w, f, "n\n");
  }
  walk_side(r, WPE_CK_NOW, w);
- clear_no_birth_hook();
+ clear_seen_hook();
  expect_kind(row, r, w, "gone", WPE_CK_CANNOT_SAY);
  expect_why(row, r, w, "gone", WPE_CK_WHY_BOUND);
  expect_kind(row, r, w, "a/taken", WPE_CK_MOVED);
+ wpe_ckrec_free(r);
+}
+
+/**
+ * later_birth_possible - Can a row about a birth that goes later run on this system and folder?
+ * @w: the row's folder; @row: the name a skip carries.
+ *
+ * What the user gets: a row that plays FreeBSD says by name where it cannot
+ * (macOS, a build with no birth, a file system with none) instead of failing
+ * for a reason that is the system's.
+ * Return: 1 when the row can run.
+ */
+static int later_birth_possible(const char *w, const char *row)
+{
+ if (!test_observation(seen_rows_birth_back_only_route(), row, "a birth time can go either way on this system"))
+  return 0;
+ return test_observation(seen_rows_birth_fact(w) != SEEN_BIRTH_ABSENT, row, "this folder's file system keeps no birth time");
+}
+
+/** Did the file system give the removed object's device and number to the object made after it? */
+static int number_came_back(const struct stat *removed, const struct stat *made)
+{
+ return removed->st_dev == made->st_dev && removed->st_ino == made->st_ino;
+}
+
+/** Is the birth of the second look later than the first's? */
+static int birth_is_later(const WpeSeen *first, const WpeSeen *second)
+{
+ if (second->seen_birth.tv_sec != first->seen_birth.tv_sec)
+  return second->seen_birth.tv_sec > first->seen_birth.tv_sec;
+ return second->seen_birth.tv_nsec > first->seen_birth.tv_nsec;
+}
+
+/**
+ * later_birth_reached - Did the row make the two objects it is about: one number, a later birth?
+ * @removed/@made: what stat said of each; @first/@second: what the identity owner looked at.
+ *
+ * Two births on one tick of the file system's clock prove nothing in either
+ * direction, so that is a skip by name and not a failure.
+ * Return: 1 when the row may go on.
+ */
+static int later_birth_reached(const char *row, const struct stat *removed, const struct stat *made,
+                               const WpeSeen *first, const WpeSeen *second)
+{
+ if (!test_observation(number_came_back(removed, made), row, "this folder's file system never gives a removed file's number back"))
+  return 0;
+ return test_observation(birth_is_later(first, second), row, "the two births fall on one tick of the clock here");
+}
+
+/**
+ * removal_beside_a_later_birth - Remove a file, make another that takes its number, on a system where a birth only goes back.
+ * @row: the row's name; @made_text: the text of the file made after the removal; @made_want: the verdict it must get.
+ *
+ * What the user gets: a file the run removed is told as removed even when a
+ * file the run made afterwards took its number.  FreeBSD hands the number
+ * back and cannot prove the two objects apart by equality, but no call moves
+ * a birth forward, so the newer birth proves another object.  The row plays
+ * that system with the identity owner's own hook.  The text of the new file
+ * decides whether it can be a copy: another size is CREATED, the same size is
+ * MAYBE_COPY (kept), and the removed name reads REMOVED_NO_COPY either way.
+ */
+static void removal_beside_a_later_birth(const char *row, const char *made_text, int made_want)
+{
+ char w[NAME_MAX_TEST], p[NAME_MAX_TEST];
+ WpeCkRecord *r = new_record(BOUND_BIG);
+ struct stat removed, made;
+ WpeSeen first, second;
+ row_folder(w, sizeof w);
+ make_folder(w, "a");
+ put_file(w, "gone", "GONE\n");
+ if (!later_birth_possible(w, row)) {
+  wpe_ckrec_free(r);
+  return;
+ }
+ play_back_only_system();
+ path_of(p, sizeof p, w, "gone");
+ if (stat(p, &removed) != 0 || wpe_seen_look_name(p, 0, &first) != 0) {
+  say_fail(row, "look at gone: %s", strerror(errno));
+  clear_seen_hook();
+  wpe_ckrec_free(r);
+  return;
+ }
+ walk_side(r, WPE_CK_THEN, w);
+ remove_file(w, "gone");
+ put_file(w, "a/taken", made_text);
+ path_of(p, sizeof p, w, "a/taken");
+ if (stat(p, &made) != 0 || wpe_seen_look_name(p, 0, &second) != 0) {
+  say_fail(row, "look at a/taken: %s", strerror(errno));
+  clear_seen_hook();
+  wpe_ckrec_free(r);
+  return;
+ }
+ if (!later_birth_reached(row, &removed, &made, &first, &second)) {
+  clear_seen_hook();
+  wpe_ckrec_free(r);
+  return;
+ }
+ walk_side(r, WPE_CK_NOW, w);
+ clear_seen_hook();
+ expect_kind(row, r, w, "gone", WPE_CK_REMOVED_NO_COPY);
+ expect_kind(row, r, w, "a/taken", made_want);
+ wpe_ckrec_free(r);
+}
+
+/** A removal beside a later birth, the new file another size: the removed file is told, the new one is new. */
+static void row_removed_beside_a_later_birth(void)
+{
+ removal_beside_a_later_birth("a removal beside a later birth", "A LONGER TEXT THAN GONE\n", WPE_CK_CREATED);
+}
+
+/** The same with a file as large as the removed one: it may be a copy, so r keeps it. */
+static void row_removed_beside_a_later_birth_same_size(void)
+{
+ removal_beside_a_later_birth("a removal beside a later birth, same size", "GONE\n", WPE_CK_MAYBE_COPY);
+}
+
+/**
+ * row_removed_folder_beside_a_later_birth - A removed folder, and a folder that took its number.
+ *
+ * What the user gets: the same answer for a folder as for a file.  A file in a
+ * folder the run removed is told as removed, and a file in the folder the run
+ * made after it is new, instead of the new folder reading as the old one moved
+ * (which says MOVED for a file that is new, and nothing for the one removed).
+ */
+static void row_removed_folder_beside_a_later_birth(void)
+{
+ char w[NAME_MAX_TEST], p[NAME_MAX_TEST];
+ WpeCkRecord *r = new_record(BOUND_BIG);
+ const char *row = "a removed folder beside a later birth";
+ struct stat removed, made;
+ WpeSeen first, second;
+ row_folder(w, sizeof w);
+ make_folder(w, "d");
+ put_file(w, "d/x", "X\n");
+ if (!later_birth_possible(w, row)) {
+  wpe_ckrec_free(r);
+  return;
+ }
+ play_back_only_system();
+ path_of(p, sizeof p, w, "d");
+ if (stat(p, &removed) != 0 || wpe_seen_look_name(p, 0, &first) != 0) {
+  say_fail(row, "look at d: %s", strerror(errno));
+  clear_seen_hook();
+  wpe_ckrec_free(r);
+  return;
+ }
+ walk_side(r, WPE_CK_THEN, w);
+ remove_file(w, "d/x");
+ remove_entry_quiet(w, "d");
+ make_folder(w, "e");
+ put_file(w, "e/x", "NEW\n");
+ path_of(p, sizeof p, w, "e");
+ if (stat(p, &made) != 0 || wpe_seen_look_name(p, 0, &second) != 0) {
+  say_fail(row, "look at e: %s", strerror(errno));
+  clear_seen_hook();
+  wpe_ckrec_free(r);
+  return;
+ }
+ if (!later_birth_reached(row, &removed, &made, &first, &second)) {
+  clear_seen_hook();
+  wpe_ckrec_free(r);
+  return;
+ }
+ walk_side(r, WPE_CK_NOW, w);
+ clear_seen_hook();
+ expect_kind(row, r, w, "d/x", WPE_CK_REMOVED_NO_COPY);
+ expect_kind(row, r, w, "e/x", WPE_CK_CREATED);
+ wpe_ckrec_free(r);
+}
+
+/**
+ * row_a_rename_on_a_back_only_birth - A rename keeps its birth, so it is still a move on FreeBSD.
+ *
+ * What the user gets: the guard against a question that is too eager.  A file
+ * the run renamed keeps its birth time, so on a system where a birth only goes
+ * back the two looks agree and the new name is still MOVED, with no row of its
+ * own for the old name.  Green before the fix and after: it pins that the new
+ * question never turns a real move into a removal.
+ */
+static void row_a_rename_on_a_back_only_birth(void)
+{
+ char w[NAME_MAX_TEST];
+ WpeCkRecord *r = new_record(BOUND_BIG);
+ const char *row = "a rename on a back-only birth";
+ row_folder(w, sizeof w);
+ put_file(w, "a.c", "USER\n");
+ if (!later_birth_possible(w, row)) {
+  wpe_ckrec_free(r);
+  return;
+ }
+ play_back_only_system();
+ walk_side(r, WPE_CK_THEN, w);
+ rename_to(w, "a.c", "b.c");
+ walk_side(r, WPE_CK_NOW, w);
+ clear_seen_hook();
+ expect_kind(row, r, w, "b.c", WPE_CK_MOVED);
+ expect_kind(row, r, w, "a.c", ROW_NO_VERDICT);
+ wpe_ckrec_free(r);
+}
+
+/**
+ * row_order_on_a_back_only_system - The verdicts do not depend on the order the files were made, on FreeBSD's rules.
+ *
+ * What the user gets: the same answer whichever of the new files the file
+ * system gave a removed file's number to.  This is the red a FreeBSD run
+ * reported; the run here plays that system's birth rule and so guards the
+ * reported symptom on every Linux run, not only the synthetic row.
+ */
+/* What row_order's run is: two names replaced, two removed with no copy and
+   three created.  Equal answers in every order are not enough on their own:
+   the three orders can agree on a wrong story, two removed names silent. */
+#define ORDER_TRUE_STORY \
+ "a.c=REPLACED;b.c=REMOVED_NO_COPY;c.c=REPLACED;d.c=REMOVED_NO_COPY;" \
+ "n0.c=CREATED;n1.c=CREATED;n2.c=CREATED;"
+
+static void row_order_on_a_back_only_system(void)
+{
+ static const int first[] = { 0, 1, 2, 3 };
+ char story[1024];
+ play_back_only_system();
+ row_order();
+ order_text(first, story, sizeof story);
+ rows++;
+ if (strcmp(story, ORDER_TRUE_STORY) != 0)
+  say_fail("order on a back-only system", "the run's story is not the true one:\n  got  %s\n  want %s",
+           story, ORDER_TRUE_STORY);
+ clear_seen_hook();
+}
+
+/**
+ * row_replaced_names_its_source - A name another file was moved over names where that file came from.
+ *
+ * What the user gets: when the run moves b.c over a c.c that was already
+ * there, the sentence for c.c names b.c, the file the checkpoint listed.  The
+ * claim lets b.c go without a row of its own, so its name must be said
+ * somewhere; saying "another file" left the user not knowing b.c had gone.
+ */
+static void row_replaced_names_its_source(void)
+{
+ char w[NAME_MAX_TEST], p[NAME_MAX_TEST], line[WPE_CK_SENTENCE_MAX];
+ WpeCkRecord *r = new_record(BOUND_BIG);
+ const char *row = "a replaced name names its source";
+ WpeCkVerdict v;
+ row_folder(w, sizeof w);
+ put_file(w, "b.c", "BEE\n");
+ put_file(w, "c.c", "SEA, THE OLD ONE\n");
+ walk_side(r, WPE_CK_THEN, w);
+ rename_to(w, "b.c", "c.c");
+ walk_side(r, WPE_CK_NOW, w);
+ expect_kind(row, r, w, "c.c", WPE_CK_REPLACED);
+ expect_kind(row, r, w, "b.c", ROW_NO_VERDICT);
+ path_of(p, sizeof p, w, "c.c");
+ rows++;
+ if (!wpe_ckrec_verdict_of(r, p, &v) || v.from == NULL) {
+  say_fail(row, "the verdict of c.c carries no source");
+  wpe_ckrec_free(r);
+  return;
+ }
+ (void)wpe_ckrec_sentence(line, sizeof line, &v);
+ rows++;
+ if (!strstr(line, v.from)) say_fail(row, "the sentence does not name the file that moved here: %s", line);
+ wpe_ckrec_free(r);
+}
+
+/**
+ * row_replaced_folder_names_its_source - A folder moved over another folder is not silent either.
+ *
+ * What the user gets: the same as for a file.  An empty folder b renamed over
+ * an empty folder c leaves one verdict, for c, and b is named nowhere else, so
+ * c's sentence must name b.
+ */
+static void row_replaced_folder_names_its_source(void)
+{
+ char w[NAME_MAX_TEST], p[NAME_MAX_TEST], line[WPE_CK_SENTENCE_MAX];
+ WpeCkRecord *r = new_record(BOUND_BIG);
+ const char *row = "a replaced folder names its source";
+ WpeCkVerdict v;
+ row_folder(w, sizeof w);
+ make_folder(w, "b");
+ make_folder(w, "c");
+ walk_side(r, WPE_CK_THEN, w);
+ rename_to(w, "b", "c");
+ walk_side(r, WPE_CK_NOW, w);
+ expect_kind(row, r, w, "c", WPE_CK_REPLACED);
+ expect_kind(row, r, w, "b", ROW_NO_VERDICT);
+ path_of(p, sizeof p, w, "c");
+ rows++;
+ if (!wpe_ckrec_verdict_of(r, p, &v) || v.from == NULL) {
+  say_fail(row, "the verdict of c carries no source");
+  wpe_ckrec_free(r);
+  return;
+ }
+ rows++;
+ if (wpe_ckrec_sentence(line, sizeof line, &v) <= 0) {
+  say_fail(row, "the verdict of c has no sentence");
+  wpe_ckrec_free(r);
+  return;
+ }
+ rows++;
+ if (!strstr(line, v.from)) say_fail(row, "the sentence does not name the folder that moved here: %s", line);
  wpe_ckrec_free(r);
 }
 
@@ -695,7 +1007,7 @@ static void row_folder_renamed_under_a_cut(void)
   put_file(w, f, "n\n");
  }
  walk_side(r, WPE_CK_NOW, w);
- clear_no_birth_hook();
+ clear_seen_hook();
  expect_kind(row, r, w, "b", WPE_CK_MOVED);
  expect_kind(row, r, w, "b/child", WPE_CK_MOVED);
  expect_kind(row, r, w, "a/child", WPE_CK_CANNOT_SAY);
@@ -1131,6 +1443,53 @@ static void row_no_look_is_no_identity(void)
 
 /* ---- row 11: the words --------------------------------------------------------- */
 
+/**
+ * kind_names_its_source - Is this a kind whose verdict carries the name its object came from, so its sentence must print it?
+ * @is_folder: 1 for a folder's verdict, which speaks only for a move and a replacement.
+ */
+static int kind_names_its_source(int kind, int is_folder)
+{
+ if (kind == WPE_CK_MOVED || kind == WPE_CK_REPLACED)
+  return 1;
+ if (is_folder)
+  return 0;
+ return kind == WPE_CK_MOVED_HIDDEN || kind == WPE_CK_LINKED || kind == WPE_CK_MAYBE_COPY;
+}
+
+/**
+ * words_name_their_source - Every verdict that carries a source prints it, for a file and for a folder.
+ *
+ * What the user gets: no name the checkpoint listed goes unmentioned.  The
+ * check is over kinds, not over one bug, so the next kind that gains a source
+ * is caught too.  A REPLACED verdict names its source only when the object at
+ * the name is one the checkpoint knew, so the object is MOVED.
+ */
+static void words_name_their_source(void)
+{
+ static const WpeCkVerdictKind kinds[] = { WPE_CK_MOVED, WPE_CK_MOVED_HIDDEN, WPE_CK_LINKED, WPE_CK_MAYBE_COPY, WPE_CK_REPLACED };
+ char line[WPE_CK_SENTENCE_MAX];
+ size_t i;
+ int is_folder;
+ for (is_folder = 0; is_folder <= 1; is_folder++) {
+  for (i = 0; i < sizeof kinds / sizeof kinds[0]; i++) {
+   WpeCkVerdict v;
+   if (!kind_names_its_source((int)kinds[i], is_folder)) continue;
+   memset(&v, 0, sizeof v);
+   v.kind = kinds[i];
+   v.object = WPE_CK_MOVED;
+   v.is_folder = is_folder;
+   v.path = "/w/p";
+   v.from = "/w/q";
+   v.folder_now = WPE_CK_FOLDER_THERE;
+   (void)wpe_ckrec_sentence(line, sizeof line, &v);
+   rows++;
+   if (!strstr(line, "/w/q"))
+    say_fail("words", "%s%s carries a source and its sentence does not name it: %s", is_folder ? "a folder's " : "",
+             kind_name((int)kinds[i]), line);
+  }
+ }
+}
+
 static void row_words(void)
 {
  static const WpeCkVerdictKind kinds[] = { WPE_CK_STAYED, WPE_CK_CREATED, WPE_CK_REMOVED, WPE_CK_REMOVED_NO_COPY,
@@ -1141,6 +1500,7 @@ static void row_words(void)
                                   WPE_CK_WHY_ROOT_REPLACED, WPE_CK_WHY_TOOL, WPE_CK_WHY_IMAGE_LOST };
  char line[WPE_CK_SENTENCE_MAX];
  size_t i;
+ words_name_their_source();
  for (i = 0; i < sizeof kinds / sizeof kinds[0]; i++) {
   WpeCkVerdict v;
   const char *text;
@@ -1212,6 +1572,7 @@ int main(void)
  row_second_name();
  row_replaced_then_moved();
  row_order();
+ row_order_on_a_back_only_system();
  row_then_bound();
  row_now_bound_counts_only_new_names();
  row_refusals();
@@ -1223,6 +1584,12 @@ int main(void)
  row_no_look_is_no_identity();
  row_removed_beside_a_cut_place();
  row_claimed_removal_under_a_cut();
+ row_removed_beside_a_later_birth();
+ row_removed_beside_a_later_birth_same_size();
+ row_removed_folder_beside_a_later_birth();
+ row_a_rename_on_a_back_only_birth();
+ row_replaced_names_its_source();
+ row_replaced_folder_names_its_source();
  row_folder_renamed_under_a_cut();
  row_proven_rename_under_a_cut();
  row_proven_claim_survives_a_later_one();

@@ -53,6 +53,18 @@ Bugs fixed in 1.6.x:
   PgUp, PgDn and the arrows scroll the pane while the review waits for its key,
   so the sentence can be read before you answer.  New files after the run are
   found even in a workspace that already held the bound.
+* The assistant's changeset review tells a removed file as removed on FreeBSD
+  too, when a file the run made afterwards took its inode number.  There a
+  file's owner can move its birth time back and no system call moves it
+  forward, so a later birth proves another object; the removed file reads
+  "removed, no copy" (or the new one "new, kept" when it is as large) instead
+  of the new file reading "moved here" and the removed name going silent.  The
+  rule is the system calls', so a mount whose server sets birth times itself is
+  not covered.  NetBSD and macOS keep the old answer until their forward-move
+  probe, printed in the test log, shows no call moves a birth later.  The
+  review also says which file a "replaced" name was moved over: "c.c was
+  replaced by b.c, which the run moved here", for a file and for a folder, so
+  b.c is not left unmentioned.
 * A file or folder the system will not let you read now says so, with its
   name and the system's reason, instead of a guess or nothing.  Opening a
   file closed to reading (or open to writing only) used to show an empty

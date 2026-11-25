@@ -135,7 +135,7 @@
 # 24. "Is this the object I saw" is judged in one place, we_seen.c (22 and 23
 #     belong to the read owner and the path walk).  Strings and comments are
 #     blanked, names bounded by word, a macro counts as a site of its own.
-#     Each clause has its own tag in the allow file (r24a to r24g):
+#     Each clause has its own tag in the allow file (r24a to r24i):
 #     a. st_ino and st_dev appear in no product source but we_seen.c.  The one
 #        permanent row is we_startcmd.c built_rec_identify, which writes the
 #        numbers to a store and asks "unchanged", never "same".
@@ -157,6 +157,11 @@
 #     g. a call of wpe_seen_into_stat outside we_seen.c.  The bridge hands a
 #        record to the mode owner as a device and inode; the pass that moves
 #        the mode owner onto records deletes it and its allow row.
+#     h. wpe_seen_judge_contradicted appears outside we_seen.c and we_seen.h
+#        only inside ck_known_object (we_ai_ckrec.c), the one caller that says
+#        a name is gone.  No allow line.
+#     i. ck_known_object names it: a function that went back to the plain
+#        judge leaves the question defined and unused.  No allow line.
 #     Clauses (a) to (c) scan the product sources and headers, not the tests:
 #     a test makes files and reads their numbers on purpose.  The sites still
 #     to move are lines of the allow file, each naming its function and the
@@ -308,6 +313,11 @@ scan() {
     function note(rule, n) { if (ppmode) ppcnt[rule] += n; else cnt[rule] += n }
     function flush_fn(   r) {
       if (fn == "") return
+      # rule 24i: ck_known_object is the one caller of the question that says
+      # a name is gone, so it must name it (a function that stopped asking
+      # leaves the question defined and unused, and every row of it green)
+      if (file == "we_ai_ckrec.c" && fn == "ck_known_object" && !asked24h) cnt["r24i"] += 1
+      asked24h = 0
       # rule 25c: a literal that starts with a dot is the format of a snprintf,
       # or the last branch of a ?:, in a function that also reads the
       # environment (a place that falls back on the working folder when the
@@ -442,6 +452,20 @@ scan() {
       while (match(t, /(^|[^A-Za-z0-9_])statx[ \t]*[(]/)) { note("r24c", 1); t = substr(t, RSTART + RLENGTH) }
       count_word(m, "st_birthtim|st_birthtimespec|stx_btime", "r24c")
       count_word(m, "wpe_seen_into_stat", "r24g")
+      note24_contradicted(m)
+    }
+    # clauses h and i: wpe_seen_judge_contradicted, the question of a caller
+    # about to say a name is gone, is named outside we_seen.c only by
+    # ck_known_object (we_ai_ckrec.c).  A guard that acts on an object asks
+    # wpe_seen_judge; a second caller of this one is a second decision about
+    # what a removed name means.
+    function note24_contradicted(m,   t) {
+      t = m
+      while (match(t, /(^|[^A-Za-z0-9_])wpe_seen_judge_contradicted([^A-Za-z0-9_]|$)/)) {
+        if (file == "we_ai_ckrec.c" && fn == "ck_known_object" && !ppmode) asked24h = 1
+        else note("r24h", 1)
+        t = substr(t, RSTART + RLENGTH - 1)
+      }
     }
     function note24_everywhere(m,   t, p) {
       count_word(m, "ck_rdev|ck_rino", "r24d")
@@ -1204,6 +1228,16 @@ int fake_bridge(WpeSeen *rec, struct stat *st)
  wpe_seen_into_stat(rec, st);
  return(0);
 }
+int fake_contradicted(WpeSeen *a, WpeSeen *b)
+{
+ /* wpe_seen_judge_contradicted in a comment */
+ char *say = "wpe_seen_judge_contradicted in a string";
+ int my_wpe_seen_judge_contradicted_flag = 0;
+
+ if (wpe_seen_judge_contradicted(a, b) == WPE_SEEN_OTHER)
+  return(1);
+ return(my_wpe_seen_judge_contradicted_flag);
+}
 int fake_shown(const char *filen, struct stat *buf, WpeNameSeen *seen)
 {
  int rc = wpe_fileop_chmod_shown(filen, buf, &seen, 0644, &fo);
@@ -1223,7 +1257,28 @@ int owner_judge(struct stat *sa, WpeSeen *rec)
 {
  struct statx sx;
 
- return(sa->st_ino == rec->seen_ino && statx(0, "", 0, 0, &sx) == 0 && sx.stx_btime.tv_sec);
+ return(sa->st_ino == rec->seen_ino && statx(0, "", 0, 0, &sx) == 0 && sx.stx_btime.tv_sec &&
+        wpe_seen_judge_contradicted(rec, rec) == WPE_SEEN_OTHER);
+}
+EOF
+  # clause i: ck_known_object that does not name the question is blind, one
+  # that names it is the one allowed caller; the same name in the owner's
+  # file is no offence either
+  mkdir "$WORK/r24blind" "$WORK/r24named" || exit $BAD
+  cat > "$WORK/r24blind/we_ai_ckrec.c" <<'EOF'
+static CkEntry *ck_known_object(WpeCkRecord *r, const CkEntry *now, int *absent)
+{
+ if (wpe_seen_judge(&old_look, &new_look) == WPE_SEEN_OTHER)
+  return(NULL);
+ return(NULL);
+}
+EOF
+  cat > "$WORK/r24named/we_ai_ckrec.c" <<'EOF'
+static CkEntry *ck_known_object(WpeCkRecord *r, const CkEntry *now, int *absent)
+{
+ if (wpe_seen_judge_contradicted(&old_look, &new_look) == WPE_SEEN_OTHER)
+  return(NULL);
+ return(NULL);
 }
 EOF
   mkdir "$WORK/r24t" || exit $BAD
@@ -1425,6 +1480,8 @@ EOF
   scan "$WORK/we_fake_r24.c" >> "$WORK/fake.found"
   scan_header_mode "$WORK/we_fake_r24.h" >> "$WORK/fake.found"
   scan "$WORK/r24/we_seen.c" >> "$WORK/fake.found"
+  scan "$WORK/r24blind/we_ai_ckrec.c" >> "$WORK/fake.found"
+  scan "$WORK/r24named/we_ai_ckrec.c" >> "$WORK/fake.found"
   scan_tests "$WORK/r24t/test_fake.c" >> "$WORK/fake.found"
   scan "$WORK/we_fake_r15d.c" >> "$WORK/fake.found"
   scan "$WORK/we_fake_r17a.c" >> "$WORK/fake.found"
@@ -1478,6 +1535,8 @@ EOF
               "r24c we_fake_r24.c fake_statx 4" "r24d we_fake_r24.c fake_ck 4" \
               "r24a we_fake_r24.c fake_ck 2" "r24a we_fake_r24.h (preprocessor) 2" \
               "r24f we_fake_r24.c fake_shown 2" "r24g we_fake_r24.c fake_bridge 1" \
+              "r24h we_fake_r24.c fake_contradicted 1" \
+              "r24i we_ai_ckrec.c ck_known_object 1" \
               "r24e test_fake.c fake_row 4" "r24d test_fake.c fake_row 1" \
               "r15 we_fake.c fake_save 1" "r15 we_fake.c (preprocessor) 1" \
               "r15 we_fake_r15a.c write_mode_before_data 1" \
@@ -1505,8 +1564,15 @@ EOF
   done
   # rule 24: the owner's own file, and the one helper that asserts "another
   # inode" with a descriptor held, are no offence
-  if grep -q "^r24[abcg] we_seen.c " "$WORK/fake.found"; then
+  if grep -q "^r24[abcgh] we_seen.c " "$WORK/fake.found"; then
     echo "check-write-owner: FAIL (selftest: a file named we_seen.c was counted by rule 24; it found:)"
+    cat "$WORK/fake.found"
+    exit $BAD
+  fi
+  # clause h and i: the one caller that names the question, in the one
+  # function that may, is no offence
+  if [ "$(grep -c '^r24[hi] we_ai_ckrec.c ' "$WORK/fake.found")" -ne 1 ]; then
+    echo "check-write-owner: FAIL (selftest: ck_known_object naming the question was counted by rule 24; it found:)"
     cat "$WORK/fake.found"
     exit $BAD
   fi
@@ -1713,6 +1779,10 @@ awk -F'|' '
         print "offender: " $1 " " $2 ": ck_rdev or ck_rino (a folder number kept by hand: hold the folder with wpe_seen_hold_dir and ask wpe_seen_held_is), or wpe_write_identity_is or _differs with the device and inode as two arguments (pass the WpeSeen of the look)"
       else if (rule == "r24g")
         print "offender: " $1 " " $2 ": wpe_seen_into_stat is called outside we_seen.c.  It hands a record to the mode owner as a device and inode, which a file system gives back: the mode owner takes a WpeSeen and asks wpe_seen_judge.  A site still to move is a line of the allow file with its pass"
+      else if (rule == "r24h")
+        print "offender: " $1 " " $2 ": wpe_seen_judge_contradicted is named outside we_seen.c and ck_known_object (we_ai_ckrec.c).  It answers one question, whether a name is gone because a later birth proves another object; a guard that acts on an object asks wpe_seen_judge, and a second caller of this one is a second decision about what a removed name means.  No allow line"
+      else if (rule == "r24i")
+        print "offender: " $1 " " $2 ": ck_known_object does not ask wpe_seen_judge_contradicted.  It is the one caller that decides which then entry an object present now came from: asking the plain judge lets a file the run made, which took a removed file'"'"'s number, answer for the removed name, and the removed name goes silent.  No allow line"
       else if (rule == "r24f")
         print "offender: " $1 " " $2 ": the file the user was shown is passed to wpe_fileop_chmod_shown or wpe_write_set_perm_seen as something other than NULL or a WpeSeen called shown.  A struct stat there compiles (incompatible pointers are accepted) and is compared by inode number: take a WpeSeen with wpe_seen_look_name next to the dialog'"'"'s stat"
       else if (rule == "r24e")

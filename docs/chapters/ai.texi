@@ -1046,7 +1046,11 @@ reason.  A new file as large as a file the run removed, which the checkpoint
 holds no copy of, reads @samp{new, kept}: it may hold your bytes, so @kbd{r}
 keeps it and the pane names the removed file.  A second name the run gave to a
 file reads @samp{second name}, and a file the run replaced by another one
-@samp{replaced, no copy}.  Whatever the review could not see is said: a folder
+@samp{replaced, no copy}; when the replacing file was moved from another
+name the pane sentence names that name (@samp{c.c was replaced by b.c, which
+the run moved here}), for a file and for a folder.  On FreeBSD, where no system
+call moves a birth time forward, a removed file stays @samp{removed} even when
+a file made after it took its inode number.  Whatever the review could not see is said: a folder
 the checkpoint or the review could not read, the bound of the walk, a workspace
 folder the run replaced, a git that did not answer after the run.  Each is a
 pane sentence (the first few, then a count; every one is in the trace) and one

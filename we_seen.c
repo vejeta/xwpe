@@ -104,6 +104,23 @@ static int seen_test_drops_birth(void)
 }
 
 /**
+ * seen_test_plays_back_only - Does the test hook ask every statx birth to count as back-only?
+ *
+ * XWPE_TEST_FAIL=seen-birth-back-only lets a row on Linux play FreeBSD, where
+ * the owner of a file can move its birth back and no call moves it forward.
+ * It is read by seen_fill_statx only, the one route whose birth is the
+ * kernel's; the stat route already reports the system's own class.  It cannot
+ * weaken a guard: it moves one answer of wpe_seen_judge_contradicted from
+ * UNSURE to OTHER, and that question has one caller.
+ */
+static int seen_test_plays_back_only(void)
+{
+ const char *hook = getenv(WPE_SEEN_TEST_FAIL_ENV);
+
+ return(hook != NULL && strstr(hook, WPE_SEEN_TEST_FAIL_BIRTH_BACK_ONLY) != NULL);
+}
+
+/**
  * seen_fill_common - Copy the members every system reports from a stat.
  *
  * The birth time is left out: it is added by the look that has one.
@@ -126,12 +143,12 @@ static void seen_fill_common(WpeSeen *s, const struct stat *st)
 
 /**
  * seen_set_birth - Keep a birth time the system reported, if it is a real one.
- * @forgeable: 1 when a user can set that time on this system.
+ * @trust: who can move that time on this system, and which way.
  *
  * A birth of zero seconds and zero nanoseconds, or of -1, counts as none:
  * some systems print that for a file system that has no birth time.
  */
-static void seen_set_birth(WpeSeen *s, const struct timespec *birth, int forgeable)
+static void seen_set_birth(WpeSeen *s, const struct timespec *birth, WpeSeenBirthTrust trust)
 {
  if (seen_test_drops_birth())
   return;
@@ -140,9 +157,23 @@ static void seen_set_birth(WpeSeen *s, const struct timespec *birth, int forgeab
  if (birth->tv_sec == -1)
   return;
  s->seen_has_birth = 1;
- s->seen_birth_forgeable = forgeable;
+ s->seen_birth_trust = trust;
  s->seen_birth = *birth;
 }
+
+/**
+ * WPE_PLATFORM_BIRTH_TRUST - The trust class of a birth a struct stat carries, a build fact.
+ *
+ * Kept here beside seen_take_stat_birth so we_platform.h names no type of the
+ * judge.  When unsure the class is ANY_WAY, the weaker one.
+ */
+#if WPE_PLATFORM_STAT_BIRTH == WPE_PLATFORM_STAT_BIRTH_NONE
+# define WPE_PLATFORM_BIRTH_TRUST WPE_SEEN_BIRTH_KERNEL   /* no birth is ever compared */
+#elif WPE_PLATFORM_BIRTH_BACK_ONLY
+# define WPE_PLATFORM_BIRTH_TRUST WPE_SEEN_BIRTH_BACK_ONLY
+#else
+# define WPE_PLATFORM_BIRTH_TRUST WPE_SEEN_BIRTH_ANY_WAY
+#endif
 
 /**
  * seen_take_stat_birth - Add the birth time a struct stat carries, if it has one.
@@ -154,9 +185,9 @@ static void seen_set_birth(WpeSeen *s, const struct timespec *birth, int forgeab
 static void seen_take_stat_birth(WpeSeen *s, const struct stat *st)
 {
 #if WPE_PLATFORM_STAT_BIRTH == WPE_PLATFORM_STAT_BIRTHTIM
- seen_set_birth(s, &st->st_birthtim, 1);
+ seen_set_birth(s, &st->st_birthtim, WPE_PLATFORM_BIRTH_TRUST);
 #elif WPE_PLATFORM_STAT_BIRTH == WPE_PLATFORM_STAT_BIRTHTIMESPEC
- seen_set_birth(s, &st->st_birthtimespec, 1);
+ seen_set_birth(s, &st->st_birthtimespec, WPE_PLATFORM_BIRTH_TRUST);
 #else
  (void)s;
  (void)st;
@@ -218,7 +249,10 @@ static void seen_fill_statx(WpeSeen *s, const struct statx *sx)
   return;
  birth.tv_sec = (time_t)sx->stx_btime.tv_sec;
  birth.tv_nsec = (long)sx->stx_btime.tv_nsec;
- seen_set_birth(s, &birth, 0);
+ if (seen_test_plays_back_only())
+  seen_set_birth(s, &birth, WPE_SEEN_BIRTH_BACK_ONLY);
+ else
+  seen_set_birth(s, &birth, WPE_SEEN_BIRTH_KERNEL);
 }
 
 /**
@@ -401,6 +435,20 @@ static int seen_births_comparable(const WpeSeen *a, const WpeSeen *b)
  return(a->seen_has_birth && b->seen_has_birth);
 }
 
+/** Is the first time later than the second? */
+static int seen_time_later(const struct timespec *a, const struct timespec *b)
+{
+ if (a->tv_sec != b->tv_sec)
+  return(a->tv_sec > b->tv_sec);
+ return(a->tv_nsec > b->tv_nsec);
+}
+
+/** Can the birth time of these two looks only have gone back between them? */
+static int seen_birth_went_back_only(const WpeSeen *a, const WpeSeen *b)
+{
+ return(a->seen_birth_trust == WPE_SEEN_BIRTH_BACK_ONLY && b->seen_birth_trust == WPE_SEEN_BIRTH_BACK_ONLY);
+}
+
 /** Do the owner, group, mode, size and modification time agree? */
 static int seen_fields_agree(const WpeSeen *a, const WpeSeen *b)
 {
@@ -447,7 +495,7 @@ static WpeSeenIs seen_judge_touched(const WpeSeen *then, const WpeSeen *now)
    return(WPE_SEEN_SAME);
   return(WPE_SEEN_UNSURE);
  }
- if (then->seen_birth_forgeable || now->seen_birth_forgeable)
+ if (then->seen_birth_trust != WPE_SEEN_BIRTH_KERNEL || now->seen_birth_trust != WPE_SEEN_BIRTH_KERNEL)
   return(WPE_SEEN_UNSURE);
  return(WPE_SEEN_OTHER);
 }
@@ -498,6 +546,38 @@ WpeSeenIs wpe_seen_judge_proved(const WpeSeen *then, const WpeSeen *now)
  if (!seen_births_comparable(then, now))
   return(WPE_SEEN_UNSURE);
  return(WPE_SEEN_SAME);
+}
+
+/**
+ * wpe_seen_judge_contradicted - Is the object proven to be another one than the one seen?
+ * @then: what the editor remembered.  @now: a look made just now.
+ *
+ * What the user gets: a file the run removed is told as removed, instead of
+ * being answered by a file the run made that took its number.  Where only the
+ * kernel sets the birth time, wpe_seen_judge already proves that (its last
+ * step answers OTHER), so this adds the systems where the owner of a file can
+ * set its birth time and can only set it back.  There a birth later than the
+ * one remembered belongs to an object made after the look, which cannot be
+ * the object seen, however much the rest agrees.  A birth that went back
+ * proves nothing.  Where either look reads a birth its owner can move either
+ * way, or one side has none, nothing is contradicted.  The rule is the system
+ * calls': a server that applies a client's birth time is not held to it.  A
+ * guard that acts on an object asks wpe_seen_judge; a caller that is about to
+ * say a name is gone asks this.
+ * Return: OTHER when the two looks are proven to be two objects, else the
+ * answer wpe_seen_judge gave, unchanged.
+ */
+WpeSeenIs wpe_seen_judge_contradicted(const WpeSeen *then, const WpeSeen *now)
+{
+ WpeSeenIs is = wpe_seen_judge(then, now);
+
+ if (is == WPE_SEEN_OTHER || !seen_births_comparable(then, now))
+  return(is);
+ if (!seen_birth_went_back_only(then, now))
+  return(is);
+ if (seen_time_later(&now->seen_birth, &then->seen_birth))
+  return(WPE_SEEN_OTHER);
+ return(is);
 }
 
 /**

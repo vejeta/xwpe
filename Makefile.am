@@ -1494,7 +1494,7 @@ endif
 # moments against the verdict the judge gives, a renamed file or folder, a bound
 # on either side, a folder nobody may read, and the words of every verdict and
 # note, each on a real folder the test makes.
-test_ai_ckrec_SOURCES = tests/test_ai_ckrec.c tests/testdir.h we_ai_ckrec.c we_read.c we_seen.c we_places.c we_path.c we_fmt.c
+test_ai_ckrec_SOURCES = tests/test_ai_ckrec.c tests/testdir.h tests/seen_rows.h we_ai_ckrec.c we_read.c we_seen.c we_places.c we_path.c we_fmt.c
 test_ai_ckrec_CFLAGS = $(TEST_CFLAGS)
 # How the assistant's children are held (we_contain.c): the environment each
 # profile gives its child, the PATH and the program resolved in the parent,

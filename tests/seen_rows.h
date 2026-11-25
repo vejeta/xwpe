@@ -33,6 +33,9 @@
 #include <sys/types.h>
 #include <time.h>
 #include <unistd.h>
+#if defined(__APPLE__)
+# include <sys/attr.h>
+#endif
 
 #include "testdir.h"
 #include "../we_platform.h"
@@ -64,6 +67,7 @@
 #define SEEN_ROWS_NAME_SIZE   64
 #define SEEN_ROWS_FORGE_BACK_S  1000  /* seconds a probe sets a file's times back to see whether its birth follows */
 #define SEEN_ROWS_FORGE_SLACK_S 2     /* seconds of slack when reading the birth back */
+#define SEEN_ROWS_FORGE_FORWARD_S 1000 /* seconds a probe sets a file's times later, to see whether its birth follows */
 
 /** What a row calls to make the object again under NAME (a file, a link or a folder). */
 typedef int (*SeenRowsMake)(const char *path, void *ctx);
@@ -1023,6 +1027,184 @@ static int seen_rows_utimes_moves_birth(const char *dir)
 }
 
 /**
+ * seen_rows_birth_back_only_route - Can a row play, or run on, a system where a birth only goes back?
+ *
+ * Read from the build's own macros, never from the judge: 1 where the birth
+ * comes from statx (the test hook plays FreeBSD there) or where the build says
+ * the system is back-only, 0 elsewhere (macOS, a build with no birth member).
+ * A row that needs it skips by name when it is 0.
+ */
+static int seen_rows_birth_back_only_route(void)
+{
+#if WPE_PLATFORM_STATX_BTIME
+ return(1);
+#elif WPE_PLATFORM_BIRTH_BACK_ONLY
+ return(1);
+#else
+ return(0);
+#endif
+}
+
+#if WPE_PLATFORM_STAT_BIRTH != WPE_PLATFORM_STAT_BIRTH_NONE
+
+/** The seconds of the birth time a stat carries. */
+static time_t seen_rows_birth_seconds(const struct stat *st)
+{
+# if WPE_PLATFORM_STAT_BIRTH == WPE_PLATFORM_STAT_BIRTHTIM
+ return(st->st_birthtim.tv_sec);
+# else
+ return(st->st_birthtimespec.tv_sec);
+# endif
+}
+
+/** Set a file's access and modification times with utimes. */
+static int seen_rows_set_by_utimes(const char *path, time_t when)
+{
+ struct timeval tv[2];
+
+ tv[0].tv_sec = tv[1].tv_sec = when;
+ tv[0].tv_usec = tv[1].tv_usec = 0;
+ return(utimes(path, tv));
+}
+
+/** Set a file's access and modification times with utimensat. */
+static int seen_rows_set_by_utimensat(const char *path, time_t when)
+{
+ struct timespec ts[2];
+
+ ts[0].tv_sec = ts[1].tv_sec = when;
+ ts[0].tv_nsec = ts[1].tv_nsec = 0;
+ return(utimensat(AT_FDCWD, path, ts, 0));
+}
+
+/** Set a file's access and modification times with futimens on a descriptor. */
+static int seen_rows_set_by_futimens(const char *path, time_t when)
+{
+ struct timespec ts[2];
+ int fd = open(path, O_RDONLY);
+ int rc;
+
+ if (fd < 0)
+  return(-1);
+ ts[0].tv_sec = ts[1].tv_sec = when;
+ ts[0].tv_nsec = ts[1].tv_nsec = 0;
+ rc = futimens(fd, ts);
+ close(fd);
+ return(rc);
+}
+
+# if defined(__APPLE__)
+/** Set a file's birth time itself, the one call that does on macOS (ATTR_CMN_CRTIME). */
+static int seen_rows_set_by_setattrlist(const char *path, time_t when)
+{
+ struct attrlist al;
+ struct timespec ts;
+
+ memset(&al, 0, sizeof al);
+ al.bitmapcount = ATTR_BIT_MAP_COUNT;
+ al.commonattr = ATTR_CMN_CRTIME;
+ ts.tv_sec = when;
+ ts.tv_nsec = 0;
+ return(setattrlist(path, &al, &ts, sizeof ts, 0));
+}
+# endif
+
+typedef int (*SeenRowsBirthSetter)(const char *path, time_t when);
+
+/**
+ * seen_rows_setter_moves_birth_forward - Does one system call move this file's birth later?
+ * @path: a file just made.  @setter: the call.  @base: the birth seconds read before.
+ *
+ * A setter that fails counts as not moving it: a system that refuses the call
+ * has not shown a forward move.
+ */
+static int seen_rows_setter_moves_birth_forward(const char *path, SeenRowsBirthSetter setter, time_t base)
+{
+ struct stat st;
+
+ if (setter(path, base + SEEN_ROWS_FORGE_FORWARD_S) != 0)
+  return(0);
+ if (lstat(path, &st) != 0)
+  return(0);
+ return(seen_rows_birth_seconds(&st) > base + SEEN_ROWS_FORGE_SLACK_S);
+}
+
+/** Does any documented setter of this system move the birth of the file at PATH later? */
+static int seen_rows_any_setter_moves_birth_forward(const char *path, time_t base)
+{
+ if (seen_rows_setter_moves_birth_forward(path, seen_rows_set_by_utimes, base))
+  return(1);
+ if (seen_rows_setter_moves_birth_forward(path, seen_rows_set_by_utimensat, base))
+  return(1);
+ if (seen_rows_setter_moves_birth_forward(path, seen_rows_set_by_futimens, base))
+  return(1);
+# if defined(__APPLE__)
+ if (seen_rows_setter_moves_birth_forward(path, seen_rows_set_by_setattrlist, base))
+  return(1);
+# endif
+ return(0);
+}
+
+#endif
+
+/**
+ * seen_rows_birth_moves_forward - Does any call this system documents move a file's birth later?
+ * @dir: the row's folder.
+ *
+ * A measurement, never an input of the judge: it shows in the log whether the
+ * rule the build relies on (no system call moves a birth forward) holds here.
+ * It tries utimes, utimensat and futimens, and on macOS setattrlist with
+ * ATTR_CMN_CRTIME, which is the call that sets a birth there (a probe on
+ * utimes alone would read "no" on a system that is ANY_WAY).
+ * Return: 1 when one moved it forward, 0 when none did, -1 where the build has
+ * no birth member to read (statx and no-birth systems) or the probe could not
+ * make its file.
+ */
+static int seen_rows_birth_moves_forward(const char *dir)
+{
+#if WPE_PLATFORM_STAT_BIRTH == WPE_PLATFORM_STAT_BIRTH_NONE
+ (void)dir;
+ return(-1);
+#else
+ char path[TEST_DIR_PATH_SIZE];
+ struct stat st;
+ int moved;
+
+ if (test_path_join(path, sizeof path, dir, "probe_forward") != 0 || seen_rows_make_file(path, NULL) != 0)
+  return(-1);
+ if (lstat(path, &st) != 0)
+ {
+  unlink(path);
+  return(-1);
+ }
+ moved = seen_rows_any_setter_moves_birth_forward(path, seen_rows_birth_seconds(&st));
+ unlink(path);
+ return(moved);
+#endif
+}
+
+/**
+ * seen_rows_print_forward_note - Say in the log whether a birth moves forward here, and on which file system.
+ * @dir: the row's folder.
+ *
+ * What the maintainer gets: a lane log carries the evidence that promotes or
+ * demotes a system's trust class (whether any call moved a birth forward), and
+ * names the file system the probe ran on, because a class is a fact of the
+ * system calls and a file system such as ZFS, NFS or msdosfs can differ.
+ */
+static void seen_rows_print_forward_note(const char *dir)
+{
+ char fs[SEEN_ROWS_NAME_SIZE];
+ int forward = seen_rows_birth_moves_forward(dir);
+
+ seen_rows_fs_name(dir, fs, sizeof fs);
+ if (forward == 1)
+  printf(" (a call moved the birth time forward here, on %s)", fs);
+ else if (forward == 0)
+  printf(" (no call moved the birth time forward here, on %s)", fs);
+}
+
+/**
  * seen_rows_expect - The verdict a row must see here, and the facts that make it so, in the log.
  * @row: the row's name.  @dir: its folder.  @scenario: what it is about.
  *
@@ -1044,6 +1226,7 @@ static WpeSeenIs seen_rows_expect(const char *row, const char *dir, SeenScenario
   printf(" (utimes moved the birth time back here)");
  else if (forged == 0)
   printf(" (utimes did not move the birth time here)");
+ seen_rows_print_forward_note(dir);
  printf("\n");
  return(verdict);
 }

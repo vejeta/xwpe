@@ -883,8 +883,10 @@ static int ck_absent_now(WpeCkRecord *r, const CkEntry *t)
  *
  * The choice is the same on every system: a name that no longer holds the
  * object first, then the first in path order.  An UNSURE judge counts as
- * known (safe: the file is kept and said).  A record with no look is never
- * the object.
+ * known (safe: the file is kept and said), which keeps a renamed file alive.
+ * An identity the birth time contradicts does not: the file is another one
+ * that took a removed object's number, so the name it would have answered for
+ * is told as removed.  A record with no look is never the object.
  */
 static CkEntry *ck_known_object(WpeCkRecord *r, const CkEntry *now, int *absent)
 {
@@ -897,7 +899,7 @@ static CkEntry *ck_known_object(WpeCkRecord *r, const CkEntry *now, int *absent)
   int abs;
   if (!ck_seen_state(t) || !wpe_seen_known(&t->seen)) continue;
   if (t->is_folder != now->is_folder || !strcmp(t->path, now->path)) continue;
-  if (wpe_seen_judge(&t->seen, &now->seen) == WPE_SEEN_OTHER) continue;
+  if (wpe_seen_judge_contradicted(&t->seen, &now->seen) == WPE_SEEN_OTHER) continue;
   abs = ck_absent_now(r, t);
   if (!best || (abs && !best_absent)) { best = t; best_absent = abs; }
  }
@@ -1661,6 +1663,52 @@ static int ck_sentence_unreadable(char *out, size_t n, const WpeCkVerdict *v)
 }
 
 /**
+ * ck_sentence_replaced - The pane sentence for a name another object took, naming where that object came from.
+ *
+ * What the user gets: when a file or folder the checkpoint listed was moved
+ * over a name that already held another, the sentence names the old name, so
+ * no name the checkpoint listed goes unmentioned.  The row text has no room
+ * for a path, and MOVED does not name its source there either.
+ */
+static int ck_sentence_replaced(char *out, size_t n, const WpeCkVerdict *v)
+{
+ if (v->is_folder)
+  return ck_say(out, n,"%s, a folder, was replaced by the folder %s, which the run moved here. "
+                  "r leaves it.", v->path, v->from);
+ switch (v->object) {
+ case WPE_CK_MOVED:
+  return ck_say(out, n,"%s was replaced by %s, which the run moved here, and the checkpoint holds "
+                  "no copy of the old one. r leaves it.", v->path, v->from);
+ case WPE_CK_LINKED:
+  return ck_say(out, n,"%s was replaced by a second name of %s, added by the run, and the "
+                  "checkpoint holds no copy of the old one. r leaves it.", v->path, v->from);
+ case WPE_CK_STAYED: case WPE_CK_CREATED: case WPE_CK_REMOVED: case WPE_CK_REMOVED_NO_COPY:
+ case WPE_CK_MOVED_HIDDEN: case WPE_CK_MAYBE_COPY: case WPE_CK_REPLACED:
+ case WPE_CK_NOT_READABLE_NOW: case WPE_CK_CANNOT_SAY:
+  break;
+ }
+ return ck_say(out, n,"%s was replaced by another file, and the checkpoint holds no copy of the "
+                 "old one. r leaves it.", v->path);
+}
+
+/**
+ * ck_verdict_has_no_sentence - Does this verdict need no sentence in the pane?
+ *
+ * A folder's verdict says nothing in the pane except a move, and a replaced
+ * folder whose old name is known: that old name was listed, so it is named.
+ */
+static int ck_verdict_has_no_sentence(const WpeCkVerdict *v)
+{
+ if (!v->is_folder)
+  return 0;
+ if (v->kind == WPE_CK_MOVED)
+  return 0;
+ if (v->kind == WPE_CK_REPLACED && v->from != NULL)
+  return 0;
+ return 1;
+}
+
+/**
  * wpe_ckrec_sentence - The sentence the pane says for one verdict.
  * @out/@n: the buffer; @v: the verdict.
  * Return: the bytes written (cut with "..." when the room is short); 0 for a
@@ -1669,7 +1717,7 @@ static int ck_sentence_unreadable(char *out, size_t n, const WpeCkVerdict *v)
 int wpe_ckrec_sentence(char *out, size_t n, const WpeCkVerdict *v)
 {
  const char *from = v->from ? v->from : "";
- if (v->is_folder && v->kind != WPE_CK_MOVED) {
+ if (ck_verdict_has_no_sentence(v)) {
   if (n) out[0] = '\0';
   return 0;
  }
@@ -1691,9 +1739,7 @@ int wpe_ckrec_sentence(char *out, size_t n, const WpeCkVerdict *v)
  case WPE_CK_MAYBE_COPY:
   return ck_say(out, n,"%s is new, and it is as large as %s, which the run removed and the "
                   "checkpoint holds no copy of. r keeps it.", v->path, from);
- case WPE_CK_REPLACED:
-  return ck_say(out, n,"%s was replaced by another file, and the checkpoint holds no copy of the "
-                  "old one. r leaves it.", v->path);
+ case WPE_CK_REPLACED:        return ck_sentence_replaced(out, n, v);
  case WPE_CK_NOT_READABLE_NOW: return ck_sentence_unreadable(out, n, v);
  case WPE_CK_CANNOT_SAY:
   if (!ck_unsaid_without_note(v)) {      /* the folder's note says it once for every path in it */

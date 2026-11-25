@@ -37,8 +37,10 @@
 #define BASE_NSEC  5
 #define BIRTH_A    10
 #define BIRTH_B    20
-#define BIRTH_KERNEL_SET 0
-#define BIRTH_USER_SET   1
+#define BIRTH_C    30
+#define BIRTH_KERNEL_SET WPE_SEEN_BIRTH_KERNEL
+#define BIRTH_BACK_SET   WPE_SEEN_BIRTH_BACK_ONLY
+#define BIRTH_USER_SET   WPE_SEEN_BIRTH_ANY_WAY
 #define HELD_ROUNDS      64
 
 static int fails;
@@ -223,10 +225,10 @@ static void rec_base(WpeSeen *s)
 }
 
 /** The birth setter of the table row: a record with a birth time of its own. */
-static void rec_birth(WpeSeen *s, long sec, int forgeable)
+static void rec_birth(WpeSeen *s, long sec, WpeSeenBirthTrust trust)
 {
  s->seen_has_birth = 1;
- s->seen_birth_forgeable = forgeable;
+ s->seen_birth_trust = trust;
  s->seen_birth.tv_sec = sec;
  s->seen_birth.tv_nsec = BASE_NSEC;
 }
@@ -503,6 +505,85 @@ static void table_judge_proved(void)
  chk_is("proved: an unknown look", wpe_seen_judge_proved(&then, &now), WPE_SEEN_UNSURE);
 }
 
+/** A pair of records whose births its owner can move back and no call moves forward. */
+static void rec_back_only_pair(WpeSeen *then, WpeSeen *now, long then_sec, long now_sec)
+{
+ rec_base(then);
+ rec_base(now);
+ rec_birth(then, then_sec, BIRTH_BACK_SET);
+ rec_birth(now, now_sec, BIRTH_BACK_SET);
+}
+
+/** The pairs that agree, or that a birth cannot contradict: the question never moves them. */
+static void table_contradicted_leaves(void)
+{
+ WpeSeen then, now;
+
+ rec_back_only_pair(&then, &now, BIRTH_A, BIRTH_A);
+ chk_is("contradicted: equal births", wpe_seen_judge_contradicted(&then, &now), WPE_SEEN_SAME);
+ rec_touch(&now);
+ chk_is("contradicted: touched, equal births", wpe_seen_judge_contradicted(&then, &now), WPE_SEEN_SAME);
+ rec_back_only_pair(&then, &now, BIRTH_B, BIRTH_A);
+ chk_is("contradicted: a birth that went back proves nothing", wpe_seen_judge_contradicted(&then, &now), WPE_SEEN_UNSURE);
+ rec_back_only_pair(&then, &now, BIRTH_A, BIRTH_B);
+ then.seen_birth_trust = WPE_SEEN_BIRTH_ANY_WAY;
+ now.seen_birth_trust = WPE_SEEN_BIRTH_ANY_WAY;
+ chk_is("contradicted: a later birth its owner can set either way", wpe_seen_judge_contradicted(&then, &now), WPE_SEEN_UNSURE);
+ now.seen_birth_trust = WPE_SEEN_BIRTH_BACK_ONLY;
+ chk_is("contradicted: a later birth, one side either way", wpe_seen_judge_contradicted(&then, &now), WPE_SEEN_UNSURE);
+ rec_back_only_pair(&then, &now, BIRTH_A, BIRTH_B);
+ wpe_seen_forget(&now);
+ chk_is("contradicted: an unknown look", wpe_seen_judge_contradicted(&then, &now), WPE_SEEN_UNSURE);
+}
+
+/** The pairs where one side has no birth, or the numbers differ, or the kernel sets the birth. */
+static void table_contradicted_unreadable(void)
+{
+ WpeSeen then, now;
+
+ rec_back_only_pair(&then, &now, BIRTH_A, BIRTH_B);
+ now.seen_has_birth = 0;
+ chk_is("contradicted: no birth on one side, nothing differs", wpe_seen_judge_contradicted(&then, &now), WPE_SEEN_SAME);
+ rec_touch(&now);
+ chk_is("contradicted: no birth on one side, touched", wpe_seen_judge_contradicted(&then, &now), WPE_SEEN_UNSURE);
+ rec_back_only_pair(&then, &now, BIRTH_A, BIRTH_B);
+ now.seen_ino = BASE_INO + 1;
+ chk_is("contradicted: another inode", wpe_seen_judge_contradicted(&then, &now), WPE_SEEN_OTHER);
+ rec_base(&then);
+ rec_base(&now);
+ rec_birth(&then, BIRTH_A, BIRTH_KERNEL_SET);
+ rec_birth(&now, BIRTH_B, BIRTH_KERNEL_SET);
+ rec_touch(&now);
+ chk_is("contradicted: a later kernel birth, the plain judge answers OTHER too", wpe_seen_judge(&then, &now), WPE_SEEN_OTHER);
+ chk_is("contradicted: a later kernel birth", wpe_seen_judge_contradicted(&then, &now), WPE_SEEN_OTHER);
+}
+
+/**
+ * The question of a caller that is about to say a name is gone: a birth LATER
+ * than the one remembered, where no call moves a birth forward, is another
+ * object, though the plain judge says UNSURE.  It never changes a SAME.
+ */
+static void table_judge_contradicted(void)
+{
+ WpeSeen then, now;
+
+ table_contradicted_leaves();
+ table_contradicted_unreadable();
+ rec_back_only_pair(&then, &now, BIRTH_A, BIRTH_B);
+ chk_is("contradicted: the plain judge says UNSURE", wpe_seen_judge(&then, &now), WPE_SEEN_UNSURE);
+ chk_is("contradicted: a later back-only birth", wpe_seen_judge_contradicted(&then, &now), WPE_SEEN_OTHER);
+ rec_touch(&now);
+ chk_is("contradicted: touched, a later back-only birth", wpe_seen_judge_contradicted(&then, &now), WPE_SEEN_OTHER);
+ rec_back_only_pair(&then, &now, BIRTH_A, BIRTH_A);
+ now.seen_birth.tv_nsec = then.seen_birth.tv_nsec + 1;
+ chk_is("contradicted: later by one nanosecond", wpe_seen_judge_contradicted(&then, &now), WPE_SEEN_OTHER);
+ now.seen_birth.tv_nsec = then.seen_birth.tv_nsec - 1;
+ chk_is("contradicted: earlier by one nanosecond", wpe_seen_judge_contradicted(&then, &now), WPE_SEEN_UNSURE);
+ rec_back_only_pair(&then, &now, BIRTH_B, BIRTH_C);
+ now.seen_birth.tv_sec = BIRTH_A;
+ chk_is("contradicted: then later than now", wpe_seen_judge_contradicted(&then, &now), WPE_SEEN_UNSURE);
+}
+
 /** Row 1: every line of the judge, with no file system involved. */
 static void test_the_table(void)
 {
@@ -512,6 +593,7 @@ static void test_the_table(void)
  table_step_d();
  table_after_own_change();
  table_judge_proved();
+ table_judge_contradicted();
  table_unknown();
  table_from_stat_has_no_birth();
  table_names();
@@ -1085,7 +1167,7 @@ static void shim_check_route(const ShimRow *row, int route, const char *file, in
  {
   snprintf(what, sizeof what, "%s (%s): its seconds", row->name, shim_route_names[route]);
   chk_int(what, (long)s.seen_birth.tv_sec, row->want_sec);
-  chk_int("a kernel birth cannot be set by a user", s.seen_birth_forgeable, 0);
+  chk_int("a kernel birth cannot be set by a user", s.seen_birth_trust == WPE_SEEN_BIRTH_KERNEL, 1);
  }
 }
 
@@ -1179,6 +1261,31 @@ static void test_a_held_folder_that_does_not_answer(const char *base)
 
 #endif
 
+/**
+ * The twin of the back probe: a system the build calls back-only moves no
+ * birth forward by any call it documents.  A measurement of the system, never
+ * of the judge.  It fails when the build claims back-only and a call moved the
+ * birth forward; it prints what it found on the others, which is the evidence
+ * that promotes one (NetBSD) or keeps one out (macOS).  Skips by name where the
+ * build reads no birth from struct stat, which is Linux.
+ */
+static void row_back_only_birth_is_not_forgeable_forward(const char *base)
+{
+ char dir[TEST_DIR_PATH_SIZE];
+ int moved;
+
+ if (row_folder(base, "forward", dir, sizeof dir) != 0)
+  return;
+ moved = seen_rows_birth_moves_forward(dir);
+ if (moved < 0)
+ {
+  skip("the forward birth probe needs a birth time in struct stat; this build reads none from it");
+  return;
+ }
+ printf("note: a call moved the birth time forward here: %s\n", moved ? "yes" : "no");
+ chk_int("a system the build calls back-only moves no birth forward", WPE_PLATFORM_BIRTH_BACK_ONLY && moved, 0);
+}
+
 /** The rows that play the system calls (needs statx; elsewhere they say so). */
 static void test_the_played_calls(const char *base)
 {
@@ -1208,6 +1315,7 @@ static void test_the_disk_rows(void)
  test_ext4_gives_every_kind_back(base);
  test_the_hold_refuses_what_is_not_a_folder(base);
  test_two_names_of_one_file(base);
+ row_back_only_birth_is_not_forgeable_forward(base);
  test_the_played_calls(base);
  seen_rows_remove(base);
 }

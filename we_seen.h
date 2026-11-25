@@ -33,6 +33,20 @@
 typedef enum { WPE_SEEN_SAME = 1, WPE_SEEN_OTHER, WPE_SEEN_UNSURE } WpeSeenIs;
 
 /**
+ * WpeSeenBirthTrust - Who can move a birth time on this system, and which way.
+ *
+ * What the user gets: where no system call moves a birth time forward, a file
+ * the run made later is told from a file it removed, even when the file system
+ * handed the new file the old one's number.  When unsure, the class is the
+ * weaker one (ANY_WAY): a wrong strong class tells a real move as a removal.
+ */
+typedef enum {
+ WPE_SEEN_BIRTH_KERNEL = 0,   /* only the kernel sets it (statx on the local file systems) */
+ WPE_SEEN_BIRTH_BACK_ONLY,    /* its owner can set it earlier, and no system call sets it later */
+ WPE_SEEN_BIRTH_ANY_WAY       /* its owner can set it either way, or the way is not established */
+} WpeSeenBirthTrust;
+
+/**
  * WpeSeen - One object as a look found it.
  *
  * The members carry the prefix seen_ so the fitness rule can keep every
@@ -52,7 +66,7 @@ typedef struct {
  struct timespec seen_ctime;        /* status change: only the kernel sets it */
  struct timespec seen_mtime;
  int    seen_has_birth;             /* the system said when the object was made */
- int    seen_birth_forgeable;       /* a user can set that time on this system */
+ WpeSeenBirthTrust seen_birth_trust; /* who can move that time on this system, and which way */
  struct timespec seen_birth;
 } WpeSeen;
 
@@ -85,6 +99,10 @@ typedef struct {
     Linux run plays a system that has none (OpenBSD, ext3, most FUSE). */
 #define WPE_SEEN_TEST_FAIL_NO_BIRTH "seen-no-birth"
 
+/** What WPE_SEEN_TEST_FAIL_ENV carries to make every statx birth BACK_ONLY, so a Linux run
+    plays FreeBSD, where the owner can move a birth back and no call moves it forward. */
+#define WPE_SEEN_TEST_FAIL_BIRTH_BACK_ONLY "seen-birth-back-only"
+
 int  wpe_seen_look_fd(int fd, WpeSeen *s);
 int  wpe_seen_look_name(const char *path, int follow, WpeSeen *s);
 int  wpe_seen_look_at(int dirfd, const char *leaf, int follow, WpeSeen *s);
@@ -99,6 +117,7 @@ off_t wpe_seen_size(const WpeSeen *s);
 
 WpeSeenIs wpe_seen_judge(const WpeSeen *then, const WpeSeen *now);
 WpeSeenIs wpe_seen_judge_proved(const WpeSeen *then, const WpeSeen *now);
+WpeSeenIs wpe_seen_judge_contradicted(const WpeSeen *then, const WpeSeen *now);
 WpeSeenIs wpe_seen_judge_after_own_change(const WpeSeen *before, const WpeSeen *after);
 WpeSeenIs wpe_seen_name_judge(const WpeSeenName *then, const WpeSeenName *now);
 

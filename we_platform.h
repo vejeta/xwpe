@@ -146,6 +146,31 @@ static inline struct timespec wpe_platform_whole_seconds(time_t seconds)
 #endif
 
 /**
+ * WPE_PLATFORM_BIRTH_BACK_ONLY - Can a system call move a birth time back, and never forward?
+ *
+ * 1 where the file's owner can set the birth time to an earlier time and no
+ * system call sets it to a later one, 0 elsewhere (where it is not read, or
+ * its owner can set it either way, or the way is not established).  Always
+ * defined.
+ *
+ * Only FreeBSD is 1: utimes(2) there sets the birth time only when the value
+ * given is older than the one set, and a probe on 15.1 UFS2 agrees.  FreeBSD
+ * and NetBSD share one configure fact (HAVE_STRUCT_STAT_ST_BIRTHTIM), so the
+ * member alone cannot tell them apart.  The rule binds system calls, not
+ * mounts: a server that applies a client's birth time (an NFS export) or a
+ * fusefs daemon that reports its own is not held to it.  There a real move
+ * of a file the run also resized reads removed plus created, and taking the
+ * removal back would delete the only copy; the same limit as Linux cifs and
+ * FUSE mounts.  NetBSD and macOS stay 0 until a probe on that system shows
+ * no forward move.
+ */
+#if defined(__FreeBSD__) && WPE_PLATFORM_STAT_BIRTH == WPE_PLATFORM_STAT_BIRTHTIM
+# define WPE_PLATFORM_BIRTH_BACK_ONLY 1
+#else
+# define WPE_PLATFORM_BIRTH_BACK_ONLY 0
+#endif
+
+/**
  * WPE_PLATFORM_MEMORY_STREAM - Which call makes a stream over bytes in memory.
  *
  * The read owner hands a read under a bound back as a stream that owns its
