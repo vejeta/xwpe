@@ -895,6 +895,20 @@
    "layer": "asan",
    "test": "tests/test_buffer_owner.py::test_a_change_all_with_a_prompt_refused_for_memory_stops_like_esc",
    "status": "new"
+  },
+  {
+   "id": "SC-buffer-11",
+   "requirement": "A dialog field left with Esc and a File Manager visit leave no leak their owners allocated",
+   "layer": "asan",
+   "test": "tests/test_dialog_leaks.py::test_a_dialog_field_left_with_esc_frees_its_copy",
+   "status": "new"
+  },
+  {
+   "id": "SC-buffer-11",
+   "requirement": "A dialog field left with Esc and a File Manager visit leave no leak their owners allocated",
+   "layer": "asan",
+   "test": "tests/test_dialog_leaks.py::test_a_file_manager_visit_frees_the_folder_split",
+   "status": "new"
   }
  ]
 }

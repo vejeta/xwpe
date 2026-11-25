@@ -2428,8 +2428,10 @@ struct dirfile *WpeCreateWorkingDirTree(int sw, ECNT *cn)
     /* if directory separator or end of string */
     if(tmp[j] == DIRC || tmp[j] == '\0')
     {
+      /* The path ends in a separator: every folder is saved.  Leave the loop
+         so the two work buffers are freed below, as on every other way out. */
       if(buf[i] == '\0' && j == 0)
-        return(df);
+        break;
       if(df->anz == 0)  /* for the very first time save the '/' sign */
         j++;
       tmp[j] = '\0';

@@ -856,6 +856,9 @@ int e_schreib_leiste_lines(char *s, int x, int y, int n, int max, int ft,
   e_make_xrect(x, y, x+n-1, y, 1);
 #endif
  }
+ /* Esc: the field is left as it was and its working copy goes, as on every
+    other way out, so a dialog closed with Esc costs no memory. */
+ FREE(tmp);
  fk_cursor(0);
  return(c);
 }
