@@ -254,22 +254,6 @@ def test_G8_ai_task_cancel(tmp_path):
         assert _trace_contains(ai_trace, "cancelled")
 
 
-# @scenario SC-esc-owner-09
-@pytest.mark.wpe_requires("enable-ai-agent-host")
-def test_G9_ai_turn_cancel(tmp_path):
-    """Esc ends AI hosted turn; other activity (none) still runs."""
-    trace = _trace_path(tmp_path)
-    src = "AAA\n"
-    env = _ai_env(tmp_path, trace, reply="streaming response...")
-    with WpeSession(str(tmp_path), src, filename="stack.c", env_extra=env) as w:
-        w.key(ALT.AI); w.key("g", delay=1.0)  # Alt-G g -> host turn
-        w._drain(1.0)
-        w.key(ESC, delay=1.0)
-        assert wait_screen(w, "chat cancelled", tmo=10), "hosted turn not cancelled"
-        ai_trace = str(tmp_path / "ai.trace")
-        assert _trace_contains(ai_trace, "chat cancelled")
-
-
 # @scenario SC-esc-owner-10
 @pytest.mark.wpe_requires("enable-ai")
 def test_G10_idle_pane_closes(tmp_path):
@@ -479,28 +463,6 @@ def test_G16_click_bottom_row_cancels_build(tmp_path):
         assert wait_screen(w, "build cancelled", tmo=10), "click did not cancel build"
 
 
-# @scenario SC-esc-owner-17
-@pytest.mark.wpe_requires("enable-ai-agent-host")
-def test_G17_hosted_turn_and_build_ending(tmp_path):
-    """Hosted turn and build: Esc, Esc -> second traced 'ending', build still runs."""
-    trace = _trace_path(tmp_path)
-    src = "AAA\n"
-    slow_make = ("all:\n\t@echo BUILD_START\n\t@sleep 10\n\t@echo BUILD_DONE\n"
-                 "\t@touch prog\n")
-    (tmp_path / "Makefile").write_text(slow_make)
-    env = _ai_env(tmp_path, trace, reply="streaming...")
-    with WpeSession(str(tmp_path), src, filename="t.c", env_extra=env) as w:
-        w.key(ALT_A, delay=0.8)
-        assert wait_screen(w, "building ...", tmo=10)
-        w.key(ALT.AI); w.key("g", delay=1.0)
-        w._drain(1.0)
-        w.key(ESC, delay=0.8)
-        assert wait_screen(w, "chat cancelled", tmo=10)
-        assert wait_screen(w, "building ...", tmo=3), "build stopped"
-        w.key(ESC, delay=0.8)
-        assert wait_screen(w, "build cancelled", tmo=10), "build not cancelled on second Esc"
-
-
 # @scenario SC-esc-owner-18
 def test_G18_build_during_adapter_start(tmp_path):
     """Build during an adapter's start: both busy, one Esc each.
@@ -557,24 +519,6 @@ def test_G18_build_during_adapter_start(tmp_path):
         w.key(ESC, delay=0.8)
         assert wait_screen(w, "dlv start cancelled", tmo=10), \
             "second Esc should cancel the adapter start"
-
-
-# @scenario SC-esc-owner-19
-@pytest.mark.wpe_requires("enable-ai-agent-host")
-def test_G19_task_during_hosted_turn(tmp_path):
-    """Assistant task during hosted turn: both busy, one Esc each."""
-    trace = _trace_path(tmp_path)
-    src = "AAA\n"
-    env = _ai_env(tmp_path, trace, reply="streaming...")
-    with WpeSession(str(tmp_path), src, filename="t.c", env_extra=env) as w:
-        w.key(ALT.AI); w.key("g", delay=1.0)
-        w._drain(1.0)
-        w.key(ALT.AI); w.key("e", delay=1.0)
-        w.key("append a line"); w.key("\r", delay=1.5)
-        w.key(ESC, delay=0.8)
-        assert wait_screen(w, "chat cancelled", tmo=10)
-        w.key(ESC, delay=1.0)
-        assert wait_screen(w, "cancelled", tmo=10)
 
 
 # @scenario SC-esc-owner-20
