@@ -2660,13 +2660,35 @@ static char *ai_trace_one_line(const char *text)
  return out;
 }
 
+/* How a tool's result opens in the conversation the model is sent. */
+#define AI_MOCK_TOOL_RESULT_HEAD "TOOL RESULT:"
+
+/**
+ * ai_mock_count_tool_results - How many tool results the request carries.
+ * @req: the request.
+ *
+ * A test reads this to see that a tool's result reached the model once, not
+ * twice and not before the tool had finished.
+ * Return: the number of user messages that open with a tool result.
+ */
+static int ai_mock_count_tool_results(const wpe_ai_req *req)
+{
+ int i, n = 0;
+ for (i = 0; i < req->nmsgs; i++)
+  if (req->msgs[i].role && !strcmp(req->msgs[i].role, "user") && req->msgs[i].content &&
+      !strncmp(req->msgs[i].content, AI_MOCK_TOOL_RESULT_HEAD, sizeof AI_MOCK_TOOL_RESULT_HEAD - 1))
+   n++;
+ return n;
+}
+
 /**
  * ai_mock_trace_request - Record what the deterministic backend was asked.
  * @req: the request.
  *
  * The last user message lands in the trace, whole and on one line, so a
  * test can see that a long question or task reached the backend in full and
- * not only the part the pane had room to show.
+ * not only the part the pane had room to show.  The number of tool results
+ * the conversation carries follows on its own line.
  */
 static void ai_mock_trace_request(const wpe_ai_req *req)
 {
@@ -2674,6 +2696,7 @@ static void ai_mock_trace_request(const wpe_ai_req *req)
  char *line;
  if (!req || !req->msgs)
   return;
+ wpe_ai_trace("mock history tool-results=%d", ai_mock_count_tool_results(req));
  for (i = req->nmsgs - 1; i >= 0; i--)
   if (req->msgs[i].role && !strcmp(req->msgs[i].role, "user") && req->msgs[i].content)
   {

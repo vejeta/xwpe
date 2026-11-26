@@ -20,6 +20,15 @@ Cannot reproduce:
      past the limit stays alive).
 
 Bugs fixed in 1.6.x:
+* The assistant's web search no longer crashes the editor.  On a build made
+  with the usual optimisation and fortify flags (the ones Debian uses), a web
+  search ended the editor with "double free or corruption", and a chat that
+  searched named the search address twice in its sources.  The assistant told
+  a tool still waiting for its page or command from one that had answered by
+  comparing the address of a text, and GCC removed that compare (GCC PR
+  129066).  A tool step now says how it ended apart from its text, so the page
+  or the command result reaches the model once.  Rows:
+  tests/test_ai_tool_step.py and tests/test_ai_tool_step.c.
 * A file named Messages, Watches, Stack, Help, Buffer or AI is always your file
   and is never overwritten by the editor's own window of that name.  The
   editor decided which window you meant by comparing names, so `wpe Messages

@@ -149,7 +149,7 @@ VTERM_SOURCES   = we_vterm.c
 WAYLAND_SOURCES = we_wayland.c we_render_wayland.c we_wlframe.c
 AI_SOURCES      = we_ai.c we_ai_http.c we_ai_ui.c we_ai_diff.c we_ai_ws.c we_ai_ckrec.c we_ai_path.c we_ai_session.c we_contain.c
 AI_HOST_SOURCES = we_ai_host.c
-AI_TESTS        = test_ai_http test_ai_diff test_ai_path test_ai_scope test_ai_session test_ai_contain test_ai_read_waits test_ai_scan_swap test_ai_ckrec
+AI_TESTS        = test_ai_http test_ai_diff test_ai_path test_ai_scope test_ai_session test_ai_contain test_ai_read_waits test_ai_scan_swap test_ai_ckrec test_ai_tool_step
 AI_TLS_CHECK    = test_ai_tls_live
 
 if HAVE_X11
@@ -322,6 +322,7 @@ noinst_HEADERS = \
   we_lsp_pos.h \
   we_ai.h \
   we_ai_ckrec.h \
+  we_ai_step.h \
   we_ai_path.h \
   we_ai_http.h \
   we_ai_http_sync.h \
@@ -1121,6 +1122,15 @@ TESTS += tests/check-ci-versions.sh
 # that took none, or an exec appears outside we_child.c.
 TESTS += tests/check-contain-sites.sh
 
+# One owner of how a tool step of the assistant ended (we_ai_step.h): the
+# outcome is an enum, the text travels through an out-parameter, and no code
+# tells a waiting step from a finished one by the identity of a pointer.
+# tests/check-ai-tool-step.sh fails when a file compares a pointer with a
+# static object, returns a static or a literal through a freeable pointer,
+# returns an outcome of its own, drops a step's outcome, or brings back the
+# old marker.  Offenders still to go are in tests/ai-tool-step.allow.
+TESTS += tests/check-ai-tool-step.sh
+
 # One owner of a file's line endings (we_lineend.c): no second reader or
 # writer of the bytes of a line break.  Offenders still to go are in
 # tests/line-ends.allow.
@@ -1522,6 +1532,11 @@ test_ai_http_CFLAGS = $(TEST_CFLAGS) $(AITLS_CFLAGS)
 test_ai_http_LDADD = $(AITLS_LIBS)
 test_ai_diff_SOURCES = tests/test_ai_diff.c we_ai_diff.c
 test_ai_diff_CFLAGS = $(TEST_CFLAGS)
+# How a tool step ended (we_ai_step.h): asks for -O2, because the shape it
+# guards is the optimised one (the builder's own CFLAGS come after and win);
+# it links nothing of the editor.
+test_ai_tool_step_SOURCES = tests/test_ai_tool_step.c we_ai_step.h
+test_ai_tool_step_CFLAGS = $(TEST_CFLAGS) -O2
 # Live TLS smoke: built with the TLS backend but kept out of TESTS (it needs the
 # network); run by hand, e.g. ./test_ai_tls_live https://api.github.com /zen
 if WPE_AI_TLS
@@ -1596,6 +1611,10 @@ EXTRA_DIST = \
   tests/check-ci-versions.sh \
   tests/ci-versions.txt \
   tests/check-contain-sites.sh \
+  tests/check-ai-tool-step.sh \
+  tests/ai-tool-step.allow \
+  tests/test_ai_tool_step.c \
+  tests/test_ai_tool_step.py \
   tests/check-line-ends.sh \
   tests/line-ends.allow \
   tests/test_lineend.c \

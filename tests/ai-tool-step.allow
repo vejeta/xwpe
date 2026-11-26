@@ -1,0 +1,25 @@
+# What tests/check-ai-tool-step.sh lets stand.
+#
+#   rule|file|function|expression|count|reason
+#
+# "count" is how many times the scan finds it; it may only fall, and a line
+# the scan no longer finds is stale and fails.  A line is keyed by file,
+# function and expression, never by a line number.
+#
+# R1 (a compare with a static) and R2 (a static or a literal through a
+# freeable pointer) list the borrowed texts: the caller reads them and never
+# frees them, and none of them is an outcome.  R7 lists the two places that may
+# say "no tool": the chat's tool step when the reply has no tool line, and
+# the chat's turn budget when it is spent.
+
+R1|we_opt.c|e_opt_line_is_user_only|text|1|a parameter named like the file's global array of labels; a plain text compare
+R1|we_opt.c|e_opt_line_section|text|1|a parameter named like the file's global array of labels; a plain text compare
+R1|we_opt.c|e_opt_note_ignored_key|e_opt_ignored_keys|1|a position test at the start of the buffer, not an outcome
+R2|we_debug.c|e_d_contain_refusal_line|E_D_CONTAIN_TOO_MANY_LINE|1|a line of the debugger's pane, read and never freed
+R2|we_debug.c|e_d_gdbmi_pick|E_D_GDBMI_SWITCH|1|a word of the debugger's command, read and never freed
+R2|we_debug.c|e_d_gdbmi_wanted|E_D_GDBMI_SWITCH|1|a word of the debugger's command, read and never freed
+R2|we_debug.c|e_d_pause_signal_line|e_d_pause_no_report|1|its own argument or an empty text, read and never freed
+R2|we_prog.c|e_prj_object_base|g_prj.ofile|1|the tail of the project's object path in its own buffer, read and never freed
+R2|we_prog.c|e_prj_library|""|1|the project's library path, or an empty text when none could be made; never freed
+R7|we_ai_ui.c|ai_chat_take_tool_turn|ai_step_no_tool|1|the chat's turn budget is spent: the reply is the answer
+R7|we_ai_ui.c|ai_chat_tool_result|ai_step_no_tool|1|the reply has no tool line: it is the answer

@@ -20,6 +20,7 @@
 #include "we_ai_path.h"
 #include "we_read.h"
 #include "we_ai_host.h"
+#include "we_ai_step.h"
 #include "we_contain.h"
 
 #include <stdlib.h>
@@ -483,26 +484,28 @@ static void ai_chat_set_pending(ai_chat_session *s, const char *seed)
 static char *ai_read_file_bounded(FENSTER *f, const char *path);
 static char *ai_tool_error_alloc(const char *reason);
 /* A tool's command runs on the loop like a web tool's page: the step answers
-   AI_TOOL_WAITS and the task named by ai_page_owner goes on when it is done. */
+   AI_STEP_WAITS and the task named by ai_page_owner goes on when it is done. */
 static void  ai_page_owner(struct ai_async_op *op,
                            void (*done)(struct ai_async_op *op, char *result,
                                         const char *tool, const char *arg),
                            const char *tool, const char *arg);
-static char *ai_tool_command_start(const char *cmd, int report_timeout);
+static void  ai_page_forget(void);
+static enum ai_tool_step ai_tool_command_start(const char *cmd, int report_timeout,
+                                               char **text);
 static void  ai_page_set_note(char *note);
 static int   ai_scope_read_gate(FENSTER *f, const char *tool, const char *arg, char **refusal);
 static char *ai_scope_skipped_note(const char *tool, const char *arg);
 static void  ai_chat_command_done(struct ai_async_op *op, char *result,
                                   const char *tool, const char *arg);
 static void  ai_chat_next_turn(ai_chat_session *s);
-static char *ai_chat_tool_result(ai_chat_session *s, const char *reply);
+static enum ai_tool_step ai_chat_tool_result(ai_chat_session *s, const char *reply,
+                                             char **text);
 /* The chat's web tools and its refusals live with the agent's web tools,
    which they call; the sources line ends an answer that used them. */
-static char *ai_chat_run_web_tool(ai_chat_session *s, const char *tool, const char *arg);
+static enum ai_tool_step ai_chat_run_web_tool(ai_chat_session *s, const char *tool,
+                                              const char *arg, char **text);
 static char *ai_chat_refuse_tool(FENSTER *f, const char *tool, const char *lead,
                                  const char *why);
-/* A web tool's page is read on the loop; the tool step then answers this. */
-static int   ai_tool_waits(const char *result);
 static void  ai_chat_stream_put_down(ai_chat_session *s);
 static void  ai_chat_go_on_with_tool_result(ai_chat_session *s, char *tr);
 static void ai_chat_show_sources(ai_chat_session *s);
@@ -2413,7 +2416,8 @@ static void ai_split_tool(char *action, char **tool, char **arg);   /* defined b
 
 /**
  * ai_tool_result_nonempty - Make an empty tool result explicit.
- * @result: a malloc'd tool output (or NULL).  Return: a malloc'd result.
+ * @result: a malloc'd tool output (or NULL, no text).
+ * Return: a malloc'd result; NULL only when memory ran out for the note.
  *
  * A blank or whitespace-only result (grep found nothing, an empty directory, a
  * command that printed nothing) reads to the model like a broken tool, so it may
@@ -2822,18 +2826,17 @@ static void ai_op_failure_line(wpe_ai_stream *st, const char *prefix,
 
 /**
  * ai_chat_record_tool_result - Give the tool's output to the model as the next turn's input.
- * @tr: the tool's output.
+ * @tr: the tool's output, or NULL when none could be made.
  *
  * The model reads what it asked for and answers from it, the way a person
- * would after looking the file up.
+ * would after looking the file up.  With no output to give (memory ran out)
+ * the turn goes on without a new line, and the chat does not stop.
  */
 static void ai_chat_record_tool_result(const char *tr)
 {
- size_t n = strlen(tr) + sizeof AI_TOOL_RESULT_HEAD;
- char *m = malloc(n);
+ char *m = ai_step_turn_text(AI_TOOL_RESULT_HEAD, tr);
  if (!m)
   return;
- snprintf(m, n, AI_TOOL_RESULT_HEAD "%s", tr);
  wpe_ai_session_append(WPE_AI_TURN_USER, m);
  free(m);
 }
@@ -2860,22 +2863,32 @@ static void ai_chat_restart_turn(ai_chat_session *s)
  * The reply joins the session log either way.  A tool call within the turn
  * budget runs read-only and its result feeds the next turn; from here on the
  * chat acts on the repository and the next prompt carries the project
- * instructions under the default scope.  Return: 1 when a tool turn is now
- * streaming, 0 when the reply was the answer.
+ * instructions under the default scope.  The outcome of the tool step
+ * decides, never the text: a reply with no tool line is the answer, a tool
+ * that waits for the loop puts the stream down until its page or command is
+ * done, and a tool that answered at once feeds the next turn now.
+ * Return: 1 when a tool turn is now streaming or waiting, 0 when the reply
+ * was the answer.
  */
 static int ai_chat_take_tool_turn(ai_chat_session *s)
 {
- char *tr = NULL;
+ char *tr;
+ enum ai_tool_step step;
  if (s->turns < AI_CHAT_MAX_TOOL_TURNS)
-  tr = ai_chat_tool_result(s, s->full);
+  step = ai_chat_tool_result(s, s->full, &tr);
+ else
+  step = ai_step_no_tool(&tr);          /* the turn budget is spent: the reply is the answer */
  wpe_ai_session_append(WPE_AI_TURN_ASSISTANT, s->full);
- if (!tr)
+ if (step == AI_STEP_NO_TOOL) {
+  ai_page_forget();
   return 0;
+ }
  wpe_ai_session_mark_tool_turn();
- if (ai_tool_waits(tr)) {
+ if (step == AI_STEP_WAITS) {
   ai_chat_stream_put_down(s);           /* the page comes from the loop */
   return 1;
  }
+ ai_page_forget();                      /* the step answered: no task waits */
  ai_chat_go_on_with_tool_result(s, tr);
  return 1;
 }
@@ -2897,7 +2910,7 @@ static void ai_chat_stream_put_down(ai_chat_session *s)
 
 /**
  * ai_chat_go_on_with_tool_result - Feed a tool's result to the next chat turn.
- * @s: the chat; @tr: the result, taken over.
+ * @s: the chat; @tr: the result, taken over (NULL when none could be made).
  */
 static void ai_chat_go_on_with_tool_result(ai_chat_session *s, char *tr)
 {
@@ -4102,18 +4115,25 @@ static int ai_tool_shell_command(const char *tool, const char *arg, char *cmd, s
  * The scope gate comes first (ai_scope_read_gate): a folder outside the
  * workspace is asked about before anything runs, and the output of a search
  * ends with how many links it left alone.
- * Return: AI_TOOL_WAITS while it runs, the malloc'd note when it could not be
- * started or was refused, NULL when @tool is not one of the three or a
- * refusal could not be allocated (nothing ran).
+ * @text: receives the malloc'd result when the step answered at once.
+ * Return: AI_STEP_WAITS while it runs (@text is NULL, the output reaches the
+ * task later); AI_STEP_RESULT otherwise, with the note the model reads when
+ * the command could not be started, the read was refused or @tool is not one
+ * of the three (@text may be NULL there: out of memory).
  */
-static char *ai_tool_run_readonly(FENSTER *f, const char *tool, const char *arg)
+static enum ai_tool_step ai_tool_run_readonly(FENSTER *f, const char *tool, const char *arg,
+                                              char **text)
 {
- char cmd[AI_TOOL_CMD_MAX], *result;
- if (!ai_tool_shell_command(tool, arg, cmd, sizeof cmd)) return NULL;
- if (!ai_scope_read_gate(f, tool, arg, &result)) return result;
- result = ai_tool_command_start(cmd, 0);
- if (ai_tool_waits(result)) ai_page_set_note(ai_scope_skipped_note(tool, arg));
- return result;
+ char cmd[AI_TOOL_CMD_MAX], *refused;
+ enum ai_tool_step step;
+ if (!ai_tool_shell_command(tool, arg, cmd, sizeof cmd))
+  return ai_step_result(text, strdup(AI_TOOL_UNKNOWN_RESULT));
+ if (!ai_scope_read_gate(f, tool, arg, &refused))
+  return ai_step_result(text, refused);
+ step = ai_tool_command_start(cmd, 0, text);
+ if (step == AI_STEP_WAITS)
+  ai_page_set_note(ai_scope_skipped_note(tool, arg));
+ return step;
 }
 
 /* The lead of the result a refused tool line gets, and the pane's reason. */
@@ -4138,12 +4158,61 @@ static int ai_tool_is_web(const char *tool)
  *
  * The chat's task waits for the command as it waits for a web page, and the
  * next turn starts with its output (ai_chat_command_done).
- * Return: AI_TOOL_WAITS, or the malloc'd note when it could not start.
+ * @text: receives the note when the command could not start.
+ * Return: AI_STEP_WAITS, or AI_STEP_RESULT with the note.
  */
-static char *ai_chat_run_readonly(ai_chat_session *s, const char *tool, const char *arg)
+static enum ai_tool_step ai_chat_run_readonly(ai_chat_session *s, const char *tool,
+                                              const char *arg, char **text)
 {
  ai_page_owner(s->op, ai_chat_command_done, tool, arg);
- return ai_tool_run_readonly(s->ref, tool, arg);
+ return ai_tool_run_readonly(s->ref, tool, arg, text);
+}
+
+/**
+ * ai_tool_line_copy - Take the tool line of a reply as one tidy line.
+ * @line: where the line starts in the reply; @action: receives it; @n: its room.
+ *
+ * The line ends at the first newline, is cut to fit and loses the spaces and
+ * the carriage return that trail it, so "TOOL grep x  \r" runs as "TOOL grep x"
+ * and a tool name never carries stray blanks.
+ */
+static void ai_tool_line_copy(const char *line, char *action, size_t n)
+{
+ const char *nl = strchr(line, '\n');
+ size_t len = nl ? (size_t)(nl - line) : strlen(line);
+ if (len >= n)
+  len = n - 1;
+ memcpy(action, line, len);
+ action[len] = '\0';
+ while (len && (action[len - 1] == ' ' || action[len - 1] == '\r'))
+  action[--len] = '\0';
+}
+
+/* Test-only hook, without effect when unset: with this word in XWPE_TEST_FAIL
+   the chat's read_file has no text to give, as when memory runs out. */
+#define AI_TEST_FAIL_ENV_NAME     "XWPE_TEST_FAIL"
+#define AI_TEST_CHAT_READ_NO_TEXT "ai-chat-read-no-text"
+
+/**
+ * ai_chat_read_file - Read a file for the chat's tool turn.
+ * @s: the chat; @arg: the path the model named.
+ * @text: receives the file's text, or NULL when none could be made.
+ *
+ * A read that cannot give its text (memory ran out) still answers the tool
+ * turn, so the chat goes on to an answer with a note instead of showing the
+ * model's tool line as if it were the answer.  XWPE_TEST_FAIL names the
+ * word that lets a test play that case.
+ * Return: AI_STEP_RESULT.
+ */
+static enum ai_tool_step ai_chat_read_file(ai_chat_session *s, const char *arg, char **text)
+{
+ char *got = ai_read_file_bounded(s->ref, arg);
+ const char *hook = getenv(AI_TEST_FAIL_ENV_NAME);
+ if (hook && strstr(hook, AI_TEST_CHAT_READ_NO_TEXT)) {
+  free(got);
+  got = NULL;
+ }
+ return ai_step_result(text, got);
 }
 
 /**
@@ -4156,30 +4225,29 @@ static char *ai_chat_run_readonly(ai_chat_session *s, const char *tool, const ch
  * -- is answered with a result naming the tools it may use, so the turn
  * goes on to an answer instead of dying in silence.  The tool line is found
  * past any reasoning preamble (ai_scan_tool_line).
- * Return: the malloc'd result the model reads next, NULL when the reply has
- * no tool line and is the answer.
+ * @text: receives the malloc'd result when the step answered at once.
+ * Return: AI_STEP_NO_TOOL when the reply has no tool line and is the answer,
+ * AI_STEP_WAITS when a page or a command runs on the loop, else
+ * AI_STEP_RESULT with the result the model reads next (@text may be NULL
+ * there: out of memory is a result, never the answer).
  */
-static char *ai_chat_tool_result(ai_chat_session *s, const char *reply)
+static enum ai_tool_step ai_chat_tool_result(ai_chat_session *s, const char *reply,
+                                             char **text)
 {
  char action[AI_TOOL_LINE_MAX], *tool, *arg;
- const char *line, *nl;
- line = ai_scan_tool_line(reply);
- if (!line) return NULL;
- nl = strchr(line, '\n');
- { size_t l = nl ? (size_t)(nl - line) : strlen(line);
-   if (l >= sizeof action) l = sizeof action - 1;
-   memcpy(action, line, l); action[l] = '\0'; }
- /* trim trailing spaces */
- { size_t l = strlen(action); while (l && (action[l-1]==' '||action[l-1]=='\r')) action[--l]='\0'; }
+ const char *line = ai_scan_tool_line(reply);
+ if (!line)
+  return ai_step_no_tool(text);
+ ai_tool_line_copy(line, action, sizeof action);
  ai_split_tool(action, &tool, &arg);
  if (!strcmp(tool, "read_file"))
-  return ai_read_file_bounded(s->ref, arg);
+  return ai_chat_read_file(s, arg, text);
  if (ai_tool_is_shell_readonly(tool))
-  return ai_chat_run_readonly(s, tool, arg);
+  return ai_chat_run_readonly(s, tool, arg, text);
  if (ai_tool_is_web(tool))
-  return ai_chat_run_web_tool(s, tool, arg);
- return ai_chat_refuse_tool(s->ref, tool, AI_CHAT_REFUSED_UNKNOWN,
-                            AI_CHAT_REFUSED_WHY_UNKNOWN);
+  return ai_chat_run_web_tool(s, tool, arg, text);
+ return ai_step_result(text, ai_chat_refuse_tool(s->ref, tool, AI_CHAT_REFUSED_UNKNOWN,
+                                                 AI_CHAT_REFUSED_WHY_UNKNOWN));
 }
 
 /* The bytes of stored conversation a turn sends (message contents summed),
@@ -13086,26 +13154,26 @@ static char *ai_tool_error_alloc(const char *reason)
  * the pane says so and the model reads "TOOL ERROR: timed out after N s".
  * The editor takes keys while it runs, and Esc ends the command with the
  * task, so a hung command costs the user nothing they did not choose.
- * Return: AI_TOOL_WAITS while it runs, or the malloc'd result the model reads.
+ * @text: receives the malloc'd result when the step answered at once.
+ * Return: AI_STEP_WAITS while it runs, or AI_STEP_RESULT with the denial or
+ * the note the model reads.
  */
-static char *ai_agent_tool_run_command(FENSTER *f, const char *arg)
+static enum ai_tool_step ai_agent_tool_run_command(FENSTER *f, const char *arg, char **text)
 {
- if (!ai_agent_approve(f, arg, 1)) return ai_agent_deny(f, AI_TOOL_RUN_COMMAND, arg);
+ if (!ai_agent_approve(f, arg, 1))
+  return ai_step_result(text, ai_agent_deny(f, AI_TOOL_RUN_COMMAND, arg));
  ai_agent_show_running(f, AI_TOOL_RUN_COMMAND);
- return ai_tool_command_start(arg, 1);
+ return ai_tool_command_start(arg, 1, text);
 }
 
 /* ---- the web page or the command a tool step waits for ---------------------
  * A web tool's page is read on the editor's loop, and a tool's command runs
- * there: the tool step answers AI_TOOL_WAITS, the task keeps its place, the
+ * there: the tool step answers AI_STEP_WAITS, the task keeps its place, the
  * editor takes keys, and the continuation hands the model its result and
  * starts the next turn.  Esc, or the window closing, ends the task, and
  * ai_op_detach gives the page up, or ends the command, with it.  One task
  * runs at a time, so one page or one command is awaited at a time. */
 
-/* What a tool step answers when its result comes later, from the loop. */
-static char ai_tool_waits_mark[] = "(the page is being read)";
-#define AI_TOOL_WAITS ai_tool_waits_mark
 /* What the model reads for a command the editor could not start. */
 #define AI_TOOL_NOT_STARTED_RESULT "(could not run command)"
 
@@ -13156,15 +13224,6 @@ static char *ai_result_end_with(char *result, char *note)
  memcpy(joined + rl, note, nl + 1);
  free(note);
  return joined;
-}
-
-/**
- * ai_tool_waits - Did the tool step leave its result to the loop?
- * @result: what the step answered.  Return: 1 for AI_TOOL_WAITS.
- */
-static int ai_tool_waits(const char *result)
-{
- return result == AI_TOOL_WAITS;
 }
 
 /**
@@ -13308,29 +13367,34 @@ static void ai_page_command_done(char *result, int status, int timed_out, void *
  * ai_page_owner named.
  * @cmd: the command line; @report_timeout: the pane says when it times out.
  *
- * Return: AI_TOOL_WAITS while it runs, or the malloc'd note the model reads
- * when it could not be started (no task to go on with, no room to run it).
+ * @text: receives the note when the command could not be started.
+ * Return: AI_STEP_WAITS while it runs, or AI_STEP_RESULT with the malloc'd
+ * note the model reads when it could not be started (no task to go on with,
+ * no room to run it).
  */
-static char *ai_tool_command_start(const char *cmd, int report_timeout)
+static enum ai_tool_step ai_tool_command_start(const char *cmd, int report_timeout,
+                                               char **text)
 {
  if (!g_ai_page.op)
-  return strdup(AI_TOOL_NOT_STARTED_RESULT);
+  return ai_step_result(text, strdup(AI_TOOL_NOT_STARTED_RESULT));
  g_ai_page.report_timeout = report_timeout;
  g_ai_page.capture = wpe_ai_capture_start_tool(cmd, e_ai_tool_timeout,
                                                ai_page_command_done, NULL);
  if (g_ai_page.capture)
-  return AI_TOOL_WAITS;
- return strdup(AI_TOOL_NOT_STARTED_RESULT);
+  return ai_step_waits(text);
+ return ai_step_result(text, strdup(AI_TOOL_NOT_STARTED_RESULT));
 }
 
 /**
  * ai_agent_fetch_as_text - Start reading a page for the model.
  * @url: what to fetch; @failed: the words for a failure with no reason.
+ * @text: receives the TOOL ERROR result when the fetch could not begin.
  *
- * Return: AI_TOOL_WAITS while the page is read on the loop, or the malloc'd
- * TOOL ERROR result when the fetch could not begin.
+ * Return: AI_STEP_WAITS while the page is read on the loop, or
+ * AI_STEP_RESULT with the malloc'd TOOL ERROR result.
  */
-static char *ai_agent_fetch_as_text(const char *url, const char *failed)
+static enum ai_tool_step ai_agent_fetch_as_text(const char *url, const char *failed,
+                                                char **text)
 {
  char werr[AI_FETCH_REASON_MAX];
  werr[0] = '\0';
@@ -13338,8 +13402,8 @@ static char *ai_agent_fetch_as_text(const char *url, const char *failed)
  g_ai_page.fetch = wpe_ai_web_fetch_start(url, AI_WEB_FETCH_MAX, ai_page_fetched, NULL,
                                           werr, sizeof werr);
  if (g_ai_page.fetch)
-  return AI_TOOL_WAITS;
- return ai_tool_error_reason(werr, failed);
+  return ai_step_waits(text);
+ return ai_step_result(text, ai_tool_error_reason(werr, failed));
 }
 
 /**
@@ -13365,14 +13429,18 @@ static void ai_agent_note_search_engine(FENSTER *f, const char *surl);
  * pane says the fetch is running while the editor waits on it (the fetch has
  * its own time limit).  This is the built-in agent's only route onto the web,
  * for models that have no web tool of their own.
- * Return: the malloc'd result the model reads.
+ * @text: receives the refusal, the denial or the TOOL ERROR the model reads
+ * when the step answered at once.
+ * Return: AI_STEP_WAITS while the page is read on the loop, else AI_STEP_RESULT.
  */
-static char *ai_agent_tool_web_fetch(FENSTER *f, const char *arg)
+static enum ai_tool_step ai_agent_tool_web_fetch(FENSTER *f, const char *arg, char **text)
 {
- if (ai_web_is_off()) return ai_agent_refuse_web(f, AI_TOOL_WEB_FETCH, arg);
- if (!ai_agent_approve(f, arg, 1)) return ai_agent_deny(f, AI_TOOL_WEB_FETCH, arg);
+ if (ai_web_is_off())
+  return ai_step_result(text, ai_agent_refuse_web(f, AI_TOOL_WEB_FETCH, arg));
+ if (!ai_agent_approve(f, arg, 1))
+  return ai_step_result(text, ai_agent_deny(f, AI_TOOL_WEB_FETCH, arg));
  ai_agent_show_running(f, AI_TOOL_WEB_FETCH);
- return ai_agent_fetch_as_text(arg, "fetch failed");
+ return ai_agent_fetch_as_text(arg, "fetch failed", text);
 }
 
 /**
@@ -13396,17 +13464,22 @@ static void ai_search_url_for_query(const char *arg, char *out, size_t n)
  * Builds a query URL from the configurable template (AISearchURL, default a
  * keyless engine) and fetches it as text; the model reads the result links,
  * then web_fetch's the promising one.  Gated and announced like web_fetch.
- * Return: the malloc'd result the model reads.
+ * @text: receives the refusal, the denial or the TOOL ERROR the model reads
+ * when the step answered at once.
+ * Return: AI_STEP_WAITS while the results page is read on the loop, else
+ * AI_STEP_RESULT.
  */
-static char *ai_agent_tool_web_search(FENSTER *f, const char *arg)
+static enum ai_tool_step ai_agent_tool_web_search(FENSTER *f, const char *arg, char **text)
 {
  char surl[AI_URL_MAX];
- if (ai_web_is_off()) return ai_agent_refuse_web(f, AI_TOOL_WEB_SEARCH, arg);
- if (!ai_agent_approve(f, arg, 1)) return ai_agent_deny(f, AI_TOOL_WEB_SEARCH, arg);
+ if (ai_web_is_off())
+  return ai_step_result(text, ai_agent_refuse_web(f, AI_TOOL_WEB_SEARCH, arg));
+ if (!ai_agent_approve(f, arg, 1))
+  return ai_step_result(text, ai_agent_deny(f, AI_TOOL_WEB_SEARCH, arg));
  ai_search_url_for_query(arg, surl, sizeof surl);
  ai_agent_note_search_engine(f, surl);
  ai_agent_show_running(f, AI_TOOL_WEB_SEARCH);
- return ai_agent_fetch_as_text(surl, "search failed");
+ return ai_agent_fetch_as_text(surl, "search failed", text);
 }
 
 /* ----- the chat's web tools, behind the web switch ------------------------
@@ -13665,29 +13738,35 @@ static void ai_chat_note_source(ai_chat_session *s, const char *tool, const char
  *
  * The switch is asked first (its notice at first need), then the agent's
  * function approves through the dial, prints its lines and runs; a refusal
- * is answered aloud so the turn goes on.
- * Return: the malloc'd result the model reads.
+ * is answered aloud so the turn goes on.  A step that answered at once names
+ * its source here; one that waits names it when its page has come
+ * (ai_chat_page_done).
+ * @text: receives the malloc'd result when the step answered at once.
+ * Return: AI_STEP_WAITS while the page is read on the loop, else AI_STEP_RESULT.
  */
 static void ai_chat_page_done(ai_async_op *op, char *result,
                               const char *tool, const char *arg);
 
-static char *ai_chat_run_web_tool(ai_chat_session *s, const char *tool, const char *arg)
+static enum ai_tool_step ai_chat_run_web_tool(ai_chat_session *s, const char *tool,
+                                              const char *arg, char **text)
 {
  FENSTER *f = s->ref;
  enum ai_web_answer answer = ai_chat_web_answer(s);
- char *result;
+ enum ai_tool_step step;
  if (answer == AI_WEB_OFF)
-  return ai_chat_refuse_tool(f, tool, AI_CHAT_REFUSED_WEB_OFF, AI_CHAT_WHY_WEB_OFF);
+  return ai_step_result(text, ai_chat_refuse_tool(f, tool, AI_CHAT_REFUSED_WEB_OFF,
+                                                  AI_CHAT_WHY_WEB_OFF));
  if (answer == AI_WEB_NOT_NOW)
-  return ai_chat_refuse_tool(f, tool, AI_CHAT_REFUSED_WEB_NOT_NOW, AI_CHAT_WHY_WEB_NOT_NOW);
+  return ai_step_result(text, ai_chat_refuse_tool(f, tool, AI_CHAT_REFUSED_WEB_NOT_NOW,
+                                                  AI_CHAT_WHY_WEB_NOT_NOW));
  ai_page_owner(s->op, ai_chat_page_done, tool, arg);
  if (!strcmp(tool, AI_TOOL_WEB_SEARCH))
-  result = ai_agent_tool_web_search(f, arg);
+  step = ai_agent_tool_web_search(f, arg, text);
  else
-  result = ai_agent_tool_web_fetch(f, arg);
- if (!ai_tool_waits(result))
-  ai_chat_note_source(s, tool, arg, result);
- return result;
+  step = ai_agent_tool_web_fetch(f, arg, text);
+ if (step == AI_STEP_RESULT)
+  ai_chat_note_source(s, tool, arg, *text);
+ return step;
 }
 
 /**
@@ -13949,39 +14028,43 @@ static char *ai_agent_tool_step_done(FENSTER *f, const char *arg)
  * glance what the model may do and which of it asks: the read-only tools and
  * the checklist run unasked, the command and the web tools are gated as
  * commands, the two writes as writes.
- * Return: the malloc'd result the model reads, NULL out of memory.
+ * @text: receives the malloc'd result when the step answered at once.
+ * Return: AI_STEP_WAITS while a page or a command runs on the loop, else
+ * AI_STEP_RESULT (@text may be NULL there: out of memory).
  */
-static char *ai_agent_run_tool(ai_async_op *op, const char *tool, const char *arg,
-                               const char *firstnl)
+static enum ai_tool_step ai_agent_run_tool(ai_async_op *op, const char *tool, const char *arg,
+                                           const char *firstnl, char **text)
 {
  FENSTER *f = op->f;
- if (ai_tool_is_shell_readonly(tool)) return ai_tool_run_readonly(f, tool, arg);
- if (!strcmp(tool, AI_TOOL_READ_FILE)) return ai_read_file_bounded(f, arg);
- if (!strcmp(tool, AI_TOOL_RUN_COMMAND)) return ai_agent_tool_run_command(f, arg);
- if (!strcmp(tool, AI_TOOL_WEB_FETCH)) return ai_agent_tool_web_fetch(f, arg);
- if (!strcmp(tool, AI_TOOL_WEB_SEARCH)) return ai_agent_tool_web_search(f, arg);
- if (!strcmp(tool, AI_TOOL_WRITE_FILE)) return ai_agent_tool_write_file(op, arg, firstnl);
- if (!strcmp(tool, AI_TOOL_APPLY_PATCH)) return ai_agent_apply_patch(op, arg, firstnl);
- if (!strcmp(tool, AI_TOOL_PLAN)) return ai_agent_tool_plan(f, firstnl);
- if (!strcmp(tool, AI_TOOL_STEP_DONE)) return ai_agent_tool_step_done(f, arg);
- return strdup(AI_TOOL_UNKNOWN_RESULT);
+ if (ai_tool_is_shell_readonly(tool)) return ai_tool_run_readonly(f, tool, arg, text);
+ if (!strcmp(tool, AI_TOOL_READ_FILE)) return ai_step_result(text, ai_read_file_bounded(f, arg));
+ if (!strcmp(tool, AI_TOOL_RUN_COMMAND)) return ai_agent_tool_run_command(f, arg, text);
+ if (!strcmp(tool, AI_TOOL_WEB_FETCH)) return ai_agent_tool_web_fetch(f, arg, text);
+ if (!strcmp(tool, AI_TOOL_WEB_SEARCH)) return ai_agent_tool_web_search(f, arg, text);
+ if (!strcmp(tool, AI_TOOL_WRITE_FILE))
+  return ai_step_result(text, ai_agent_tool_write_file(op, arg, firstnl));
+ if (!strcmp(tool, AI_TOOL_APPLY_PATCH))
+  return ai_step_result(text, ai_agent_apply_patch(op, arg, firstnl));
+ if (!strcmp(tool, AI_TOOL_PLAN)) return ai_step_result(text, ai_agent_tool_plan(f, firstnl));
+ if (!strcmp(tool, AI_TOOL_STEP_DONE)) return ai_step_result(text, ai_agent_tool_step_done(f, arg));
+ return ai_step_result(text, strdup(AI_TOOL_UNKNOWN_RESULT));
 }
 
 /**
  * ai_agent_feed_result - Hand a tool's result to the model as the next turn's input.
- * @op: the running agent task; @result: the malloc'd result, taken over.
+ * @op: the running agent task; @result: the malloc'd result, taken over (NULL
+ * when none could be made).
  *
  * An empty result becomes an explicit note, so the model learns that
- * nothing matched instead of reading a broken tool and stalling.
+ * nothing matched instead of reading a broken tool and stalling.  When even
+ * the note cannot be made the run goes on without a new turn line instead of
+ * ending the editor.  The plan's study turns feed their results here too.
  */
 static void ai_agent_feed_result(ai_async_op *op, char *result)
 {
- size_t n;
  char *tr;
  result = ai_tool_result_nonempty(result);
- n = strlen(result) + sizeof AI_TOOL_RESULT_HEAD;
- tr = malloc(n);
- if (tr) snprintf(tr, n, AI_TOOL_RESULT_HEAD "%s", result);
+ tr = ai_step_turn_text(AI_TOOL_RESULT_HEAD, result);
  if (tr) ai_ml_add(&op->ml, "user", tr);
  free(tr);
  free(result);
@@ -14006,6 +14089,7 @@ static int ai_agent_process(ai_async_op *op, char *reply)
  FENSTER *f = op->f;
  enum ai_agent_marker kind;
  char *act, *firstnl, *tool, *arg, *result, action[AI_TOOL_LINE_MAX];
+ enum ai_tool_step step;
  size_t len;
 
  if (!ai_window_alive(op->cn, f)) return 1;
@@ -14019,9 +14103,10 @@ static int ai_agent_process(ai_async_op *op, char *reply)
  ai_split_tool(action, &tool, &arg);   /* shared parse: tolerates "read_file:" */
  ai_agent_show_tool(f, tool, arg);
  ai_page_owner(op, ai_agent_page_done, tool, arg);
- result = ai_agent_run_tool(op, tool, arg, firstnl);
- if (ai_tool_waits(result))
+ step = ai_agent_run_tool(op, tool, arg, firstnl, &result);
+ if (step == AI_STEP_WAITS)
   return AI_PROCESS_WAITS;                      /* the page goes on from the loop */
+ ai_page_forget();                              /* the step answered: no task waits */
  ai_agent_feed_result(op, result);
  return 0;                                      /* keep going */
 }
@@ -14533,22 +14618,16 @@ static void ai_plan_free_data(void *ud)
 
 /**
  * ai_plan_feed_result - Hand a study tool's result to the plan's next turn.
- * @op: the plan task; @result: the malloc'd result, taken over.
+ * @op: the plan task; @result: the malloc'd result, taken over (NULL when the
+ * study tool had no text).
  *
- * An empty result becomes an explicit note, so the model learns that nothing
+ * The plan reads a study tool's result exactly as the agent reads a tool's:
+ * an empty result becomes an explicit note, so the model learns that nothing
  * matched instead of reading a broken tool.
  */
 static void ai_plan_feed_result(ai_async_op *op, char *result)
 {
- size_t n;
- char *tr;
- result = ai_tool_result_nonempty(result);
- n = strlen(result) + sizeof AI_TOOL_RESULT_HEAD;
- tr = malloc(n);
- if (tr) snprintf(tr, n, AI_TOOL_RESULT_HEAD "%s", result);
- if (tr) ai_ml_add(&op->ml, "user", tr);
- free(tr);
- free(result);
+ ai_agent_feed_result(op, result);
 }
 
 /**
@@ -14566,25 +14645,86 @@ static void ai_plan_command_done(ai_async_op *op, char *result,
 }
 
 /**
+ * ai_plan_read_file - Read a file for a plan turn, behind the scope gate.
+ * @op: the plan task; @arg: the path the model named.
+ * @text: receives the file's text, the refusal, or NULL for a file that could
+ * not be read.
+ *
+ * A file outside the workspace is asked about first, as in the chat and the
+ * agent, so a plan cannot read what they could not.
+ * Return: AI_STEP_RESULT.
+ */
+static enum ai_tool_step ai_plan_read_file(ai_async_op *op, const char *arg, char **text)
+{
+ char *refused;
+ if (!ai_scope_read_gate(op->f, AI_TOOL_READ_FILE, arg, &refused))
+  return ai_step_result(text, refused);
+ return ai_step_result(text, wpe_ai_read_scope_file(op->f, arg));
+}
+
+/**
  * ai_plan_run_tool - Run one study tool of a plan turn.
  * @op: the plan task; @tool/@arg: the request.
  *
  * Only the read-only tools run in plan mode; list_dir and grep run on the
  * editor's loop, so a search over a large tree leaves the editor taking keys.
- * Return: AI_TOOL_WAITS while a command runs, else the malloc'd result.
+ * @text: receives the malloc'd result when the step answered at once; NULL
+ * there means "no text" (a file that could not be read), which the plan feeds
+ * as an empty result.
+ * Return: AI_STEP_WAITS while a command runs, else AI_STEP_RESULT.
  */
-static char *ai_plan_run_tool(ai_async_op *op, const char *tool, const char *arg)
+static enum ai_tool_step ai_plan_run_tool(ai_async_op *op, const char *tool, const char *arg,
+                                          char **text)
 {
- if (!strcmp(tool, "read_file")) {
-  char *refused;
-  if (!ai_scope_read_gate(op->f, AI_TOOL_READ_FILE, arg, &refused)) return refused;
-  return wpe_ai_read_scope_file(op->f, arg);
- }
+ if (!strcmp(tool, "read_file"))
+  return ai_plan_read_file(op, arg, text);
  if (!strcmp(tool, AI_TOOL_LIST_DIR) || !strcmp(tool, AI_TOOL_GREP)) {
   ai_page_owner(op, ai_plan_command_done, tool, arg);
-  return ai_tool_run_readonly(op->f, tool, arg);
+  return ai_tool_run_readonly(op->f, tool, arg, text);
  }
- return strdup("(only read-only tools are allowed in plan mode)");
+ return ai_step_result(text, strdup("(only read-only tools are allowed in plan mode)"));
+}
+
+/**
+ * ai_plan_first_line - The first line of a plan reply, cut to fit.
+ * @reply: the model's reply; @action: receives the line; @n: its room.
+ *
+ * A plan turn is a tool call or text; the first line tells which.
+ */
+static void ai_plan_first_line(const char *reply, char *action, size_t n)
+{
+ const char *nl = strchr(reply, '\n');
+ size_t len = nl ? (size_t)(nl - reply) : strlen(reply);
+ if (len >= n)
+  len = n - 1;
+ memcpy(action, reply, len);
+ action[len] = '\0';
+}
+
+/**
+ * ai_plan_take_tool_turn - Run the study tool a plan turn asked for.
+ * @op: the plan task; @call: the tool and its argument, after "TOOL ",
+ * writable.
+ *
+ * The pane names the tool, the tool runs, and its result becomes the next
+ * turn's input; a list_dir or grep runs on the loop, so a search over a large
+ * tree leaves the editor taking keys and the plan goes on when it is done.
+ * Return: AI_PROCESS_WAITS while a command runs, else 0 to keep going.
+ */
+static int ai_plan_take_tool_turn(ai_async_op *op, char *call)
+{
+ char *tool = call, *arg = strchr(tool, ' '), *result, paneln[640];
+ enum ai_tool_step step;
+ if (arg) { *arg = '\0'; arg++; } else arg = (char *)"";
+ snprintf(paneln, sizeof paneln, AI_MULTIFILE_PREFIX " %s %s", tool, arg);
+ ai_pane(op->f, paneln, AI_ROLE_MACHINERY, 0);
+ wpe_ai_trace("plan tool=%s arg=%s", tool, arg);
+ step = ai_plan_run_tool(op, tool, arg, &result);
+ if (step == AI_STEP_WAITS)
+  return AI_PROCESS_WAITS;                    /* the command goes on from the loop */
+ ai_page_forget();                            /* the step answered: no task waits */
+ ai_plan_feed_result(op, result);
+ return 0;
 }
 
 /* One plan turn: read-only tools while studying, then accumulate PROPOSE blocks
@@ -14594,26 +14734,14 @@ static int ai_plan_process(ai_async_op *op, char *reply)
 {
  ai_plan_data *pd = op->ud;
  FENSTER *f = op->f;
- char action[AI_TOOL_LINE_MAX], *firstnl;
+ char action[AI_TOOL_LINE_MAX];
  int done;
 
  if (!ai_window_alive(op->cn, f)) return 1;
  done = ai_plan_parse(reply, pd->props, &pd->np);
- firstnl = strchr(reply, '\n');
- { size_t l = firstnl ? (size_t)(firstnl - reply) : strlen(reply);
-   if (l >= sizeof action) l = sizeof action - 1; memcpy(action, reply, l); action[l] = '\0'; }
- if (!done && !strncmp(action, "TOOL ", 5)) {
-  char *tool = action + 5, *arg = strchr(tool, ' '), *result = NULL, paneln[640];
-  if (arg) { *arg = '\0'; arg++; } else arg = (char *)"";
-  snprintf(paneln, sizeof paneln, AI_MULTIFILE_PREFIX " %s %s", tool, arg);
-  ai_pane(f, paneln, AI_ROLE_MACHINERY, 0);
-  wpe_ai_trace("plan tool=%s arg=%s", tool, arg);
-  result = ai_plan_run_tool(op, tool, arg);
-  if (ai_tool_waits(result))
-   return AI_PROCESS_WAITS;                   /* the command goes on from the loop */
-  ai_plan_feed_result(op, result);
-  return 0;
- }
+ ai_plan_first_line(reply, action, sizeof action);
+ if (!done && !strncmp(action, "TOOL ", 5))
+  return ai_plan_take_tool_turn(op, action + 5);
  if (!done && pd->np == 0) {
   ai_pane(f, action, AI_ROLE_ASSISTANT, 0);   /* neither a tool nor a plan: final text */
   return 1;

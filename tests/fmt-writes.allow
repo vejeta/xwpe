@@ -50,7 +50,6 @@ FMT|we_ai_path.c|path_hooks_folder|1|move
 FMT|we_ai_ui.c|ai_agent_approve|1|move
 FMT|we_ai_ui.c|ai_agent_approve_write|1|move
 FMT|we_ai_ui.c|ai_agent_deny|1|move
-FMT|we_ai_ui.c|ai_agent_feed_result|1|move
 FMT|we_ai_ui.c|ai_agent_note_auto_approved|1|move
 FMT|we_ai_ui.c|ai_agent_note_search_engine|1|move
 FMT|we_ai_ui.c|ai_agent_refuse_web|1|move
@@ -71,7 +70,6 @@ FMT|we_ai_ui.c|ai_chat_announce_fallback|1|move
 FMT|we_ai_ui.c|ai_chat_echo_question|1|move
 FMT|we_ai_ui.c|ai_chat_end_cut_reply|1|move
 FMT|we_ai_ui.c|ai_chat_note_source|1|move
-FMT|we_ai_ui.c|ai_chat_record_tool_result|1|move
 FMT|we_ai_ui.c|ai_chat_refuse_tool|2|move
 FMT|we_ai_ui.c|ai_chat_save_cut_reply|1|move
 FMT|we_ai_ui.c|ai_chat_show_empty_reply|1|move
@@ -123,10 +121,9 @@ FMT|we_ai_ui.c|ai_opt_plabel|1|move
 FMT|we_ai_ui.c|ai_opt_refuse_provider_name|1|move
 FMT|we_ai_ui.c|ai_opt_sync_widgets|3|move
 FMT|we_ai_ui.c|ai_pane_attn|1|move
-FMT|we_ai_ui.c|ai_plan_feed_result|1|move
 FMT|we_ai_ui.c|ai_plan_finish|3|move
-FMT|we_ai_ui.c|ai_plan_process|1|move
 FMT|we_ai_ui.c|ai_plan_progress|1|move
+FMT|we_ai_ui.c|ai_plan_take_tool_turn|1|move
 FMT|we_ai_ui.c|ai_plan_register_rows|1|move
 FMT|we_ai_ui.c|ai_plan_report_outside|1|move
 FMT|we_ai_ui.c|ai_plan_show|2|move

@@ -1483,6 +1483,62 @@
    "layer": "ncurses",
    "test": "tests/test_ai_workspace_protected.py::test_save_options_as_a_third_file_writes_every_key_and_leaves_the_users_file",
    "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-107",
+   "requirement": "A tool that waits for the loop feeds the model once",
+   "layer": "ncurses",
+   "test": "tests/test_ai_tool_step.py::test_a_web_fetch_waits_and_the_model_reads_its_page_once",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-107",
+   "requirement": "A tool that waits for the loop feeds the model once",
+   "layer": "ncurses",
+   "test": "tests/test_ai_tool_step.py::test_a_run_command_waits_and_the_model_reads_its_output_once",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-107",
+   "requirement": "A tool that waits for the loop feeds the model once",
+   "layer": "ncurses",
+   "test": "tests/test_ai_tool_step.py::test_a_grep_waits_and_the_model_reads_its_matches_once",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-107",
+   "requirement": "A tool that waits for the loop feeds the model once",
+   "layer": "ncurses",
+   "test": "tests/test_ai_tool_step.py::test_the_chat_names_a_search_url_once_in_its_sources",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-107",
+   "requirement": "A tool that waits for the loop feeds the model once",
+   "layer": "ncurses",
+   "test": "tests/test_ai_tool_step.py::test_the_chat_names_no_source_for_a_search_that_did_not_come",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-107",
+   "requirement": "A tool that waits for the loop feeds the model once",
+   "layer": "ncurses",
+   "test": "tests/test_ai_tool_step.py::test_a_plan_study_grep_waits_and_the_model_reads_its_matches_once",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-107",
+   "requirement": "A tool that waits for the loop feeds the model once",
+   "layer": "ncurses",
+   "test": "tests/test_ai_tool_step.py::test_a_chat_read_with_no_text_is_a_result_and_the_turn_goes_on",
+   "status": "new"
+  },
+  {
+   "id": "SC-ai-agent-107",
+   "requirement": "A tool that waits for the loop feeds the model once",
+   "layer": "c-unit",
+   "test": "test_ai_tool_step",
+   "status": "new"
   }
  ]
 }
