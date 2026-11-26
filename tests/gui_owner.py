@@ -627,6 +627,17 @@ def product_duration(name, amount):
     return str(text)
 
 
+def product_env(name, amount):
+    """{name: text}: the one environment entry that hands the editor a
+    duration, for a row that builds the editor's environment as a dict
+    (`env = {..., **gui_owner.product_env("XWPE_AI_MOCK_DELAY_MS", 8000)}`).
+
+    The name is written once, as the argument the duration check reads, and
+    the value is product_duration's, so the row never spells the name as a
+    bare key next to a value it chose by hand."""
+    return {name: product_duration(name, amount)}
+
+
 def product_option_line(name, amount):
     """The xwperc line `<name> : <seconds>` for an option that holds a
     duration (AIToolTimeout, AIAnswerTimeout), stretched by the wait scale

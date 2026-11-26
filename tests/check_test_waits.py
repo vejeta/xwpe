@@ -200,6 +200,7 @@ CANARIES = {
                        'OPT = "AIToolTimeoutNote : none"\n', None),
     "clean_api.py": ('from gui_owner import product_duration, product_option_line\n'
                      'v = product_duration("XWPE_AI_MOCK_DELAY_MS", 5000)\n'
+                     'e = {"XWPE_UI_TRACE": "t", **product_env("XWPE_AI_MOCK_DELAY_MS", 5000)}\n'
                      'o = product_option_line("AIToolTimeout", 2)\n'
                      '"""a docstring that says time.sleep(1) and XWPE_AI_TIMEOUT"""\n',
                      None),
@@ -453,11 +454,12 @@ def _duration_names():
 
 
 def _is_duration_api_argument(node, parents):
-    """True when @node is the first argument of product_duration or
-    product_option_line."""
+    """True when @node is the first argument of product_duration,
+    product_env or product_option_line."""
     parent = parents.get(id(node))
     return (isinstance(parent, ast.Call) and parent.args and parent.args[0] is node
-            and _called_name(parent) in ("product_duration", "product_option_line"))
+            and _called_name(parent) in ("product_duration", "product_env",
+                                         "product_option_line"))
 
 
 def _folded_string(node):

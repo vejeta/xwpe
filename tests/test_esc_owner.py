@@ -10,7 +10,6 @@ never after a sleep.
 """
 import os
 import stat
-import time
 import signal
 import pytest
 import sys
@@ -19,7 +18,7 @@ import shutil
 import gui_owner
 import procinfo
 from wpe_driver import WpeSession, ALT, wait_until, wait_screen, ui_trace_tail
-from test_ai_async import _start_edit, WAIT_SCALE
+from test_ai_async import _start_edit
 
 # Reuse the existing stub helpers from other test modules
 from test_debugger_integration import (
@@ -65,31 +64,26 @@ def _trace_path(tmp_path):
 
 def _trace_contains(trace_path, needle, timeout=12):
     """Poll the trace file for @needle."""
-    deadline = time.time() + timeout * WAIT_SCALE
-    while time.time() < deadline:
-        if os.path.exists(trace_path):
-            try:
-                with open(trace_path, errors="replace") as fh:
-                    text = fh.read()
-                if needle in text:
-                    return True
-            except OSError:
-                pass
-        time.sleep(0.1)
-    return False
+    try:
+        gui_owner.wait_for(
+            lambda: os.path.exists(trace_path) and needle in open(trace_path, errors="replace").read(),
+            f"trace to contain {needle!r}",
+            timeout)
+        return True
+    except gui_owner.OwnerTimeout:
+        return False
 
 
 def _process_gone(pid, timeout=12):
     """Wait for a PID to be gone."""
-    deadline = time.time() + timeout * WAIT_SCALE
-    while time.time() < deadline:
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return True
-        time.sleep(0.1)
-    return False
-
+    try:
+        gui_owner.wait_for(
+            lambda: not gui_owner.process_running(pid),
+            f"process {pid} to be gone",
+            timeout)
+        return True
+    except gui_owner.OwnerTimeout:
+        return False
 
 
 
@@ -100,7 +94,7 @@ def _ai_env(tmp_path, trace, mock_delay_ms=8000, reply="int main(void){return 1;
         "XWPE_AI_ENABLE": "1",
         "XWPE_AI_BACKEND": "mock",
         "XWPE_AI_MOCK_REPLY": reply,
-        "XWPE_AI_MOCK_DELAY_MS": str(int(mock_delay_ms * WAIT_SCALE)),
+        **gui_owner.product_env("XWPE_AI_MOCK_DELAY_MS", mock_delay_ms),
     }
 
 
@@ -340,21 +334,17 @@ def test_G12_esc_not_program_text(tmp_path):
         # Now send Esc - it must NOT reach the program (e_key_is_program_text)
         w.key(ESC, delay=0.5)
         # The program should have received "hello\n" but NOT the ESC byte (0x1b)
-        deadline = time.time() + 5 * WAIT_SCALE
-        got_hello = False
-        got_esc = False
-        while time.time() < deadline:
-            if stdin_log.exists():
-                content = stdin_log.read_bytes()
-                if b"hello" in content:
-                    got_hello = True
-                if b"\x1b" in content:
-                    got_esc = True
-                if got_hello:
-                    break
-            time.sleep(0.1)
-        assert got_hello, "program should have received 'hello'"
-        assert not got_esc, "program should NOT have received ESC byte (0x1b)"
+        def _stdin_log_has_hello():
+            if not stdin_log.exists():
+                return False
+            content = stdin_log.read_bytes()
+            got_esc = b"\x1b" in content
+            assert not got_esc, "program should NOT have received ESC byte (0x1b)"
+            return b"hello" in content
+
+        assert wait_until(w, _stdin_log_has_hello, tmo=5,
+                          what="the program to receive 'hello'"), \
+            "program should have received 'hello'"
         # The editor should still be responsive (Esc did not cancel anything here)
         w.key("Q", delay=0.3)
         w.save()
@@ -388,13 +378,18 @@ def test_G13_dialog_over_build(tmp_path):
 def test_G14_build_then_ai_task(tmp_path):
     """Build and assistant task from a file window: Esc ends build; after process gone, Esc ends task.
     Uses a Makefile that writes its child PID to a file for process-gone wait.
+    The build waits on a fifo the test can release (like test_bsp_start.py).
     Switches back to file window (Alt-1) before asking the AI task so Messages
     doesn't intercept the edit.
     """
     trace = _trace_path(tmp_path)
     ai_trace = str(tmp_path / "ai.trace")
     src = "AAA\n"
-    slow_make = ("all:\n\t@echo BUILD_START\n\t@sh -c 'echo $$PPID > build.pid; sleep 10'\n\t@echo BUILD_DONE\n"
+    # Build waits on a fifo so the row controls when it ends.
+    release_path = tmp_path / "build.release"
+    os.mkfifo(release_path)
+    slow_make = ("all:\n\t@echo BUILD_START\n\t@sh -c 'echo $$PPID > build.pid; cat " +
+                 str(release_path) + " > /dev/null'\n\t@echo BUILD_DONE\n"
                  "\t@touch prog\n")
     (tmp_path / "Makefile").write_text(slow_make)
     env = _ai_env(tmp_path, trace)
@@ -476,9 +471,12 @@ def test_G18_build_during_adapter_start(tmp_path):
     trace = _trace_path(tmp_path)
     # Go program for dlv reverse-tcp DAP
     src = ("package main\n\nfunc main() {\n    x := 3\n    _ = x\n}\n")
-    # A build that records make's own PID, so the test can wait for it to go
+    # A build that records make's own PID, so the test can wait for it to go.
+    # Uses a fifo the test writes to release the build (like test_bsp_start.py).
+    release_path = tmp_path / "build.release"
+    os.mkfifo(release_path)
     slow_make = ("all:\n\t@echo BUILD_START\n\t@echo $$PPID > build.pid\n"
-                 "\t@sleep 30\n\t@echo BUILD_DONE\n\t@touch prog\n")
+                 "\t@read _ < " + str(release_path) + "\n\t@echo BUILD_DONE\n\t@touch prog\n")
     (tmp_path / "Makefile").write_text(slow_make)
     # Use the silent DAP adapter pattern from test_debugger_integration:
     # reverse-tcp transport = dlv that dials back (Go language .go file)
@@ -488,7 +486,7 @@ def test_G18_build_during_adapter_start(tmp_path):
     (bindir / "dlv").write_text("#!/bin/sh\nexec 3>&1\nexec cat 3>&3 > %s\n" % (tmp_path / "adapter-stdin.log"))
     (bindir / "dlv").chmod(0o755)
     env = {"PATH": str(bindir) + ":" + os.environ.get("PATH", ""),
-           "XWPE_DEBUG_START_TIMEOUT": "600",
+           **gui_owner.product_env("XWPE_DEBUG_START_TIMEOUT", 600),
            "XWPE_UI_TRACE": trace}
     with WpeSession(str(tmp_path), src, filename="main.go", wait=1.5, env_extra=env) as w:
         # Start DAP adapter (reverse-tcp dlv) via Ctrl-G R FIRST
