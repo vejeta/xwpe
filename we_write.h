@@ -271,6 +271,24 @@ int wpe_write_save(struct FNST *f, WpeWriteThen then, const char *keep_name);
    that file's.  wpe_write_window_is_a_file says whether a window has a file. */
 void wpe_write_window_set_not_a_file(struct FNST *f);
 int  wpe_write_window_is_a_file(const struct FNST *f);
+/* A window whose text came from a pipe (or from a descriptor the editor was
+   started with) has no name to write back to: its title is where the text
+   came from.  The owner refuses every write of it under that title, like a
+   label's, but the close and quit prompts do ask about it once the user has
+   typed (wpe_write_window_asks_at_close), and its frame says where the text
+   came from (WpePipeMark).  Save As makes it a file's window and both go. */
+typedef enum {
+ WPE_PIPE_MARK_DONE = 0,     /* "[pipe]": all the writer sent is here */
+ WPE_PIPE_MARK_READING,      /* "[pipe reading]": the pipe is still being read */
+ WPE_PIPE_MARK_CUT           /* "[pipe cut]": the text stops before the writer did */
+} WpePipeMark;
+void wpe_write_window_state_forget(struct FNST *f);
+void wpe_write_window_set_from_pipe(struct FNST *f);
+int  wpe_write_window_is_from_pipe(const struct FNST *f);
+int  wpe_write_window_asks_at_close(const struct FNST *f);
+void wpe_write_window_set_pipe_mark(struct FNST *f, WpePipeMark mark);
+WpePipeMark wpe_write_window_pipe_mark(const struct FNST *f);
+void wpe_write_window_test_from_pipe(struct FNST *f);
 /* The special bits of the existing file @path, split by what a write onto it
    would do: @drops, the ones the copy will not keep, and @stays, the ones it
    cannot take off because the user does not own the file.  Both 0 when it is

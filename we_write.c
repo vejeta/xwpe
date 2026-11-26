@@ -51,6 +51,20 @@
     file called <bak>.swap takes that name, as another user of the folder
     could do between the backup and the restore. */
 #define WPE_WRITE_TEST_FAIL_SWAP_BAK "swap-bak"
+
+/** XWPE_TEST_FAIL=window-from-pipe: a file window starts as one read from a
+    pipe (wpe_write_window_test_from_pipe), for the rows of the pipe window's
+    faces while no reader exists. */
+#define WPE_WRITE_TEST_FAIL_WINDOW_FROM_PIPE "window-from-pipe"
+
+/** The three states of a window's file (FENSTER.window_file_state): a file the
+    editor reads and writes by its name; a label the editor writes itself,
+    with no file behind it; text that came from a pipe and has no file yet. */
+enum {
+ WRITE_WINDOW_FILE = 0,
+ WRITE_WINDOW_LABEL,
+ WRITE_WINDOW_FROM_PIPE
+};
 #define WPE_WRITE_TEST_SWAP_SUFFIX   ".swap"
 
 /** The errno a refused save carries when its name leads to another file by
@@ -3421,7 +3435,7 @@ static int write_window_file(FENSTER *f, int plain_save, WpeWriteOutcome *o)
  if (o->status == WPE_WRITE_WRITTEN)
  {
   f->file_id = o->written;
-  f->no_file = 0;                        /* a Save As gave the window a file */
+  wpe_write_window_state_forget(f);      /* a Save As gave the window a file */
   f->save = 0;
   write_final_break_after(f, e_window_text(f));
   e_window_text(f)->nul_dropped = 0;                /* the user knew, and the file is written */
@@ -4513,17 +4527,112 @@ int wpe_write_written_clause(char *out, size_t n, const WpeWriteOutcome *o)
  */
 void wpe_write_window_set_not_a_file(FENSTER *f)
 {
- f->no_file = 1;
+ f->window_file_state = WRITE_WINDOW_LABEL;
+}
+
+/**
+ * wpe_write_window_state_forget - Start a window with a file behind it and
+ * nothing said about a pipe.
+ * @f: the window, just allocated.
+ *
+ * What the user gets: a window that is made new never carries the state of
+ * whatever memory it was given, so a file window is written under its name
+ * and shows no pipe mark.  Also what a Save As that wrote does, because the
+ * window is that file's from then on.
+ */
+void wpe_write_window_state_forget(FENSTER *f)
+{
+ f->window_file_state = WRITE_WINDOW_FILE;
+ f->window_pipe_mark = WPE_PIPE_MARK_DONE;
+}
+
+/**
+ * wpe_write_window_set_from_pipe - Say the window's text came from a pipe.
+ * @f: the window, just opened.
+ *
+ * What the user gets: the window is never written under its title (that is
+ * "63" or "stdin", not a file of his), its frame says "[pipe]", and Save As
+ * is what F2 does until the text has a file of its own.
+ */
+void wpe_write_window_set_from_pipe(FENSTER *f)
+{
+ f->window_file_state = WRITE_WINDOW_FROM_PIPE;
+ f->window_pipe_mark = WPE_PIPE_MARK_DONE;
+}
+
+/**
+ * wpe_write_window_is_from_pipe - Did this window's text come from a pipe
+ * and has it no file yet?
+ * @f: the window.
+ * Return: 1 for such a window, else 0.
+ */
+int wpe_write_window_is_from_pipe(const FENSTER *f)
+{
+ return(f->window_file_state == WRITE_WINDOW_FROM_PIPE);
+}
+
+/**
+ * wpe_write_window_asks_at_close - Does closing this window, when it has
+ * changed, ask whether to save it?
+ * @f: the window.
+ * Return: 1 for a file's window and for one from a pipe, else 0.
+ *
+ * What the user gets: a file asks "NOT saved" before it is lost, and so does
+ * text that came from a pipe, because it is on no disk and cannot be had
+ * again; a label the editor writes itself (the assistant's composer) never
+ * asks.  The caller asks only for a window that has changed.
+ */
+int wpe_write_window_asks_at_close(const FENSTER *f)
+{
+ return(f->window_file_state != WRITE_WINDOW_LABEL);
+}
+
+/**
+ * wpe_write_window_set_pipe_mark - Say how much of the pipe is in the window.
+ * @f: a window from a pipe; @mark: the word its frame shows.
+ */
+void wpe_write_window_set_pipe_mark(FENSTER *f, WpePipeMark mark)
+{
+ f->window_pipe_mark = mark;
+}
+
+/**
+ * wpe_write_window_pipe_mark - The word a window from a pipe shows.
+ * @f: the window.
+ * Return: the mark (WPE_PIPE_MARK_DONE for a window that is not from a pipe).
+ */
+WpePipeMark wpe_write_window_pipe_mark(const FENSTER *f)
+{
+ return((WpePipeMark)f->window_pipe_mark);
+}
+
+/**
+ * wpe_write_window_test_from_pipe - Test seam: start a file window as one
+ * read from a pipe.
+ * @f: a file window, just opened.
+ *
+ * Only for XWPE_TEST_FAIL=window-from-pipe, which lets a terminal row drive
+ * Save As, the close question and the frame mark on a window that came from
+ * an ordinary file: nothing else makes a window from a pipe until the
+ * reader exists.  Without the word it does nothing.
+ */
+void wpe_write_window_test_from_pipe(FENSTER *f)
+{
+ const char *hook = getenv(WPE_WRITE_TEST_FAIL_ENV);
+
+ if (hook != NULL && strcmp(hook, WPE_WRITE_TEST_FAIL_WINDOW_FROM_PIPE) == 0)
+  wpe_write_window_set_from_pipe(f);
 }
 
 /**
  * wpe_write_window_is_a_file - Does this window have a file behind it?
  * @f: the window.
- * Return: 0 for a window the editor writes itself, else 1.
+ * Return: 0 for a window the editor writes itself, or one whose text came
+ * from a pipe and was not yet saved as a file, else 1.
  */
 int wpe_write_window_is_a_file(const FENSTER *f)
 {
- return(!f->no_file);
+ return(f->window_file_state == WRITE_WINDOW_FILE);
 }
 
 /**

@@ -75,6 +75,11 @@ int e_m_save(FENSTER *f)
  if (wpe_ai_is_pane(f))
   return(wpe_ai_pane_save(f));
 #endif
+ /* Text from a pipe has no file to save into: F2 is Save As.  The box is
+    made here and the main loop runs it; a build or Save All, which reach
+    e_save, say "This window is not a file" and write nothing. */
+ if (wpe_write_window_is_from_pipe(f))
+  return(WpeSaveAsManager(f));
  return(e_save(f));
 }
 

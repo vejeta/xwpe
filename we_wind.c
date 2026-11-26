@@ -2242,7 +2242,7 @@ static int e_win_backs_file(FENSTER *f)
 #define WIN_GLYPH_TOOL 0x2699    /* gear: a tool/output pane, not a document     */
 
 /* The editability nature of a text window, which decides its title-bar marker. */
-typedef enum { WIN_DOCUMENT, WIN_LOCKED_FILE, WIN_TOOL_PANE } e_win_kind;
+typedef enum { WIN_DOCUMENT, WIN_LOCKED_FILE, WIN_TOOL_PANE, WIN_PIPE } e_win_kind;
 
 /* e_win_kind_of - Classify a text window for its title-bar marker:
      WIN_LOCKED_FILE  a read-only file on disk (0444, an extracted library
@@ -2253,9 +2253,14 @@ typedef enum { WIN_DOCUMENT, WIN_LOCKED_FILE, WIN_TOOL_PANE } e_win_kind;
                       the gear ("a tool pane, not your document").  NOT dimmed
                       and NOT "read-only": Messages also carries a running
                       program's stdin.
+     WIN_PIPE         text that came from a pipe -- no padlock, even while
+                      the pipe is being read and the window is read-only;
+                      its frame says where the text came from instead.
      WIN_DOCUMENT     a normal editable document (or Help) -- no marker. */
 static e_win_kind e_win_kind_of(FENSTER *f)
 {
+ if (wpe_write_window_is_from_pipe(f))
+  return(WIN_PIPE);
  if (f->ins != 8 || f->dtmd == DTMD_HELP)
   return(WIN_DOCUMENT);
  if (f->ed && f == f->ed->f[0])   /* the clipboard / Show Buffer viewer: */
@@ -2265,6 +2270,55 @@ static e_win_kind e_win_kind_of(FENSTER *f)
  if (f->datnam && f->datnam[0])
   return(WIN_TOOL_PANE);
  return(WIN_DOCUMENT);
+}
+
+/** The words a window from a pipe wears after its name, one per WpePipeMark. */
+#define WIN_PIPE_MARK_DONE    " [pipe]"
+#define WIN_PIPE_MARK_READING " [pipe reading]"
+#define WIN_PIPE_MARK_CUT     " [pipe cut]"
+
+/**
+ * e_win_pipe_mark_words - The words a window from a pipe shows after its name.
+ * @f: the window.
+ * Return: " [pipe]", " [pipe reading]" or " [pipe cut]".
+ */
+static const char *e_win_pipe_mark_words(const FENSTER *f)
+{
+ switch (wpe_write_window_pipe_mark(f))
+ {
+  case WPE_PIPE_MARK_READING:
+   return(WIN_PIPE_MARK_READING);
+  case WPE_PIPE_MARK_CUT:
+   return(WIN_PIPE_MARK_CUT);
+  default:
+   return(WIN_PIPE_MARK_DONE);
+ }
+}
+
+/**
+ * e_win_header_with_pipe_mark - Add the pipe mark to the words of a title bar.
+ * @f: the window; @header: the title bar's text, from WpeMalloc, or NULL.
+ * Return: the text with the mark after it (from WpeMalloc; @header is
+ * released), or @header unchanged when there is none.
+ *
+ * What the user sees: the name of a window that came from a pipe is followed
+ * by "[pipe reading]" while the writer is still sending, "[pipe]" when all
+ * of it is here and "[pipe cut]" when the text stops before the writer did.
+ * The mark is painted only: the window's own name never contains it, so
+ * opening the same name again still finds the window.
+ */
+static char *e_win_header_with_pipe_mark(const FENSTER *f, char *header)
+{
+ const char *words = e_win_pipe_mark_words(f);
+ char *marked;
+
+ if (header == NULL)
+  return(header);
+ marked = wpe_fmt_dup("%s%s", header, words);
+ if (marked == NULL)
+  return(header);                /* no room for the mark: the name alone */
+ WpeFree(header);
+ return(marked);
 }
 
 /**
@@ -2354,6 +2408,8 @@ void e_ed_rahmen(FENSTER *f, int sw)
   e_win_kind kind = e_win_kind_of(f);
   if (kind == WIN_LOCKED_FILE)
    g_rahmen_hdr_frb = f->fb->es.fb;       /* dim the locked-file title */
+  if (kind == WIN_PIPE)
+   header = e_win_header_with_pipe_mark(f, header);
   e_std_rahmen(f->a.x, f->a.y, f->e.x, f->e.y, header, sw, f->fb->er.fb,
     f->fb->es.fb);
   g_rahmen_hdr_frb = -1;
@@ -2644,6 +2700,26 @@ int e_close_buffer(BUFFER *b)
 }
 
 /**
+ * e_close_say_save_first - Tell the user how to keep text that came from a
+ * pipe, when he asked to save it as the window closes.
+ * @f: the window that stays open.
+ *
+ * What the user sees on the status row: "This window is not a file: save it
+ * with Ctrl-S first" (F2 in the Borland key style), the key of the style in
+ * use, so the line is true whichever he has chosen.
+ */
+static void e_close_say_save_first(FENSTER *f)
+{
+ const char *key = wpe_binding_key_name(WPE_ACT_SAVE, wpe_binding_style(f->ed->edopt));
+ char text[WPE_NAME_SIZE];
+
+ if (key == NULL)
+  key = "Save";
+ (void)WPE_FMT_SHOWN(text, "This window is not a file: save it with %s first", key);
+ e_status_say_until_key(f, text);
+}
+
+/**
  * e_close_save_failed - Save a window the user agreed to save before closing.
  * @f: the window being closed.
  *
@@ -2653,11 +2729,20 @@ int e_close_buffer(BUFFER *b)
  * text exists only in this window, so the caller must keep the window open
  * and the edits with it.
  *
+ * A window whose text came from a pipe has no file to save into, and no
+ * box is opened from here: the status row names the Save key, which opens
+ * Save As, and the window and its text stay.
+ *
  * Return: nonzero when the file was not written, 0 when it was.  A window
  * with nothing to write (a file manager) counts as written, so it closes.
  */
 static int e_close_save_failed(FENSTER *f)
 {
+ if (wpe_write_window_is_from_pipe(f))
+ {
+  e_close_say_save_first(f);
+  return(1);
+ }
  return(e_save(f) != WPE_WRITE_WRITTEN);
 }
 
@@ -2774,7 +2859,7 @@ int e_close_window(FENSTER *f)
   return(0);
  if (f != f0)
  {
-  if (f->save != 0 && f->ins != 8 && wpe_write_window_is_a_file(f))
+  if (f->save != 0 && f->ins != 8 && wpe_write_window_asks_at_close(f))
   {
    snprintf(text, sizeof(text), "File %s NOT saved!\nDo you want to save File ?", f->datnam);
    c = e_message(1, text, f);
@@ -3673,7 +3758,7 @@ int e_sv_window(int xa, int ya, int *n, struct dirfile *df, FENSTER *f)
   e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
  wpe_write_identity_forget(&f->file_id);
  wpe_write_copies_forget(&f->copies);
- f->no_file = 0;
+ wpe_write_window_state_forget(f);
  e_window_held_forget(f);    /* the kind's owner makes its block on first hold */
  if (xe > MAXSCOL-3) {  xe = MAXSCOL - 3;  xa = xe - 21;  }
  if (ye > MAXSLNS-3) {  ye = MAXSLNS - 3;  ya = ye - 6;  }

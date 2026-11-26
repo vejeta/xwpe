@@ -52,6 +52,8 @@ int     e_eol_append_rows(BUFFER *b, const char *text, WpeEolPolicy policy);
 void    e_eol_nul_sentence(int count, char *buf, size_t size);
 int     e_eol_read_file_into(FILE *fp, BUFFER *b, int x, int y, int manpage,
                              WpeEolInfo *info, POINT *end);
+int     e_eol_read_bytes_into(const unsigned char *bytes, size_t n, BUFFER *b, int x, int y,
+                              int manpage, WpeEolInfo *info, POINT *end);
 size_t  e_eol_text(BUFFER *b, int ya, int xa, int ye, int xe, int eol, int keep_final,
                    char **out);
 int     e_eol_write(FILE *fp, BUFFER *b, int ya, int xa, int ye, int xe, int keep_final);

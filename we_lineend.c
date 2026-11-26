@@ -383,11 +383,36 @@ static void eol_free_rows(EolRows *rl)
 int e_eol_read_file_into(FILE *fp, BUFFER *b, int x, int y, int manpage, WpeEolInfo *info,
                          POINT *end)
 {
+ unsigned char *bytes;
+ size_t n;
+ int r;
+
+ if (eol_slurp(fp, &bytes, &n) != E_BUFFER_OK)
+  return(E_BUFFER_NOMEM);
+ r = e_eol_read_bytes_into(bytes, n, b, x, y, manpage, info, end);
+ free(bytes);
+ return(r);
+}
+
+/**
+ * e_eol_read_bytes_into - Put the lines of some bytes into a buffer at a
+ * place: the half of reading a file that does not touch the file.
+ * @bytes, @n: the text as it came, not freed here; the other arguments and
+ * the return as for e_eol_read_file_into.
+ *
+ * What the user gets: text that arrives from somewhere that is not a stream
+ * the editor opened (the bytes a pipe delivered) is given the same line-end
+ * style, the same carriage returns and the same dropped NUL bytes as a file
+ * read from disk, because both end in this one function.  A caller that
+ * holds the bytes itself reads them once and hands them over whole: the
+ * style is known only after all of them have been seen.
+ */
+int e_eol_read_bytes_into(const unsigned char *bytes, size_t n, BUFFER *b, int x, int y,
+                          int manpage, WpeEolInfo *info, POINT *end)
+{
  EolRows rl;
  EolSrc src;
  WpeEolInfo mine;
- unsigned char *bytes;
- size_t n;
  int r, n_del = 0;
 
  if (info == NULL)
@@ -397,8 +422,6 @@ int e_eol_read_file_into(FILE *fp, BUFFER *b, int x, int y, int manpage, WpeEolI
  rl.mx_x = b->mx.x;
  if (x > wpe_row_len(b, y))
   x = wpe_row_len(b, y);
- if (eol_slurp(fp, &bytes, &n) != E_BUFFER_OK)
-  return(E_BUFFER_NOMEM);
  eol_classify(bytes, n, info);
  src.p = bytes;
  src.n = n;
@@ -407,11 +430,9 @@ int e_eol_read_file_into(FILE *fp, BUFFER *b, int x, int y, int manpage, WpeEolI
      eol_read_bytes(&src, &rl, info->eol == E_EOL_CRLF, manpage, info, y, end) != E_BUFFER_OK ||
      (x > 0 && eol_tail_line(&rl, y, x) != E_BUFFER_OK))
  {
-  free(bytes);
   eol_free_rows(&rl);
   return(E_BUFFER_NOMEM);
  }
- free(bytes);
  free(rl.cur);
  if (x > 0)
   n_del = 1;

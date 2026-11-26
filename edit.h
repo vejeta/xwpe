@@ -355,9 +355,12 @@ typedef struct FNST {
  WpeWindowCopies copies; /* the .ASV this window wrote and the .ESV it was recovered
                             from, this session: the only copies its close removes;
                             forgotten after each allocation */
- int no_file;            /* a window the editor writes itself, with no file behind
-                            it: set through wpe_write_window_set_not_a_file,
-                            cleared after each allocation */
+ int window_file_state;  /* whether a file is behind the window (a file, a label the
+                            editor writes itself, text from a pipe): written only
+                            by the write owner, through wpe_write_window_*, and
+                            forgotten after each allocation */
+ int window_pipe_mark;   /* the word its frame shows for a window from a pipe:
+                            read and written only by the write owner */
  int *c_sw;
  struct wpeSyntaxRule *c_st;
  struct CNT *ed;  /* parent control structure ??? */
@@ -716,8 +719,7 @@ int WpeCreateFileManager(int sw, ECNT *cn, char *dirct);
 int WpeDrawFileManager(FENSTER *f);
 int WpeManagerFirst(FENSTER *f);
 int WpeManager(FENSTER *f);
-int WpeSaveAsManager(FENSTER *f);
-int WpeSaveAsManagerTitled(FENSTER *f, char *title);
+int WpeSaveAsManager(FENSTER *f);int WpeSaveAsManagerTitled(FENSTER *f, char *title);
 /* we_term.c: the end of a terminal paste (see e_t_paste_ended) */
 extern void (*e_paste_end_hook)(void);
 extern int g_paste_end_wanted;

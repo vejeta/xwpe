@@ -1545,6 +1545,69 @@ static void test_a_window_with_no_file_is_never_written_under_its_title(void)
  chk_has("the new text is there", get_file("kept.txt", buf, sizeof buf), "more\n");
 }
 
+/* A window whose text came from a pipe has a title that says where, and no
+   file behind it.  A Save, the copy for the emergency or autosave and a
+   build's save write nothing under the title ("63", "stdin", a file the user
+   happens to have of that name); the close question is still asked once the
+   user typed; a language, a debugger and a breakpoint are told it has no file
+   name; a Save As writes under the typed name, and then all of it is a
+   file's: the writes, the file name and the state. */
+static void test_a_window_from_a_pipe_is_never_written_under_its_title(void)
+{
+ WpeWriteOutcome o;
+ FENSTER *f, *label;
+ char buf[256], p[512], say[WPE_WRITE_SENTENCE_MAX];
+
+ make_dir();
+ put_file("63", "the user's own text\n", 0644);
+ f = make_window();
+ f->ed->mxedt = 1;
+ wpe_write_window_state_forget(f);
+ chk_int("a fresh window is a file's", wpe_write_window_is_a_file(f), 1);
+ chk_int("and is not from a pipe", wpe_write_window_is_from_pipe(f), 0);
+ wpe_write_window_set_from_pipe(f);
+ chk_int("from a pipe: no file", wpe_write_window_is_a_file(f), 0);
+ chk_int("from a pipe: the window says so", wpe_write_window_is_from_pipe(f), 1);
+ chk_int("it asks before it is closed", wpe_write_window_asks_at_close(f), 1);
+ chk_int("it starts as [pipe]", wpe_write_window_pipe_mark(f), WPE_PIPE_MARK_DONE);
+ wpe_write_window_set_pipe_mark(f, WPE_PIPE_MARK_CUT);
+ chk_int("the reader can say cut", wpe_write_window_pipe_mark(f), WPE_PIPE_MARK_CUT);
+ set_rows("typed over the pipe\n");
+ chk_int("a Save is refused", save_window(f, "63", &o), -1);
+ chk_int("declined, not failed", o.status, WPE_WRITE_DECLINED);
+ chk_int("and says the window has no file", o.not_a_file, 1);
+ wpe_write_sentence(say, sizeof say, &o, WPE_WRITE_THEN_KEPT);
+ chk_has("the sentence says so", say, "This window is not a file.");
+ chk_has("the user's file keeps its text", get_file("63", buf, sizeof buf),
+         "the user's own text\n");
+ path_of(p, sizeof p, "63.ESV");
+ chk_int("the emergency copy is refused", wpe_write_copy(f, p, &o), -1);
+ chk_int("and writes nothing", access(p, F_OK), -1);
+ chk_int("no file name for a language or a breakpoint", e_window_file_name(f) != NULL, 0);
+ chk_int("the title ends no file name", e_window_title_ends_with(f, "63"), 0);
+ chk_int("the title is no file's", e_window_title_is(f, "63"), 0);
+ chk_int("the finder still finds the window by its title", e_window_is_file(f, dir, "63"), 1);
+
+ label = make_window();
+ wpe_write_window_set_not_a_file(label);
+ chk_int("a label never asks at close", wpe_write_window_asks_at_close(label), 0);
+ chk_int("a label is not from a pipe", wpe_write_window_is_from_pipe(label), 0);
+
+ chk_int("Save As writes under the typed name",
+         save_window_as(f, dir, "kept.txt", dir, "63"), WPE_WRITE_WRITTEN);
+ chk_has("the text is there", get_file("kept.txt", buf, sizeof buf), "typed over the pipe\n");
+ chk_has("the user's file is still his", get_file("63", buf, sizeof buf),
+         "the user's own text\n");
+ chk_int("then the window is a file's", wpe_write_window_is_a_file(f), 1);
+ chk_int("no longer from a pipe", wpe_write_window_is_from_pipe(f), 0);
+ chk_int("its mark is gone", wpe_write_window_pipe_mark(f), WPE_PIPE_MARK_DONE);
+ chk_int("it has a file name now", e_window_file_name(f) != NULL, 1);
+ chk_int("its title ends a file name", e_window_title_ends_with(f, ".txt"), 1);
+ set_rows("more\n");
+ chk_int("a Save writes it", save_window(f, "kept.txt", &o), 0);
+ chk_has("the new text is there", get_file("kept.txt", buf, sizeof buf), "more\n");
+}
+
 /* A system that refuses or drops the bit: the text is saved, and the status
    row names the bit and why. */
 static void test_a_save_names_the_bit_the_system_refuses(void)
@@ -6655,6 +6718,7 @@ int main(void)
  test_the_bits_go_back_only_after_the_bytes_are_on_disk();
  test_the_sync_owner_syncs_once_and_only_when_owed();
  test_a_window_with_no_file_is_never_written_under_its_title();
+ test_a_window_from_a_pipe_is_never_written_under_its_title();
  test_a_saved_setgid_file_keeps_its_bit();
  test_a_save_names_the_bit_the_system_refuses();
  test_a_save_whose_modes_are_all_refused_is_still_written();

@@ -396,8 +396,37 @@ static void check_a_file_question_is_never_answered_by_a_pane(void)
  chk_int("a list window has no file name", e_window_file_name(w) != NULL, 0);
 }
 
+/* The write owner's answer, played by tests/stub_write_window.c. */
+extern int stub_window_is_a_file;
+
+/* O4 for a window whose text came from a pipe: it has a title, but no file
+   is behind it, so a language, a debugger, a breakpoint and a build are told
+   it has no file name, each of the three questions the same.  The finder
+   still finds it by its title, so a second open raises the window.  After a
+   Save As it is a file's window and all three answer yes. */
+static void check_a_window_from_a_pipe_has_no_file_name(void)
+{
+ FENSTER *w;
+
+ desk_clear();
+ w = put_text_window(1, WPE_PANE_FILE, "notes.c");
+ stub_window_is_a_file = 0;
+ chk_int("from a pipe: no file name", e_window_file_name(w) != NULL, 0);
+ chk_int("from a pipe: the title does not end a file name", e_window_title_ends_with(w, ".c"), 0);
+ chk_int("from a pipe: the title is no file's", e_window_title_is(w, "notes.c"), 0);
+ chk_int("from a pipe: the finder still knows the window", e_window_is_file(w, FOLDER, "notes.c"), 1);
+ chk_ptr("from a pipe: a second open finds it", e_window_find(&desk, &(WpeWindowAsk){
+   .pane = WPE_PANE_FILE, .name = "notes.c", .dir = FOLDER }), w);
+ stub_window_is_a_file = 1;
+ chk_int("a file: it has its file name", e_window_file_name(w) != NULL, 1);
+ chk_int("a file: the title ends a file name", e_window_title_ends_with(w, ".c"), 1);
+ chk_int("a file: the title is its", e_window_title_is(w, "notes.c"), 1);
+ desk_clear();
+}
+
 int main(void)
 {
+ check_a_window_from_a_pipe_has_no_file_name();
  check_every_kind_against_every_desk();
  check_a_composer_is_never_found();
  check_a_messages_ask_with_a_source_is_a_pane_request();

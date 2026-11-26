@@ -449,14 +449,14 @@ test_listsel_CFLAGS = $(TEST_CFLAGS)
 # editor opened itself is known by the intent that opened it and not by its
 # title, a command asked of a window without text is refused naming the
 # command, and a close leaves nothing behind.
-test_winkind_SOURCES = tests/test_winkind.c we_winkind.c
+test_winkind_SOURCES = tests/test_winkind.c we_winkind.c tests/stub_write_window.c
 test_winkind_CFLAGS = $(TEST_CFLAGS)
 
 # The one finder of windows (we_winkind.c, e_window_find): for every kind of
 # window and every desk of the table, a request for the editor's own window is
 # never answered by a file of the user's, and a request for a file never by one
 # of the editor's own windows, the clipboard or a list; a label is kept whole.
-test_winkind_open_SOURCES = tests/test_winkind_open.c we_winkind.c
+test_winkind_open_SOURCES = tests/test_winkind_open.c we_winkind.c tests/stub_write_window.c
 test_winkind_open_CFLAGS = $(TEST_CFLAGS)
 
 # The owner of a help or Info token taken into storage (we_helpbuf.c): a
@@ -571,13 +571,13 @@ test_startcmd_CFLAGS = $(TEST_CFLAGS)
 # stubbed by the test).  Marks and breakpoints move with their lines, Undo
 # and Redo give back exactly the text in one key per action, a refused
 # allocation changes nothing, a view keeps no undo.
-test_splice_SOURCES = tests/test_splice.c we_buffer.c we_winkind.c
+test_splice_SOURCES = tests/test_splice.c we_buffer.c we_winkind.c tests/stub_write_window.c
 test_splice_CFLAGS = $(TEST_CFLAGS)
 
 # The owner of a file's line endings: we_lineend.c on the buffer's owner.
 # A file's bytes become rows and rows become bytes, in both styles, and
 # what the buffer made goes back into it as it was.
-test_lineend_SOURCES = tests/test_lineend.c we_buffer.c we_lineend.c we_winkind.c
+test_lineend_SOURCES = tests/test_lineend.c we_buffer.c we_lineend.c we_winkind.c tests/stub_write_window.c
 test_lineend_CFLAGS = $(TEST_CFLAGS)
 
 # The owner of writing the user's text (we_write.c), the editor's side
@@ -647,7 +647,7 @@ test_read_owner_LDFLAGS = $(TEST_EXPORT_DYNAMIC)
 
 # The same owner behind a line protocol, for the edit model's walks
 # (tests/edit_model/cdriver.py).  Built by `make check`, not run by it.
-edit_driver_SOURCES = tests/edit_driver.c we_buffer.c we_winkind.c
+edit_driver_SOURCES = tests/edit_driver.c we_buffer.c we_winkind.c tests/stub_write_window.c
 edit_driver_CFLAGS = $(TEST_CFLAGS)
 
 # The screen's owner: we_paint.c with the fd loop only (the desk is given
@@ -1660,6 +1660,7 @@ EXTRA_DIST = \
   tests/test_listsel.c \
   tests/test_winkind.c \
   tests/test_winkind_open.c \
+  tests/stub_write_window.c \
   tests/test_helpbuf.c \
   tests/test_fmt.c \
   tests/test_fmt_sites.py \

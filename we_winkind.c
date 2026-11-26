@@ -655,6 +655,23 @@ char *e_window_title_detach(FENSTER *f)
 }
 
 /**
+ * window_has_file_name - Is this window a file of the user's with a name?
+ * @f: the window.
+ * Return: 1 for a text window of the file kind that has a title and whose
+ * text has a file behind it, else 0.
+ *
+ * The one test the three questions about a file's name share.  A window
+ * whose text came from a pipe has a title (where it came from) but no file
+ * yet, so it has no file name for a language, a debugger, a breakpoint or a
+ * build, until Save As gives it one.
+ */
+static int window_has_file_name(const FENSTER *f)
+{
+ return(f && f->datnam && e_window_pane(f) == WPE_PANE_FILE &&
+        e_window_is_text(f) && wpe_write_window_is_a_file(f));
+}
+
+/**
  * e_window_file_name - The name of the file a window holds.
  * @f: the window.
  *
@@ -665,8 +682,7 @@ char *e_window_title_detach(FENSTER *f)
  */
 const char *e_window_file_name(const FENSTER *f)
 {
- if (!f || !f->datnam || e_window_pane(f) != WPE_PANE_FILE ||
-     !e_window_is_text(f))
+ if (!window_has_file_name(f))
   return(NULL);
  return(f->datnam);
 }
@@ -751,8 +767,7 @@ int e_window_title_ends_with(const FENSTER *f, const char *suffix)
 {
  size_t len, tail;
 
- if (!f || !f->datnam || !suffix || e_window_pane(f) != WPE_PANE_FILE ||
-     !e_window_is_text(f))
+ if (!window_has_file_name(f) || !suffix)
   return(0);
  len = strlen(f->datnam);
  tail = strlen(suffix);
@@ -771,8 +786,7 @@ int e_window_title_ends_with(const FENSTER *f, const char *suffix)
  */
 int e_window_title_is(const FENSTER *f, const char *name)
 {
- return(f && f->datnam && name && e_window_pane(f) == WPE_PANE_FILE &&
-        e_window_is_text(f) && !strcmp(f->datnam, name));
+ return(window_has_file_name(f) && name && !strcmp(f->datnam, name));
 }
 
 /**

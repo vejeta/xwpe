@@ -953,10 +953,12 @@ static int e_edit_open(ECNT *cn, const WpeWindowAsk *ask, char *path, char *file
   e_error(e_msg[ERR_LOWMEM], 1, cn->fb);
  wpe_write_identity_forget(&f->file_id);
  wpe_write_copies_forget(&f->copies);
- f->no_file = 0;
+ wpe_write_window_state_forget(f);
  e_window_held_forget(f);    /* the kind's owner makes its block on first hold */
  if (spec->not_a_file)
   wpe_write_window_set_not_a_file(f);    /* its title is a label: no file behind it */
+ else if (ask->pane == WPE_PANE_FILE)
+  wpe_write_window_test_from_pipe(f);    /* a test may play a window read from a pipe */
 
  f->fb = cn->fb;
  cn->f[cn->mxedt] = f;

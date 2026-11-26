@@ -495,8 +495,77 @@ static void test_a_range_is_written_as_e_write_took_it(void)
  free_buffer(b);
 }
 
+/* The bytes a pipe delivered, handed to the line-end owner without a stream:
+   a buffer made from them as a file read at the first line. */
+static BUFFER *read_held_bytes(const char *bytes, size_t n, int manpage, WpeEolInfo *info)
+{
+ BUFFER *b = calloc(1, sizeof(BUFFER));
+ POINT end;
+
+ e_buffer_init(b, NULL, NULL, WIDTH, E_BUFFER_NO_HISTORY);
+ chk("the held bytes are read",
+     e_eol_read_bytes_into((const unsigned char *) bytes, n, b, 0, 0, manpage, info, &end),
+     E_BUFFER_OK);
+ return(b);
+}
+
+/* One input read by both faces: the same rows, the same style, the same
+   counts of what the bytes said of themselves. */
+static void same_by_both_faces(const char *what, const char *bytes, size_t n, int manpage)
+{
+ WpeEolInfo by_file, by_bytes;
+ BUFFER *a, *b;
+ FILE *fp = tmpfile();
+ POINT end;
+ int i;
+
+ a = calloc(1, sizeof(BUFFER));
+ e_buffer_init(a, NULL, NULL, WIDTH, E_BUFFER_NO_HISTORY);
+ fwrite(bytes, 1, n, fp);
+ rewind(fp);
+ chk(what, e_eol_read_file_into(fp, a, 0, 0, manpage, &by_file, &end), E_BUFFER_OK);
+ fclose(fp);
+ b = read_held_bytes(bytes, n, manpage, &by_bytes);
+ chk("the same number of rows", b->mxlines, a->mxlines);
+ for (i = 0; i < a->mxlines && i < b->mxlines; i++)
+  chk_bytes("each row the same", b->bf[i].s, (size_t) b->bf[i].len, a->bf[i].s,
+            (size_t) a->bf[i].len);
+ chk("the same style", by_bytes.eol, by_file.eol);
+ chk("the same count of breaks", by_bytes.breaks, by_file.breaks);
+ chk("the same mixed flag", by_bytes.mixed, by_file.mixed);
+ chk("the same count of lone carriage returns", by_bytes.lone_cr, by_file.lone_cr);
+ chk("the same count of NUL bytes", by_bytes.nul, by_file.nul);
+ free_buffer(a);
+ free_buffer(b);
+}
+
+/* What the user sees: text that comes in through a pipe gets the same line
+   breaks, carriage returns and dropped NUL bytes as a file of the same bytes
+   read from disk, because both end in one function. */
+static void test_the_bytes_face_gives_what_the_file_face_gives(void)
+{
+ WpeEolInfo info;
+ BUFFER *b;
+
+ same_by_both_faces("an LF file", LIT("one\ntwo\nthree\n"), 0);
+ same_by_both_faces("a CRLF file", LIT("one\r\ntwo\r\nthree\r\n"), 0);
+ same_by_both_faces("a mixed file", LIT("one\r\ntwo\nthree\r\n"), 0);
+ same_by_both_faces("a file with no final break", LIT("one\ntwo"), 0);
+ same_by_both_faces("a lone carriage return", LIT("a\rb\nc\n"), 0);
+ same_by_both_faces("a NUL byte", LIT("a\0c\nd\n"), 0);
+ same_by_both_faces("empty", "", 0, 0);
+ same_by_both_faces("a manual page", LIT("N\bNAME\nplain\r\n"), 1);
+ b = read_held_bytes(LIT("a\r\nb\r\n"), 0, &info);
+ chk("the CRLF style is found in held bytes", info.eol, E_EOL_CRLF);
+ free_buffer(b);
+ b = read_held_bytes(LIT("a\0c\n"), 0, &info);
+ chk("a NUL byte in held bytes is counted", info.nul, 1);
+ free_buffer(b);
+}
+
 int main(void)
 {
+ test_the_bytes_face_gives_what_the_file_face_gives();
  test_styles_and_round_trips();
  test_the_carriage_return_is_text_in_an_lf_file();
  test_the_final_break_is_kept_or_added();

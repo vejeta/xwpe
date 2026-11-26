@@ -219,6 +219,27 @@
 #        read and write owners' asks, as rule 18 does for a window's file_id:
 #        an assignment or any other read is a second place that decides which
 #        object is the project.
+# 27. Whether a window has a file behind it (a file, a label the editor
+#     writes itself, text from a pipe) is the write owner's to say.  Strings
+#     are blanked, names bounded by word.  Each clause has its own tag and no
+#     allow line:
+#     a. outside we_write.c the members window_file_state and
+#        window_pipe_mark are never named: they are read and written through
+#        wpe_write_window_state_forget, _set_not_a_file, _set_from_pipe,
+#        _is_a_file, _is_from_pipe, _asks_at_close and _set_pipe_mark.
+#        Preprocessor lines are scanned, and a token paste is joined before
+#        the names are looked for (window_##file_state), a paste that leaves
+#        the member to a macro argument (window_##m) is refused as such.
+#     b. outside we_write.c wpe_write_window_set_from_pipe and the test seam
+#        wpe_write_window_test_from_pipe appear only as a call in e_edit_open
+#        (we_edit.c), the one function that opens the window the text goes
+#        into: a pointer to either, or a use in a macro, is an offence.
+#     c. outside we_write.c wpe_write_window_set_pipe_mark appears nowhere.
+#        No caller exists yet; the pass that adds the reader names its one
+#        caller in this rule.
+#     Limit, said plainly: a scan cannot tell that a caller asked the right
+#     question; the rows of tests/test_write_owner.c and
+#     tests/test_pipe_window.py hold the behaviour.
 # Rule 3 (the companion names) and rule 7 (the crash handler's order) come
 # with the pass that moves them.
 #
@@ -585,6 +606,44 @@ scan() {
         if (i < 1 || substr(m, i, 1) != "&" || (i > 1 && substr(m, i - 1, 1) == "&")) note("r26c", 1)
       }
     }
+    # rule 27 (whether a window has a file behind it belongs to the write
+    # owner), for the code of one statement, strings blanked, in every file
+    # but we_write.c.  r27a: the members that hold it (window_file_state,
+    # window_pipe_mark) are never named; r27b: a window is made from a pipe
+    # only by e_edit_open, which opens it.
+    function note27(m,   t, joined) {
+      if (file == "we_write.c") return
+      # a token paste spells the member from pieces: join the pieces first
+      joined = m; gsub(/[ \t]*##[ \t]*/, "", joined)
+      t = joined
+      while (match(t, /(^|[^A-Za-z0-9_])window_(file_state|pipe_mark)([^A-Za-z0-9_]|$)/)) {
+        note("r27a", 1)
+        t = substr(t, RSTART + RLENGTH)
+      }
+      # a paste that leaves the member to the macro argument
+      t = m
+      while (match(t, /(^|[^A-Za-z0-9_])window_(file_|pipe_)?[ \t]*##|##[ \t]*(file_state|pipe_mark|state|mark)([^A-Za-z0-9_]|$)/)) {
+        note("r27a", 1)
+        t = substr(t, RSTART + RLENGTH)
+      }
+      use27(m, "wpe_write_window_set_from_pipe", "r27b", "we_edit.c", "e_edit_open")
+      use27(m, "wpe_write_window_test_from_pipe", "r27b", "we_edit.c", "e_edit_open")
+      use27(m, "wpe_write_window_set_pipe_mark", "r27c", "", "")
+    }
+    # One use of a name of the write owner that only an allowed caller may
+    # have: every occurrence of the word counts (a pointer to it, a use in a
+    # macro) unless it is a call in the allowed function.  An empty okfile
+    # allows no caller outside we_write.c.
+    function use27(m, name, rule, okfile, okfn,   off, p, after) {
+      off = 1
+      while ((p = index(substr(m, off), name)) > 0) {
+        p += off - 1; off = p + length(name)
+        if (p > 1 && substr(m, p - 1, 1) ~ /[A-Za-z0-9_]/) continue
+        if (substr(m, off, 1) ~ /[A-Za-z0-9_]/) continue
+        after = substr(m, off)
+        if (ppmode || okfile == "" || file != okfile || fn != okfn || after !~ /^[ \t]*[(]/) note(rule, 1)
+      }
+    }
     # rule 25 (the editors own places and the names it chooses), for one
     # statement: S has its strings kept and M has them blanked.  Clauses, each
     # its own tag:
@@ -723,6 +782,8 @@ scan() {
       note25(s, m)
       # rule 26: the open project is held, and its list has one writer
       note26(m)
+      # rule 27: whether a window has a file behind it is said by the write owner
+      note27(m)
       # rule 24 (clauses a to d, f and g; e scans the tests): the identity of an object is judged in we_seen.c
       note24_inside(m)
       note24_everywhere(m)
@@ -824,10 +885,11 @@ scan() {
         # rule 15: a macro can carry the window'"'"'s mode anywhere, so the
         # token counts on a preprocessor line, as a site of its own
         pp = out; gsub(/"([^"\\]|\\.)*"/, "\"\"", pp)
+        pp27 = pp
         if (tests == 1) next
         while (match(pp, /(^|[^A-Za-z0-9_])filemode([^A-Za-z0-9_]|$)/)) { pp15++; pp = substr(pp, RSTART + RLENGTH - 1) }
         # rule 24: a macro may carry an inode, a stamp or a statx call too
-        ppmode = 1; note24_inside(pp); note24_everywhere(pp); note25_pp(out); ppmode = 0
+        ppmode = 1; note24_inside(pp); note24_everywhere(pp); note25_pp(out); note27(pp27); ppmode = 0
         next
       }
       # a table of strings at file scope is named by its array, not by the
@@ -1551,6 +1613,53 @@ EOF
   scan "$WORK/we_fake.c" | sort > "$WORK/fake.found"
   scan "$WORK/we_fake_r26.c" >> "$WORK/fake.found"
   scan "$WORK/r26p/we_prog.c" >> "$WORK/fake.found"
+  # rule 27: the state of a window's file is named outside the write owner (a),
+  # a window is made from a pipe outside the one function that opens it (b);
+  # the owner's own file, e_edit_open and a call of the owner's questions are
+  # no offence
+  cat > "$WORK/we_fake_r27.c" <<'EOF'
+void fake_state(FENSTER *f)
+{
+ f->window_file_state = 0;
+ if (f->window_pipe_mark)
+  return;
+ wpe_write_window_set_from_pipe(f);
+}
+#define PASTED(f) ((f)->window_##file_state)
+#define PASTED_MEMBER(f, m) ((f)->window_##m)
+#define PLAIN_MACRO(f) ((f)->window_pipe_mark)
+#define CALLS_SETTER(f) wpe_write_window_set_from_pipe(f)
+void fake_pointer(FENSTER *f)
+{
+ void (*set)(FENSTER *) = wpe_write_window_set_from_pipe;
+ wpe_write_window_test_from_pipe(f);
+ wpe_write_window_set_pipe_mark(f, 1);
+}
+void fake_ok(FENSTER *f)
+{
+ if (wpe_write_window_is_from_pipe(f) && wpe_write_window_asks_at_close(f))
+  wpe_write_window_state_forget(f);
+}
+EOF
+  mkdir "$WORK/r27e" "$WORK/r27w" || exit $BAD
+  cat > "$WORK/r27e/we_edit.c" <<'EOF'
+int e_edit_open(FENSTER *f)
+{
+ wpe_write_window_test_from_pipe(f);
+ wpe_write_window_set_from_pipe(f);
+ return(0);
+}
+EOF
+  cat > "$WORK/r27w/we_write.c" <<'EOF'
+void wpe_write_window_set_from_pipe(FENSTER *f)
+{
+ f->window_file_state = 2;
+ f->window_pipe_mark = 0;
+}
+EOF
+  scan "$WORK/we_fake_r27.c" >> "$WORK/fake.found"
+  scan "$WORK/r27e/we_edit.c" >> "$WORK/fake.found"
+  scan "$WORK/r27w/we_write.c" >> "$WORK/fake.found"
   scan "$WORK/we_fake_r25.c" >> "$WORK/fake.found"
   scan "$WORK/r25/we_places.c" >> "$WORK/fake.found"
   scan "$WORK/r25w/we_write.c" >> "$WORK/fake.found"
@@ -1637,7 +1746,10 @@ EOF
               "r25d we_write.c write_other 1" "r25d we_startcmd.c startcmd_other 1" \
               "r25b we_fake_r25.h (preprocessor) 2" \
               "r26a we_fake_r26.c fake_own 1" "r26b we_fake_r26.c fake_named 2" \
-              "r26c we_prog.c e_prj_hold_other 2"; do
+              "r26c we_prog.c e_prj_hold_other 2" \
+              "r27a we_fake_r27.c fake_state 2" "r27b we_fake_r27.c fake_state 1" \
+              "r27a we_fake_r27.c (preprocessor) 4" "r27b we_fake_r27.c (preprocessor) 1" \
+              "r27b we_fake_r27.c fake_pointer 2" "r27c we_fake_r27.c fake_pointer 1"; do
     grep -qx "$want" "$WORK/fake.found" || {
       echo "check-write-owner: FAIL (selftest: the scan does not name \"$want\"; it found:)"
       cat "$WORK/fake.found"
@@ -1680,6 +1792,12 @@ EOF
   # identity passed by address, are no offence
   if grep -Eq "^r26[abc] we_prog.c e_prj_write_open " "$WORK/fake.found"; then
     echo "check-write-owner: FAIL (selftest: e_prj_write_open was counted by rule 26; it found:)"
+    cat "$WORK/fake.found"
+    exit $BAD
+  fi
+  # rule 27: the owner's own file, e_edit_open and the owner's questions are no offence
+  if grep -Eq "^r27[abc] (we_write.c|we_edit.c) |^r27[abc] we_fake_r27.c fake_ok " "$WORK/fake.found"; then
+    echo "check-write-owner: FAIL (selftest: the owner, e_edit_open or a question of the owner was counted by rule 27; it found:)"
     cat "$WORK/fake.found"
     exit $BAD
   fi
@@ -1900,6 +2018,12 @@ awk -F'|' '
         print "offender: " $1 " " $2 ": a write owner face is given e_prog.project or e_prj_open_path( as its path.  The open project'"'"'s list is written by e_prj_write, which passes the hold and takes back the file written.  No allow line"
       else if (rule == "r26c")
         print "offender: " $1 " " $2 ": the hold'"'"'s identity (e_prj_hold.file) is read or assigned, not only passed by address.  It is set by wpe_write_identity_set and forgotten by wpe_write_identity_forget, so a second place cannot decide which object is the project.  No allow line"
+      else if (rule == "r27a")
+        print "offender: " $1 " " $2 ": window_file_state or window_pipe_mark is named outside we_write.c.  Whether a window has a file behind it is the write owner'"'"'s to say: ask wpe_write_window_is_a_file, _is_from_pipe or _asks_at_close, and change it only through wpe_write_window_state_forget, _set_not_a_file, _set_from_pipe or _set_pipe_mark.  No allow line"
+      else if (rule == "r27b")
+        print "offender: " $1 " " $2 ": wpe_write_window_set_from_pipe or the test seam wpe_write_window_test_from_pipe is named outside a call in e_edit_open (a pointer to it, a macro, a call elsewhere).  The window the text goes into is made in one place, and that place says where the text came from.  No allow line"
+      else if (rule == "r27c")
+        print "offender: " $1 " " $2 ": wpe_write_window_set_pipe_mark is named outside we_write.c.  No caller outside the owner exists yet; the pass that adds the reader names its one caller here.  No allow line"
       else if (rule == "r14")
         print "offender: " $1 " " $2 ": e_prog.project is written outside the one place that switches the project: go through e_select_project, or list the function with its reason"
       else

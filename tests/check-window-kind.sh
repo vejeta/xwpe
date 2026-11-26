@@ -580,6 +580,46 @@ finding_places() {
   printf '%s\n' "$1" | grep "^$2 " | head -5 | sed "s/^$2 //" | tr '\n' ' '
 }
 
+# The file-name questions of the owner that do not ask window_has_file_name,
+# one name per line.  The three questions (e_window_file_name,
+# e_window_title_ends_with, e_window_title_is) share one test, which also asks
+# the write owner whether a file is behind the window; a question that has a
+# test of its own would answer yes for the title of a window whose text came
+# from a pipe.  Comments and literals are blanked first, so a mention in a
+# comment is no call.
+file_name_questions_without_the_test() {
+  awk "$BLANK_C"'
+    FNR == 1 { blank_incom = 0; fn = "" }
+    {
+      line = blank_c($0, 0)
+      if (line ~ /^[A-Za-z_][A-Za-z0-9_ \t\*]*[ \t\*](e_window_file_name|e_window_title_ends_with|e_window_title_is)[ \t]*\(/) {
+        fn = line; sub(/[ \t]*\(.*/, "", fn); sub(/.*[ \t\*]/, "", fn)
+        asked[fn] = 0; seen[fn] = 1
+      }
+      if (fn != "" && line ~ /window_has_file_name[ \t]*\(/) asked[fn] = 1
+      if (line ~ /^\}/) fn = ""
+    }
+    END {
+      n = split("e_window_file_name e_window_title_ends_with e_window_title_is", want, " ")
+      for (i = 1; i <= n; i++) if (!(want[i] in seen) || !asked[want[i]]) print want[i]
+    }' "$1/we_winkind.c"
+}
+
+# Prints window_has_file_name when the shared test does not ask the write
+# owner (wpe_write_window_is_a_file) or is not defined: the three questions
+# would then call a test that says yes for a window from a pipe.
+shared_test_without_the_write_owner() {
+  awk "$BLANK_C"'
+    FNR == 1 { blank_incom = 0; infn = 0 }
+    {
+      line = blank_c($0, 0)
+      if (line ~ /^[A-Za-z_][A-Za-z0-9_ \t\*]*[ \t\*]window_has_file_name[ \t]*\(/ && line !~ /;[ \t]*$/) { infn = 1; seen = 1 }
+      if (infn && line ~ /wpe_write_window_is_a_file[ \t]*\(/) asked = 1
+      if (line ~ /^\}/) infn = 0
+    }
+    END { if (!seen || !asked) print "window_has_file_name" }' "$1/we_winkind.c"
+}
+
 check_no_pasted_name() {
   dir=$1
   pasted=0
@@ -599,6 +639,18 @@ check_no_pasted_name() {
     "$pasted" "$invented"
   printf 'rule 6: window titles compared outside the owner: %s, copied into a pointer: %s (none allowed)\n' \
     "$titles" "$copies"
+  unguarded=$(file_name_questions_without_the_test "$dir")
+  printf 'rule 6: file-name questions without the shared test: %s (none allowed)\n' \
+    "$(printf '%s\n' "$unguarded" | grep -c .)"
+  if [ -n "$unguarded" ]; then
+    say_problem "rule 6: $(printf '%s' "$unguarded" | tr '\n' ' ')does not ask window_has_file_name: a question with a test of its own answers yes for the title of a window whose text came from a pipe, which has no file yet"
+  fi
+  shared=$(shared_test_without_the_write_owner "$dir")
+  printf 'rule 6: the shared file-name test without the write owner question: %s (none allowed)\n' \
+    "$(printf '%s\n' "$shared" | grep -c .)"
+  if [ -n "$shared" ]; then
+    say_problem "rule 6: window_has_file_name does not ask wpe_write_window_is_a_file: the three questions would answer yes for the title of a window whose text came from a pipe"
+  fi
   if [ "$pasted" -ne 0 ]; then
     say_problem "rule 6: the owner pastes $pasted token(s): a pasted name reaches a member without ever spelling it"
   fi
@@ -885,6 +937,31 @@ selftest() {
 
   plant_and_expect "a title copied in a macro continued over two lines" "rule 6" \
     sh -c 'printf "\n#define PLANTED_COPY(f, p) \\\\\n  ((p) = (f)->datnam)\n" >> "$0/we_wind.c"'
+
+  # One of the three file-name questions with a test of its own: it would
+  # answer yes for the title of a window whose text came from a pipe.
+  plant_without_the_test() {
+    awk -v fn="$1" '
+      $0 ~ ("^[A-Za-z_].*[ *]" fn "[ ]*\\(") { infn = 1 }
+      infn { sub(/window_has_file_name\(f\)/, "(f != 0)") }
+      /^\}/ { infn = 0 }
+      { print }' "$2/we_winkind.c" > "$2/we_winkind.c.planted" &&
+      mv "$2/we_winkind.c.planted" "$2/we_winkind.c"
+  }
+  plant_shared_test_without_the_write_owner() {
+    awk '
+      /^static int window_has_file_name/ { infn = 1 }
+      infn { sub(/ && wpe_write_window_is_a_file\(f\)/, "") ; sub(/wpe_write_window_is_a_file\(f\)/, "1") }
+      /^\}/ { infn = 0 }
+      { print }' "$1/we_winkind.c" > "$1/we_winkind.c.planted" &&
+      mv "$1/we_winkind.c.planted" "$1/we_winkind.c"
+  }
+  plant_and_expect "the shared file-name test without the write owner" "rule 6" \
+    plant_shared_test_without_the_write_owner
+  for question in e_window_file_name e_window_title_ends_with e_window_title_is; do
+    plant_and_expect "$question without the shared file-name test" "rule 6" \
+      plant_without_the_test "$question"
+  done
 
   plant_and_expect "a literal name given to e_edit" "rule 8" \
     sh -c 'printf "\nvoid planted_literal(ECNT *cn){ e_edit(cn, \"Messages\"); }\n" >> "$0/we_wind.c"'
