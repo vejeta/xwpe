@@ -1154,6 +1154,7 @@ int e_tast_sim(int c);
 void e_err_save(void);
 int e_emergency_save_running(void);
 int wpe_end_requested(void);
+int wpe_end_wake_fd(void);
 void e_display_lost(const char *what, const char *why);
 void e_display_lost_exit(void);
 void e_exit(int n);

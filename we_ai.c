@@ -2522,31 +2522,35 @@ static int ai_mock_delay_ms(void)
  return ms;
 }
 
-/* How long a held editor waits before it asks again whether it must end. */
-#define AI_MOCK_HOLD_SLICE_MS 100
-
 /**
  * ai_mock_hold_wait - Wait for the test's writer on the hold's fifo, unless
  * the editor is asked to end.
  * @fd: the fifo, opened for reading without blocking.
  *
- * A held editor still ends on SIGTERM or SIGHUP, as the assistant's other
- * synchronous waits do: it asks wpe_end_requested on every slice.  A signal
- * that interrupts the poll (a resize) is no end and the wait goes on.  The
- * writer's open and close is what releases the hold.
+ * A held editor still ends on SIGTERM or SIGHUP: the wait watches the
+ * end-request pipe beside the fifo, so the signal wakes it at once and the fd
+ * loop then saves and ends.  A signal that interrupts the poll (a resize) is
+ * no end and the wait goes on.  The writer's open and close is what releases
+ * the hold; nothing here waits for a time.
  */
 static void ai_mock_hold_wait(int fd)
 {
- struct pollfd p;
+ struct pollfd p[2];
+ nfds_t n = 1;
  int rc;
 
- p.fd = fd;
- p.events = POLLIN;
+ p[0].fd = fd;
+ p[0].events = POLLIN;
+ if (wpe_end_wake_fd() >= 0) {
+  p[1].fd = wpe_end_wake_fd();
+  p[1].events = POLLIN;
+  n = 2;
+ }
  do {
   if (wpe_end_requested())
    return;
-  rc = poll(&p, 1, AI_MOCK_HOLD_SLICE_MS);
- } while (rc == 0 || (rc < 0 && errno == EINTR));
+  rc = poll(p, n, -1);
+ } while (rc < 0 && errno == EINTR);
 }
 
 /**

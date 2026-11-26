@@ -16,8 +16,10 @@
 # the assistant's commands whose callers need the answer before they return
 # (the edit hook, the checkpoint, the changeset review inside its own key
 # loop): one bounded wait on the command's output and the owner's wake pipe.
-# A tool step's command runs on the loop.
-we_ai.o poll 1 P9s2 the bounded wait of the hook, checkpoint and review commands
+# A tool step's command runs on the loop.  The second site is the test
+# backend's hold (wpe_ai_mock_hold): it blocks on the test's fifo and the
+# end-request pipe only, with the mock backend and XWPE_AI_MOCK_HOLD set.
+we_ai.o poll 2 P9s2 the bounded wait of the hook, checkpoint and review commands; the test backend's hold
 
 # the debugger
 we_debug.o usleep 1@with-x P9o the external xterm settle

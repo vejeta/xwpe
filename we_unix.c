@@ -865,6 +865,21 @@ int wpe_end_requested(void)
 }
 
 /**
+ * wpe_end_wake_fd - The descriptor a SIGTERM or SIGHUP makes readable.
+ *
+ * For a wait outside the fd loop that blocks on a descriptor of its own (the
+ * test backend's hold on its fifo): it polls this one too, so the end request
+ * wakes it at once instead of after a slice.  The byte is left for the fd
+ * loop, which still saves the user's work and ends.
+ * Return: the read end of the end-request pipe, or a negative number when
+ * the editor has none (the handler then ends the editor by itself).
+ */
+int wpe_end_wake_fd(void)
+{
+ return(wpe_end_wake_rd);
+}
+
+/**
  * wpe_end_wake - In the handler: wake the editor's loop for the end request.
  *
  * One write() to a non-blocking pipe.  When it fails the pipe is full, so

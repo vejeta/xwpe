@@ -444,8 +444,8 @@ def test_a_held_editor_still_ends_on_sigterm(tmp_path):
     with Held(tmp_path, RUN_REPLY, "review") as h:
         h.start_run("make it")
         h.s.proc.send_signal(signal.SIGTERM)
-        h.s.wait_exit(END_WAIT_S)
-        assert not h.s.alive()
+        assert h.s.ended_within(END_WAIT_S), \
+            "the held editor should end on SIGTERM"
 
 
 # MX5 (a key the mouse poll read ahead and gave back, taken by the drop) has
