@@ -86,6 +86,20 @@ def _process_gone(pid, timeout=12):
         return False
 
 
+def _release_the_build(release_path):
+    """Let a build that waits on its fifo go on, once no assertion needs it
+    running.  An Esc that ended the build took its reader with it, and a fifo
+    with no reader refuses the open: that is the build being over, not a
+    failure to release it."""
+    try:
+        fd = os.open(str(release_path), os.O_WRONLY | os.O_NONBLOCK)
+    except OSError:
+        return
+    try:
+        os.write(fd, b"go\n")
+    finally:
+        os.close(fd)
+
 
 def _ai_env(tmp_path, trace, mock_delay_ms=8000, reply="int main(void){return 1;}"):
     """Common AI environment."""
@@ -656,8 +670,13 @@ def test_P5_agent_task_not_locked_build_wins(tmp_path):
     """Guard: Agent task asked from window on top (not locked) and build: Esc ends the build (green on HEAD)."""
     trace = _trace_path(tmp_path)
     src = "AAA\n"
-    slow_make = ("all:\n\t@echo BUILD_START\n\t@sleep 10\n\t@echo BUILD_DONE\n"
-                 "\t@touch prog\n")
+    # The build waits on a fifo the row releases, so it is still running when
+    # the Esc arrives: a sleep in the Makefile is the program's own clock,
+    # which the row's scale does not stretch, and a scaled row outlives it.
+    release_path = tmp_path / "build.release"
+    os.mkfifo(release_path)
+    slow_make = ("all:\n\t@echo BUILD_START\n\t@cat " + str(release_path) +
+                 " > /dev/null\n\t@echo BUILD_DONE\n\t@touch prog\n")
     (tmp_path / "Makefile").write_text(slow_make)
     env = _ai_env(tmp_path, trace)
     with WpeSession(str(tmp_path), src, filename="t.c", env_extra=env) as w:
@@ -667,6 +686,7 @@ def test_P5_agent_task_not_locked_build_wins(tmp_path):
         w.key("do something"); w.key("\r", delay=1.5)
         w.key(ESC, delay=1.0)
         assert wait_screen(w, "build cancelled", tmo=10), "build not cancelled"
+    _release_the_build(release_path)
 
 
 # @scenario SC-esc-owner-26

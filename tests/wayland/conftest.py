@@ -500,6 +500,21 @@ def _require_clean_compositor(owner):
                                  "; ".join(o.describe() for o in running)))
 
 
+def frame_dump_path(workdir):
+    """The path of the frame dump of a row started in `workdir`: a folder of
+    its own beside the row's folder, under the same tmp root.
+
+    The row's folder is the workspace: the editor is started in it, the
+    assistant checkpoints it and lists what is in it.  A file the harness
+    writes there is then named in the review of the row's own work, and the
+    box that asks about it takes the keys the row sends next.  The dump is
+    the harness's, so it stays out of the workspace."""
+    folder = os.path.join(os.path.dirname(str(workdir)),
+                          os.path.basename(str(workdir)) + "-frames")
+    os.makedirs(folder, exist_ok=True)
+    return os.path.join(folder, "frame.ppm")
+
+
 def launch_editor(owner, workdir, request, args, extra_env=None,
                   detached_from_terminal=False, terminal_fd=None):
     """Start the native-Wayland xwpe with `args` on this run's compositor,
@@ -508,13 +523,14 @@ def launch_editor(owner, workdir, request, args, extra_env=None,
     Its end is registered with the row before anything waits on it, so a row
     that fails to start it, or never sees its first frame, still ends it.
     The row's id is kept so the next row can name it if it leaves an editor
-    behind.  The owner sets the frame dump and the window size."""
+    behind.  The owner sets the window size; the frame dump goes beside the
+    workspace, not into it."""
     _require_clean_compositor(owner)
     _SERVED["row"] = request.node.nodeid
     return owner_api.Editor.start(
         owner, XWPE_BIN, args, "wayland", _SERVED["display"], str(workdir),
         str(workdir), extra_env=extra_env, label=request.node.nodeid,
-        request=request,
+        request=request, dump=frame_dump_path(workdir),
         detached_from_terminal=detached_from_terminal,
         stdio=owner_api.LOG if terminal_fd is None else terminal_fd)
 
@@ -593,8 +609,9 @@ def xwpe(xserver, gui_owner, tmp_path, request):
     # session), the font size, the eager-server opt-out and the 1024x768
     # window size the X11 suite also forces (so centered dialogs land at the
     # same window fraction and coordinate-based pixel scans stay calibrated)
-    # are set, and the frame dump is the row's frame.ppm.
-    dump = str(tmp_path / "frame.ppm")
+    # are set, and the frame dump is the row's frame.ppm in a folder beside
+    # the workspace, where the editor's own view of its files does not reach.
+    dump = frame_dump_path(tmp_path)
     param = dict(getattr(request, "param", None) or {})
     # XWPE_TEST_SOURCE: a test that needs its own program in t.c, not env.
     source = param.pop("XWPE_TEST_SOURCE", None)

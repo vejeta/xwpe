@@ -37,7 +37,8 @@ import sys
 import pytest
 
 from host_tools import require
-from wpe_driver import ALT, WPE_BIN, WpeSession, wait_screen, wait_until
+from wpe_driver import (ALT, FRAME_BOTTOM_LEFT, WPE_BIN, WpeSession,
+                        pane_frame, wait_screen, wait_until)
 
 F2 = "\033OQ"                # Modern: Rename
 F3 = "\033OR"                # the File Manager
@@ -1271,19 +1272,86 @@ def test_help_on_a_word_that_is_an_open_file_shows_the_manual_page(tmp_path):
     assert (tmp_path / "printf").read_text() == "printf\n"
 
 
+# The screen a CI runner showed for K30: two windows titled printf and the
+# window list open over the manual page, whose own NAME row reads
+# "printf  - Prix" two columns left of the list's frame.  That man-db puts two
+# spaces after the name is what made a count over the whole screen read the
+# page's row as an entry of the list.
+CI_WINDOW_LIST_SCREEN = (
+    "  #   File  Edit  Search  Block   Run   Debug  Project  Options  Window   Help  ",
+    "lqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq printf qqqqqqqqqqqqqqqqqqqqqqqqqqqqq1qqqqqqk",
+    "xlqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq printf qqqqqqqqqqqqqqqqqqqqqqqqqqqq2qqqqqqk",
+    "xxPRINTF(1)           lqqqqqqqqqqqq Windows qqqqqq3qqqqqqk              PRINTF(x",
+    "xx                    x                                  x                     x",
+    "xxNAME                x                                  x                     x",
+    "xx       printf  - Prix   Windows           ^            xring and proceeding ax",
+    "xx       guments.     x   printf            \u25ae            x                     x",
+    "xx                    x   printf            a            x                     x",
+    "xxSYNOPSIS            x                     a            x                     x",
+    "xx       printf [--helx                     a            x                     x",
+    "xx                    x                     a            x                     x",
+    "xxDESCRIPTION         x                     a            x                     x",
+    "xx       Print output x                     a            x                     x",
+    "xx                    x                     a            x                     x",
+    "xxOPTIONS             x                     a            x                     x",
+    "xx       --help Print x                     a            x                     x",
+    "xx                    x                     a   Show     x                     x",
+    "xx       --version    x                     a            x                     x",
+    "xx              Print x                     v   Save     x                     x",
+    "mmqqqqqqqqqqqqqqqqqqqqx  <\u25aeaaaaaaaaaaaaaaaa>             xqqqqqqqqqqqqqqqqqqqqqj",
+    "                      mqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqj                      ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    "                                                                                ",
+    " F1 Help  Add  Delete  ^W Close W.  Alt-X Quit                                  ",
+)
+
+
+# K30 on the screen a CI runner showed
+def test_the_window_list_counts_only_the_entries_inside_its_frame():
+    """The manual page behind the window list names printf on its own NAME
+    row, so a count over the whole screen reads three rows titled printf
+    where the list holds two."""
+    rows = list(CI_WINDOW_LIST_SCREEN)
+    inside = window_list_box_rows(rows)
+    assert len(windows_titled(inside, "printf")) == 2, "\n".join(inside)
+
+
 def window_list_rows(w):
-    """The screen while the window list is open, as rows; the list is opened
-    with Alt-0, read and closed again."""
+    """The rows inside the window list's frame while the list is open; the
+    list is opened with Alt-0, read and closed again."""
     open_window_list(w)
-    rows = list(w.display(drain=0))
+    rows = window_list_box_rows(w.display(drain=0))
     w.key(ESC, delay=0.6)
     return rows
 
 
+def window_list_box_rows(rows):
+    """The rows of @rows that are inside the window list's frame, cut to the
+    columns between its borders, from its title row down to the frame row
+    that closes it.
+
+    The list is a window over the others, so the whole screen also holds what
+    they show: a manual page behind the list that names the same title as one
+    of its entries would be counted as an entry of the list."""
+    y, x0, x1 = pane_frame(rows, WINDOW_LIST_TITLE)
+    inside = []
+    for row in rows[y + 1:]:
+        if row[x0:x0 + 1] == FRAME_BOTTOM_LEFT:
+            break
+        inside.append(row[x0 + 1:x1])
+    return inside
+
+
 def windows_titled(rows, title):
-    """The rows of the window list that name @title: a row of the list is the
-    title alone, set off from the list's border and scroll bar by blanks."""
-    return [r for r in rows if re.search(r"x {2,}%s {2,}" % re.escape(title), r)]
+    """The rows of the window list that name @title: inside the frame a row
+    of the list is the title alone, set off from the frame and the scroll bar
+    by blanks."""
+    return [r for r in rows if re.match(r" {2,}%s {2,}" % re.escape(title), r)]
 
 
 # K33
