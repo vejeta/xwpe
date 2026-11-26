@@ -45,7 +45,7 @@ scala|scala|apt|the runner of the same package
 scala-cli|-|absent:no package in resolute|the 15 scala-cli rows stay BLOCKED
 ga68|ga68|apt|4:15.2.0-5ubuntu1, universe; /usr/bin/ga68 comes with it, as on sid. gcc 15 based (sid passes with 16.2; ga68-16 on 26.04 is 16-20260322-1ubuntu1 but installs no ga68 name): the first run shows whether 15.2 builds the row's source
 a68g|algol68g|apt|3.1.2-1.2, universe
-lldb-dap|-|absent:not read from the resolute Contents index|the 29 lldb rows stay BLOCKED
+lldb-dap|lldb-20|apt|resolute ships the adapter only in lldb-20, as /usr/bin/lldb-dap-20 (packages.ubuntu.com file lists, 2026-11-26; lldb-21 and lldb-22 ship none); the first run shows whether 20 passes the 29 lldb rows. run: sudo ln -sf /usr/bin/lldb-dap-20 /usr/local/bin/lldb-dap
 rustc|-|image|the runner image ships a Rust toolchain
 javac|-|image|the runner image ships a JDK
 jdb|-|image|the runner image ships a JDK

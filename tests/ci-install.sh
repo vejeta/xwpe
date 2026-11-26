@@ -28,9 +28,15 @@ sudo apt-get install -y --no-install-recommends \
   libwayland-dev wayland-protocols libwayland-bin libxkbcommon-dev \
   xvfb x11-utils x11-xserver-utils xauth xdotool x11-apps netpbm \
   matchbox-window-manager imagemagick weston wl-clipboard \
-  gdb scala ga68 algol68g locales \
+  gdb lldb-20 scala ga68 algol68g locales \
   python3 python3-pip python3-venv python3-pil
 sudo locale-gen de_DE.UTF-8
+
+# lldb's DAP adapter.  On Ubuntu 26.04 only lldb-20 ships it, and only under
+# its versioned name (lldb-21 and lldb-22 ship none); the editor and the rows
+# start it as "lldb-dap", so the name is linked in a folder every job's PATH
+# already holds.
+sudo ln -sf /usr/bin/lldb-dap-20 /usr/local/bin/lldb-dap
 
 # Delve, at the version tests/ci-versions.txt records and
 # tests/check-ci-versions.sh keeps this line equal to.  The image's own

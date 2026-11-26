@@ -66,7 +66,7 @@ env:
   # declared absence, and a display layer whose tool is missing stops the
   # session.
   XWPE_TEST_TOOLS_EXPECTED: >-
-    gdb dlv scalac scala ga68 a68g de_DE.UTF-8
+    gdb lldb-dap dlv scalac scala ga68 a68g de_DE.UTF-8
     Xvfb xdotool xwd xlogo xwininfo weston matchbox-window-manager
     magick xwdtopnm wl-clipboard wl-copy wl-paste
 

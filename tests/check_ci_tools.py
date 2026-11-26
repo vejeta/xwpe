@@ -808,10 +808,10 @@ def mutate(root, relative, old, new):
 # One planted offence per rule: (name, file, text to change, its replacement,
 # a phrase the findings must contain).
 CANARIES = (
-    ("package-missing", INSTALL_SCRIPT, "  gdb scala", "  scala",
+    ("package-missing", INSTALL_SCRIPT, "  gdb lldb-20 scala", "  lldb-20 scala",
      "is expected but"),
-    ("expected-drift", WORKFLOW, "XWPE_TEST_TOOLS_EXPECTED: >-\n    gdb dlv",
-     "XWPE_TEST_TOOLS_EXPECTED: >-\n    dlv", "installs gdb and"),
+    ("expected-drift", WORKFLOW, "XWPE_TEST_TOOLS_EXPECTED: >-\n    gdb lldb-dap",
+     "XWPE_TEST_TOOLS_EXPECTED: >-\n    lldb-dap", "installs gdb and"),
     ("no-record-line", RECORD, "\ngdb|gdb|apt|", "\nxgdb|gdb|apt|", "has no line for it"),
     ("run-command-gone", INSTALL_SCRIPT, "sudo locale-gen de_DE.UTF-8", "true",
      "needs the command"),
