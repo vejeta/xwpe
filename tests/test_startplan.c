@@ -29,6 +29,7 @@
 #include "../we_startcmd.h"
 #include "../we_path.h"
 #include "test_watchdog.h"
+#include "test_pathlimit.h"
 #include "testdir.h"
 
 #define MAIN_GUARD_S      120   /* the whole test, with the short commands it runs */
@@ -2270,30 +2271,24 @@ static void deep_remove(char *folder, const char *stop)
 }
 
 /* The longest path this system takes under the test folder, terminator
-   included: what pathconf says for it, else the header's PATH_MAX, else
-   PATH_ROOM; never more than the test's own buffers hold.  Linux says 4096,
-   macOS and the BSDs 1024: a row that builds "a folder near the limit" must
-   use the limit of the system it runs on. */
+   included (tests/test_pathlimit.h): what pathconf says for @proj, else the
+   header's number, never more than the test's own buffers hold.  A row that
+   simulates a system of a shorter limit gets that limit instead, so the
+   long-path rows mean the same here as they do there. */
 static size_t path_limit(void)
 {
- long limit = pathconf(proj, _PC_PATH_MAX);
-
 #ifdef WPE_TEST_LD_WRAP
  if (simulated_system_limit)
   return simulated_system_limit;
 #endif
- if (limit < 0)
-  limit = WPE_PLATFORM_PATH_MAX;
- if (limit > PATH_ROOM)
-  limit = PATH_ROOM;
- return (size_t)limit;
+ return test_path_limit(proj, PATH_ROOM);
 }
 
 /* How many levels of names of @name_bytes a folder can have under @proj
    and keep PATH_HEADROOM bytes to spare. */
 static int levels_that_fit(size_t name_bytes)
 {
- return (int)((path_limit() - PATH_HEADROOM - strlen(proj)) / (name_bytes + 1));
+ return test_levels_that_fit(path_limit(), proj, name_bytes, PATH_HEADROOM);
 }
 
 /* How many times @needle is in @text. */

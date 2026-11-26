@@ -25,6 +25,7 @@
 
 #include "../we_startcmd.h"
 #include "test_watchdog.h"
+#include "test_pathlimit.h"
 
 #define PATH_ROOM         4096
 #define TEST_DIR_PARENT   "/tmp"                 /* when $TMPDIR is not set */
@@ -712,19 +713,63 @@ static void case_built_cap(void)
  expect_int("the newest is kept", built_asks(built_dir, "c8199.o"), 1);
 }
 
-#define BOUND_LEVELS      20      /* nested folders that make a long build folder */
+#define BOUND_LEVELS      20      /* the most levels the long build folder has */
 #define BOUND_LEVEL_LEN   150     /* characters of each one's name */
-#define BOUND_RECORDS     3000    /* long records: past the read bound in all */
+#define BOUND_HEADROOM    200     /* what the row keeps below the last level */
+#define BOUND_NAME_LEN    8       /* the longest "w<record>.o" the row writes */
+#define BOUND_RECORDS_FLOOR 3000  /* records a folder of the longest paths needs */
 #define BOUND_STORE_MAX   ((long long)16 << 20)
 
-/* Make the long build folder under built_dir; the length of @deep after each
-   level goes to @ends so the folder can be taken apart again. */
-static void bound_make_folder(char *deep, size_t sz, size_t ends[BOUND_LEVELS])
+/** bound_levels - How many levels the long build folder has on this system.
+ *
+ * What the user gets: the row builds the deepest build folder this system
+ * takes.  The path limit is the system's, not the row's: 4096 bytes on Linux
+ * and 1024 on macOS and the BSDs, so a level count sized for the first makes
+ * a folder the second refuses with ENAMETOOLONG, and the row dies in its own
+ * setup instead of testing the store.  BOUND_LEVELS caps the count, so a
+ * system of the longer limit gets the folder this row always had.
+ */
+static int bound_levels(void)
+{
+ int fit = test_levels_that_fit(test_path_limit(built_dir, PATH_ROOM), built_dir,
+                                BOUND_LEVEL_LEN, BOUND_HEADROOM);
+
+ return fit < BOUND_LEVELS ? fit : BOUND_LEVELS;
+}
+
+/** bound_records - How many records push the store past what a read accepts.
+ * @deep: the long build folder the records are of.
+ *
+ * What the user gets: a store big enough that the editor has to drop
+ * something before it writes, which is the only way the row can see it drop
+ * the oldest and keep the newest.  One record holds the folder and the
+ * output's whole path, which is that folder again with a name on it, so the
+ * count is the read bound over twice the folder's length.  Where the system's
+ * path limit is short the folder is short too and that count is past the
+ * store's own cap on records (WPE_BUILT_MAX_RECORDS); there the cap is what
+ * drops the oldest, one record over it is enough, and the row still writes a
+ * store of many megabytes and still finds the oldest gone.
+ */
+static int bound_records(const char *deep)
+{
+ size_t one = 2 * strlen(deep) + 2 + BOUND_NAME_LEN;
+ long long need = BOUND_STORE_MAX / (long long)one + 1;
+
+ if (need > WPE_BUILT_MAX_RECORDS)
+  return WPE_BUILT_MAX_RECORDS + 1;
+ if (need < BOUND_RECORDS_FLOOR)
+  return BOUND_RECORDS_FLOOR;
+ return (int)need;
+}
+
+/* Make @levels of the long build folder under built_dir; the length of @deep
+   after each level goes to @ends so the folder can be taken apart again. */
+static void bound_make_folder(char *deep, size_t sz, size_t ends[BOUND_LEVELS], int levels)
 {
  int i;
  size_t len;
  snprintf(deep, sz, "%s", built_dir);
- for (i = 0; i < BOUND_LEVELS; i++) {
+ for (i = 0; i < levels; i++) {
   len = strlen(deep);
   snprintf(deep + len, sz - len, "/%.*s", BOUND_LEVEL_LEN,
            "aaaaaaaaaabbbbbbbbbbccccccccccddddddddddeeeeeeeeeeffffffffffgggggggggghhhhhhhhhhiiiiiiiiiijjjjjjjjjjkkkkkkkkkkllllllllllmmmmmmmmmmnnnnnnnnnn");
@@ -733,17 +778,18 @@ static void bound_make_folder(char *deep, size_t sz, size_t ends[BOUND_LEVELS])
  }
 }
 
-/* Remove the long build folder's files and the folders, deepest first. */
-static void bound_remove_folder(char *deep, const size_t ends[BOUND_LEVELS])
+/* Remove the @records files of the long build folder and its @levels folders,
+   deepest first. */
+static void bound_remove_folder(char *deep, const size_t ends[BOUND_LEVELS], int levels, int records)
 {
  char path[PATH_ROOM], name[TEXT_ROOM];
  int i;
- for (i = 0; i < BOUND_RECORDS; i++) {
+ for (i = 0; i < records; i++) {
   snprintf(name, sizeof name, "w%d.o", i);
   snprintf(path, sizeof path, "%s/%s", deep, name);
   unlink(path);
  }
- for (i = BOUND_LEVELS - 1; i >= 0; i--) {
+ for (i = levels - 1; i >= 0; i--) {
   deep[ends[i]] = '\0';
   rmdir(deep);
  }
@@ -751,15 +797,20 @@ static void bound_remove_folder(char *deep, const size_t ends[BOUND_LEVELS])
 
 static void case_built_store_bound(void)
 {
- char deep[PATH_ROOM], path[PATH_ROOM], name[TEXT_ROOM];
+ char deep[PATH_ROOM], path[PATH_ROOM], name[TEXT_ROOM], newest[TEXT_ROOM];
  size_t ends[BOUND_LEVELS];
  WpeBuiltSet set;
  struct stat st;
- int i;
+ int levels, records, i;
  built_reset_store();
- bound_make_folder(deep, sizeof deep, ends);
+ levels = bound_levels();
+ bound_make_folder(deep, sizeof deep, ends, levels);
+ records = bound_records(deep);
+ snprintf(newest, sizeof newest, "w%d.o", records - 1);
+ printf("store bound: the path limit here takes %d level(s) and %d record(s), "
+        "the folder is %zu bytes\n", levels, records, strlen(deep));
  wpe_startcmd_built_load(deep, &set);
- for (i = 0; i < BOUND_RECORDS; i++) {
+ for (i = 0; i < records; i++) {
   snprintf(name, sizeof name, "w%d.o", i);
   built_file(deep, name, "x", path, sizeof path);
   built_stat(path, &st);
@@ -772,9 +823,9 @@ static void case_built_store_bound(void)
  wpe_startcmd_built_load(deep, &set);
  expect_int("and reads back, not refused whole", set.state, WPE_STARTCMD_STORE_OK);
  wpe_startcmd_built_free(&set);
- expect_int("the newest record is kept", built_asks(deep, "w2999.o"), 1);
+ expect_int("the newest record is kept", built_asks(deep, newest), 1);
  expect_int("the oldest was dropped to make room", built_asks(deep, "w0.o"), 0);
- bound_remove_folder(deep, ends);
+ bound_remove_folder(deep, ends, levels, records);
 }
 
 /* Remove what the built-outputs cases made, file by file, in the test's own

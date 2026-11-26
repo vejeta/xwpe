@@ -453,6 +453,28 @@ static void say_what_hung(const char *row)
 	fails++;
 }
 
+/** read_master - What a terminal's editor end reads until a line end, or @ms.
+ *
+ * A row reads the master before it waits for the child's end: the BSD pty
+ * masters keep no text once the child that wrote it has ended, so a row that
+ * waits first reads an empty buffer and misses what the child said. */
+static void read_master(int master, char *buf, size_t n, long ms)
+{
+	long deadline = now_ms() + ms;
+	size_t len = 0;
+	ssize_t got;
+
+	buf[0] = '\0';
+	while (now_ms() < deadline && strchr(buf, '\n') == NULL) {
+		got = read(master, buf + len, n - 1 - len);
+		if (got > 0) {
+			len += (size_t)got;
+			buf[len] = '\0';
+		} else
+			wpe_fd_poll(LOOP_SLICE_MS);
+	}
+}
+
 /* ---- the staging proves itself --------------------------------------------- */
 
 /* The wrap is what makes rows 01 and 02 mean something, so it is proved live
@@ -536,9 +558,6 @@ static void test_a_refusal_is_said_while_another_thread_holds_a_lock(void)
 	char *argv[] = { "sh", "-c", "exit 0", NULL };
 	char buf[OUT_MAX], name[PTY_NAME_MAX];
 	int master, slave, ended;
-	long deadline;
-	size_t len = 0;
-	ssize_t got;
 
 	shared_reset();
 	memset(&r, 0, sizeof r);
@@ -551,21 +570,12 @@ static void test_a_refusal_is_said_while_another_thread_holds_a_lock(void)
 	holder_start();
 	chk("the start", wpe_child_start(&spec, &r.c, on_ended, &r), 0);
 	close(slave);
+	read_master(master, buf, sizeof buf, HUNG_BOUND_MS);
 	ended = await_end_or_entry(&r);
 	if (!ended) {
 		say_what_hung("a refusal with a lock held by another thread");
 		end_hung(&r);
 	} else {
-		buf[0] = '\0';
-		deadline = now_ms() + HUNG_BOUND_MS;
-		while (now_ms() < deadline && strstr(buf, "\n") == NULL) {
-			got = read(master, buf + len, sizeof buf - 1 - len);
-			if (got > 0) {
-				len += (size_t)got;
-				buf[len] = '\0';
-			} else
-				wpe_fd_poll(LOOP_SLICE_MS);
-		}
 		chk_true("the folder is named on its terminal (lock held)",
 		         strstr(buf, "cannot enter " NO_SUCH_DIR ": " REASON_ENOENT) != NULL);
 		chk("it ended as a command that cannot run", exit_code(r.status),
@@ -669,24 +679,6 @@ static void test_a_terminal_refusal_is_said_while_another_thread_holds_a_lock(vo
 }
 
 /* ---- 03: the words of a failed start, in each stream -------------------------- */
-
-/** read_master - What a terminal's editor end reads until a line end, or @ms. */
-static void read_master(int master, char *buf, size_t n, long ms)
-{
-	long deadline = now_ms() + ms;
-	size_t len = 0;
-	ssize_t got;
-
-	buf[0] = '\0';
-	while (now_ms() < deadline && strchr(buf, '\n') == NULL) {
-		got = read(master, buf + len, n - 1 - len);
-		if (got > 0) {
-			len += (size_t)got;
-			buf[len] = '\0';
-		} else
-			wpe_fd_poll(LOOP_SLICE_MS);
-	}
-}
 
 /** words_build_shape - The build's merged stream: the command line, then the
  * failed line, both in the order the child wrote them, already in the pipe

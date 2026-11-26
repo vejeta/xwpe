@@ -65,9 +65,7 @@ export LC_ALL
 known_failures() {
   case $1 in
     freebsd)
-      cat <<'EOF'
-test_childsafe|the folder is named on its terminal|the refusal written to the pty may be lost when the child exits at once (hypothesis, evidence pending)|BT13a
-EOF
+      # No test is known to fail on FreeBSD.
       ;;
     openbsd)
       cat <<'EOF'
@@ -81,12 +79,10 @@ test_child|none left open: got |the rows after the late ends find the slots stil
 test_child|the user reads why|the rows after the late ends find the slots still taken|BT11
 test_child|what it started was never signalled|the pid line came late|BT11
 test_child|test_child (the owner's start|the 30 s watchdog: a child's end never came|BT11
-test_childsafe|a refusal with a lock held by another thread: the child did not end within its bound|the child's end was not delivered within its bound (evidence pending, pass E)|BT12
 EOF
       ;;
     netbsd)
       cat <<'EOF'
-test_childsafe|the folder is named on its terminal|the refusal written to the pty may be lost when the child exits at once (hypothesis, evidence pending)|BT13a
 test_bsp_close|the launcher is gone and reaped (launcher that ignores SIGTERM)|loop_until_gone saw the launcher gone at 2006 ms, then process_alive (kill(pid,0), where there is no /proc) said alive; cause unknown, one run (43841645667), evidence pending; listed 2026-11-16|BT20|flaky
 test_child|ended on SIGTERM: got |a child's end arrives late or never (run 43792053014; evidence pending); listed 2026-11-16|BT11|flaky
 test_child|by SIGTERM, not given up on: got |a child's end arrives late or never (run 43792053014; evidence pending); listed 2026-11-16|BT11|flaky

@@ -549,7 +549,7 @@ test_manpat_CFLAGS = $(TEST_CFLAGS)
 # folder, a removal outside dropped and a write outside asked, the home
 # folder never a root, a plan equal in effect to the user's own, one
 # record per plan, the cover check of a step, and mutants of the rules.
-test_startplan_SOURCES = tests/test_startplan.c we_places.c we_path.c we_read.c we_seen.c we_startplan.c we_startcmd.c we_child.c we_fdloop.c we_debreq.c we_fmt.c
+test_startplan_SOURCES = tests/test_startplan.c tests/test_pathlimit.h we_places.c we_path.c we_read.c we_seen.c we_startplan.c we_startcmd.c we_child.c we_fdloop.c we_debreq.c we_fmt.c
 test_startplan_CFLAGS = $(TEST_CFLAGS)
 # The rows that make an allocation fail take over malloc and realloc, which
 # needs a linker with --wrap.  Without one (Apple's ld) the test is built
@@ -565,7 +565,7 @@ test_startplan_LDADD = $(UTIL_LIBS)
 # and key, the cap), every way a store fails closed (missing, another
 # version, a bad line, a link), folders through a link, the user's own and
 # the built-in texts, and the printable form of a command.
-test_startcmd_SOURCES = tests/test_startcmd.c we_startcmd.c we_places.c we_path.c we_read.c we_seen.c we_fmt.c
+test_startcmd_SOURCES = tests/test_startcmd.c tests/test_pathlimit.h we_startcmd.c we_places.c we_path.c we_read.c we_seen.c we_fmt.c
 test_startcmd_CFLAGS = $(TEST_CFLAGS)
 
 # The text's owner: we_buffer.c alone (the editor's side of its seam is
