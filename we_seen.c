@@ -679,6 +679,83 @@ int wpe_seen_same_now(const struct stat *a, const struct stat *b)
 }
 
 /**
+ * seen_test_hides_pipe_identity - Does the test hook ask every pipe to have no identity?
+ *
+ * XWPE_TEST_FAIL=read-no-pipe-identity lets a row on Linux play NetBSD and
+ * OpenBSD.  It changes what a start descriptor and the probe pipe look like
+ * through wpe_seen_ident_of; a FIFO with a name on a file system keeps its
+ * own device, as it does there.  A test hook only.
+ */
+static int seen_test_hides_pipe_identity(void)
+{
+ const char *hook = getenv(WPE_SEEN_TEST_FAIL_ENV);
+
+ return(hook != NULL && strstr(hook, WPE_SEEN_TEST_FAIL_NO_PIPE_IDENTITY) != NULL);
+}
+
+/**
+ * wpe_seen_ident_of - The identity a start descriptor is known by.
+ * @st: its stat; @id: receives device and number.
+ *
+ * What the user gets: a descriptor the editor was started with is told from
+ * another pipe that took its number later, wherever the system gives a pipe
+ * a number.  A pipe with device 0 and number 0 has no identity (ident_known 0).
+ */
+void wpe_seen_ident_of(const struct stat *st, WpeSeenIdent *id)
+{
+ id->ident_dev = st->st_dev;
+ id->ident_ino = st->st_ino;
+ if (S_ISFIFO(st->st_mode) && seen_test_hides_pipe_identity())
+ {
+  id->ident_dev = 0;
+  id->ident_ino = 0;
+ }
+ id->ident_known = id->ident_dev != 0 || id->ident_ino != 0;
+}
+
+/**
+ * wpe_seen_ident_of_device - Keep only the device an object is on.
+ * @st: its stat; @id: receives the device (the real one, never the hook's).
+ *
+ * Lets the load learn which device an unnamed pipe carries on this system.
+ * The test hook plays a system whose pipes have device 0 only in
+ * wpe_seen_ident_of, which is the identity of a start descriptor; the probe
+ * keeps the real device, so a pipe made by a program is still told from a
+ * FIFO with a name under the hook, as on those systems.
+ */
+void wpe_seen_ident_of_device(const struct stat *st, WpeSeenIdent *id)
+{
+ id->ident_dev = st->st_dev;
+ id->ident_ino = 0;
+ id->ident_known = 1;
+}
+
+/**
+ * wpe_seen_ident_known - Has this identity a device or a number?
+ */
+int wpe_seen_ident_known(const WpeSeenIdent *id)
+{
+ return(id->ident_known);
+}
+
+/**
+ * wpe_seen_ident_same - Are two identities taken from one descriptor the same?
+ */
+int wpe_seen_ident_same(const WpeSeenIdent *a, const WpeSeenIdent *b)
+{
+ return(a->ident_dev == b->ident_dev && a->ident_ino == b->ident_ino);
+}
+
+/**
+ * wpe_seen_ident_on_device - Is an object on the device a probe found?
+ * @st: its stat; @dev: an identity from wpe_seen_ident_of_device.
+ */
+int wpe_seen_ident_on_device(const struct stat *st, const WpeSeenIdent *dev)
+{
+ return(st->st_dev == dev->ident_dev);
+}
+
+/**
  * wpe_seen_names_same_now - Do two paths lead to one object right now?
  *
  * Lets the File Manager refuse to copy a file onto itself, whatever the two

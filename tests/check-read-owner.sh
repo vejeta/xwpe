@@ -42,8 +42,15 @@
 #     e_find_open_folder, e_find_entry_is_*, e_find_look_row(s), e_file_info*,
 #     fm_folder_has_entries, WpeGraphicalFileList, WpeFileListRows.  An entry
 #     is looked at through the folder that was read, never by a joined path.
-#  h. WPE_READ_KIND_PIPE: the user's decision is that only the load of a pipe
-#     may name it, and that load is not built yet.
+#  h. WPE_READ_KIND_PIPE, anywhere outside we_read.c and we_read.h: the ask
+#     for a pipe is built inside the owner by wpe_read_load_open and nowhere
+#     else, so no caller can hand a FIFO to a reader that does not wait for
+#     it.  No allow line.
+#  h2. the load face has one caller of each: wpe_read_load_open( outside
+#     e_edit_source_open, e_pipe_load_begin( outside e_edit_open,
+#     wpe_read_note_own_fifo( and mkfifo( outside e_d_fifos_make.  A
+#     declaration or definition of the name is no call.  A second FIFO maker
+#     is a pipe the owner was never told is the editor's own.  No allow line.
 #  p. WPE_READ_ASK_PROJECT and WPE_READ_ASK_PROJECT_SEEN, anywhere but in
 #     e_prj_read_open and its two steps (e_prj_read_held, e_prj_read_asked),
 #     e_project_open_error and e_select_project: the open project is read by
@@ -74,6 +81,12 @@
 #     each system spells its own way.
 #  m. open, fopen, freopen, open64, openat64 or creat; openat outside
 #     read_target_open_fd: the one open of the owner.
+#  u. a blocking open of a FIFO.  The one openat of read_target_open_fd passes
+#     the variable flags; flags has exactly one plain assignment, whose right
+#     side is READ_FLAGS_BASE, and every other change of it is |=; the macro
+#     READ_FLAGS_BASE is defined with O_NONBLOCK and O_NOCTTY; ~O_NONBLOCK
+#     appears only in read_clear_nonblock.  Clause m only counts the word
+#     openat; this one keeps its flags from losing the guard.  No allow line.
 # Everywhere:
 #  k. symbols (nm -u of the editor's objects, normalised: the 64 spellings, a
 #     NetBSD __opendir30, a Mach-O $INODE64): opendir, scandir, nftw, ftw,
@@ -213,6 +226,9 @@ scan() {
     function note(rule, n) { if (ppmode) ppcnt[rule] += n; else cnt[rule] += n }
     function flush_fn(   r) {
       if (fn == "") return
+      # clause u: the flags of the one open are assigned exactly once
+      if (file == "we_read.c" && fn == "read_target_open_fd" && flags_assigned == 0) cnt["r22u"] += 1
+      flags_assigned = 0
       for (r in cnt) if (cnt[r] > 0) print r, file, fn, cnt[r]
       delete cnt; delete asks
     }
@@ -311,8 +327,58 @@ scan() {
         t = substr(t, p + 1)
       }
     }
+    # clause h2: the one caller of each face of the load.  A name that opens a
+    # statement after a type is a declaration or a definition, not a call.
+    function is_declaration_prefix(pre) {
+      if (pre ~ /(^|[^A-Za-z0-9_])(return|else|do|case|goto)[ \t]*$/) return 0
+      return pre ~ /^[ \t]*((extern|static|const|unsigned|struct)[ \t]+)*[A-Za-z_][A-Za-z_0-9]*([ \t*]+[A-Za-z_][A-Za-z_0-9]*)*[ \t*]*$/
+    }
+    # The bare word counts, not only name(: a macro that stands for the name
+    # or a pointer to it (= wpe_read_load_open) is a caller the scan cannot
+    # follow, so it is one site of its own outside the allowed function.
+    function note_loaders(m,   t, p, pre, name, allowed, lead, after) {
+      t = m
+      while (match(t, /(^|[^A-Za-z0-9_.>])(wpe_read_load_open|e_pipe_load_begin|wpe_read_note_own_fifo|mkfifo)([^A-Za-z0-9_]|$)/)) {
+        name = substr(t, RSTART, RLENGTH)
+        lead = (name ~ /^[^A-Za-z]/) ? 1 : 0
+        if (lead) name = substr(name, 2)
+        sub(/[^A-Za-z0-9_]$/, "", name)
+        pre = substr(t, 1, RSTART - 1 + lead)
+        p = RSTART + RLENGTH - 1
+        after = substr(t, p)
+        allowed = "e_d_fifos_make"
+        if (name == "wpe_read_load_open") allowed = "e_edit_source_open"
+        else if (name == "e_pipe_load_begin") allowed = "e_edit_open"
+        if (after ~ /^[ \t]*[(]/) {
+          if (fn != allowed && !is_declaration_prefix(pre)) note("r22h2", 1)
+        } else if (ppmode || fn != allowed) note("r22h2", 1)
+        t = substr(t, p)
+      }
+    }
+    # clause u: the flags of the one open of the owner keep their guard
+    function note_flags(s, m,   t, rest, p) {
+      if (s ~ /^[ \t]*#[ \t]*define[ \t]+READ_FLAGS_BASE([^A-Za-z0-9_]|$)/ && (s !~ /O_NONBLOCK/ || s !~ /O_NOCTTY/)) note("r22u", 1)
+      if (fn != "read_clear_nonblock" && m ~ /~[ \t]*O_NONBLOCK/) note("r22u", 1)
+      if (fn != "read_target_open_fd") return
+      t = s
+      while (match(t, /(^|[^A-Za-z0-9_.>])openat[ \t]*[(]/)) {
+        p = RSTART + RLENGTH - 1
+        if (nth_arg(t, p, 3) != "flags") note("r22u", 1)
+        t = substr(t, p + 1)
+      }
+      t = m
+      while (match(t, /(^|[^A-Za-z0-9_.>])flags[ \t]*(&=|\^=|\+=|-=|<<=|>>=)/)) { note("r22u", 1); t = substr(t, RSTART + RLENGTH) }
+      t = m
+      while (match(t, /(^|[^A-Za-z0-9_.>])flags[ \t]*=[^=]/)) {
+        rest = substr(t, RSTART + RLENGTH - 1); sub(/;.*/, "", rest); sub(/^[ \t]+/, "", rest); sub(/[ \t]+$/, "", rest)
+        flags_assigned++
+        if (rest != "READ_FLAGS_BASE" || flags_assigned > 1) note("r22u", 1)
+        t = substr(t, RSTART + RLENGTH)
+      }
+    }
     # the clauses of we_read.c itself
     function note_owner(s, m,   t, p, e, lit, a, mode, name) {
+      note_flags(s, m)
       t = s
       while (match(t, /"([^"\\]|\\.)*"/)) {
         lit = substr(t, RSTART, RLENGTH)
@@ -350,6 +416,7 @@ scan() {
       if (fn ~ /^(e_find_(files|dir|open_folder|entry_is_[a-z]+|look_rows?)|e_file_info[a-z_]*|fm_folder_has_entries|WpeGraphicalFileList|WpeFileListRows)$/)
         count_call(m, "stat|lstat|fstatat|access|faccessat|eaccess|stat64|lstat64|fstatat64", "r22n")
       count_word(m, "WPE_READ_KIND_PIPE", "r22h")
+      note_loaders(m)
       if (fn ~ /^(e_edit_open|e_edit_take_file_state)$/)
         count_call(m, "wpe_write_identity_of_name|wpe_write_identity_take_fd|wpe_seen_look_name|fstat|lstat|fstat64|lstat64", "r22s")
       if (m ~ /(^|[^A-Za-z0-9_.>])(fmemopen|fopencookie|funopen|tmpfile)([^A-Za-z0-9_]|$)/) note("r22j", 1)
@@ -485,6 +552,25 @@ int fake_h(void)
  return(WPE_READ_KIND_PIPE);
 }
 
+int fake_loader(FENSTER *f, char *path)
+{
+ int r = wpe_read_load_open(path, "file", &fp, &fd, &o);
+ e_pipe_load_begin(f, fd, path);
+ wpe_read_note_own_fifo(path);
+ mkfifo(path, 0600);
+ return(r);
+}
+
+#define LOADER wpe_read_load_open
+#define BEGIN e_pipe_load_begin
+
+int fake_loader_ptr(void)
+{
+ int (*f)(void) = wpe_read_load_open;
+ void *g = e_pipe_load_begin;
+ return(0);
+}
+
 int fake_reader(ECNT *cn)
 {
  WpeReadAsk a = WPE_READ_ASK_PROJECT("project file");
@@ -572,8 +658,37 @@ int e_select_project(ECNT *cn, char *path)
  return(wpe_read_name_ok(path, &ask, &why));
 }
 
+WPE_READ_RESULT int wpe_read_load_open(const char *path, const char *what,
+                                       FILE **fp, int *fd, WpeReadOutcome *o);
+int e_pipe_load_begin(FENSTER *f, int fd, const char *shown);
+
+int e_pipe_load_begin(FENSTER *f, int fd, const char *shown)
+{
+ return(0);
+}
+
+static int e_edit_source_open(const char *path)
+{
+ return(wpe_read_load_open(path, "file", &fp, &fd, &o));
+}
+
+int e_edit_open(FENSTER *f)
+{
+ return(e_pipe_load_begin(f, fd, name));
+}
+
+static int e_d_fifos_make(void)
+{
+ if (mkfifo(npipe[i], S_IRUSR | S_IWUSR) < 0)
+  return(-1);
+ wpe_read_note_own_fifo(npipe[i]);
+ return(0);
+}
+
 int quiet_names(struct x *x)
 {
+ int a = x->mkfifo(p);
+ int b = my_mkfifo(p);
  /* fopen(p, "r") in a comment, and getline( too */
  char *s = "fopen(p, \"r\") opendir(x) getline(";
  x->open(p);
@@ -593,9 +708,22 @@ int quiet_names(struct x *x)
 EOF
   cat > "$fx/we_read.c" <<'EOF'
 /* the owner: it may open, and has its own clauses */
-static int read_target_open_fd(const char *p, int d)
+#define READ_FLAGS_BASE (O_RDONLY | O_NONBLOCK | O_NOCTTY | O_CLOEXEC)
+
+static int read_target_open_fd(const char *p, int d, int nofollow)
 {
- return(openat(d, p, O_RDONLY));
+ int flags = READ_FLAGS_BASE;
+
+ if (nofollow)
+  flags |= O_NOFOLLOW;
+ return(openat(d, p, flags));
+}
+
+static void read_clear_nonblock(int fd)
+{
+ int fl = fcntl(fd, F_GETFL);
+
+ fcntl(fd, F_SETFL, fl & ~O_NONBLOCK);
 }
 
 static FILE *read_stream_of_hold(void *hold)
@@ -643,6 +771,9 @@ EOF
     "r22f we_fake.c fake_f 2" \
     "r22g we_fake.c fake_g 7" \
     "r22h we_fake.c fake_h 1" \
+    "r22h2 we_fake.c fake_loader 4" \
+    "r22h2 we_fake.c fake_loader_ptr 2" \
+    "r22h2 we_fake.c (preprocessor) 2" \
     "r22p we_fake.c fake_reader 2" \
     "r22q we_fake.c fake_reader 2" \
     "r22s we_fake.c e_edit_take_file_state 3" \
@@ -677,6 +808,43 @@ EOF
     cat "$WORK/fake.found"
     exit $BAD
   fi
+  # clause u: the owner's flags keep their guard.  Each variant is a copy of
+  # the owner's open with one change; the proper one is quiet.
+  u_variant() {
+    # u_variant NAME BASE ASSIGN EXTRA ARG WANT: write the variant, scan it, and
+    # require exactly the line WANT (or no r22u line when WANT is empty)
+    mkdir "$WORK/fx_u_$1"
+    {
+      echo "$2"
+      echo 'static int read_target_open_fd(const char *p, int d, int nofollow)'
+      echo '{'
+      echo " $3"
+      echo " $4"
+      echo " return(openat(d, p, $5));"
+      echo '}'
+    } > "$WORK/fx_u_$1/we_read.c"
+    scan "$WORK/fx_u_$1/we_read.c" | grep '^r22u ' > "$WORK/fx_u_$1/found"
+    if [ -z "$6" ]; then
+      if [ -s "$WORK/fx_u_$1/found" ]; then
+        echo "check-read-owner: FAIL (selftest: clause u names the proper shape of the owner's open ($1); it found:)"
+        cat "$WORK/fx_u_$1/found"
+        exit $BAD
+      fi
+    elif ! grep -qx "$6" "$WORK/fx_u_$1/found"; then
+      echo "check-read-owner: FAIL (selftest: clause u does not name $1: want $6; it found:)"
+      cat "$WORK/fx_u_$1/found"
+      exit $BAD
+    fi
+  }
+  base_def='#define READ_FLAGS_BASE (O_RDONLY | O_NONBLOCK | O_NOCTTY | O_CLOEXEC)'
+  u_variant proper "$base_def" 'int flags = READ_FLAGS_BASE;' 'flags |= O_NOFOLLOW;' flags ''
+  u_variant plain_flags "$base_def" 'int flags = O_RDONLY;' 'flags |= O_NOFOLLOW;' flags 'r22u we_read.c read_target_open_fd 1'
+  u_variant clears "$base_def" 'int flags = READ_FLAGS_BASE;' 'flags &= ~O_NONBLOCK;' flags 'r22u we_read.c read_target_open_fd 2'
+  u_variant reassigned "$base_def" 'int flags = READ_FLAGS_BASE;' 'flags = O_RDONLY;' flags 'r22u we_read.c read_target_open_fd 1'
+  u_variant other_arg "$base_def" 'int flags = READ_FLAGS_BASE;' 'flags |= O_NOFOLLOW;' O_RDONLY 'r22u we_read.c read_target_open_fd 1'
+  u_variant no_assign "$base_def" 'int flags;' 'flags |= O_NOFOLLOW;' flags 'r22u we_read.c read_target_open_fd 1'
+  u_variant base_loses_nonblock '#define READ_FLAGS_BASE (O_RDONLY | O_NOCTTY | O_CLOEXEC)' 'int flags = READ_FLAGS_BASE;' 'flags |= O_NOFOLLOW;' flags 'r22u we_read.c (preprocessor) 1'
+  u_variant base_loses_noctty '#define READ_FLAGS_BASE (O_RDONLY | O_NONBLOCK | O_CLOEXEC)' 'int flags = READ_FLAGS_BASE;' 'flags |= O_NOFOLLOW;' flags 'r22u we_read.c (preprocessor) 1'
   # clause k: an opener planted in an object is named, however the system
   # spells it; an object listed and not on disk is a problem of its own
   printf 'DIR *f(const char *p) { return opendir(p); }\nint g(void) { return gzopen != 0; }\n' > "$WORK/planted.c"
@@ -815,7 +983,11 @@ awk -F'|' -v kscan=$kscan -v nbobjs=" $(tr '\n' ' ' < "$WORK/notbuilt_objs")" '
       else if (rule == "r22s")
         print "offender: " $1 " " $2 ": the window opened on a file takes its mode and identity by a second look at the file (a name or a descriptor) instead of from the outcome of the read.  The window must describe the very object its text came from: use the mode and the seen of the WpeReadOutcome.  No allow line"
       else if (rule == "r22h")
-        print "offender: " $1 " " $2 ": WPE_READ_KIND_PIPE is named outside the owner.  Only the load of a pipe may accept one, and it is not built yet.  No allow line"
+        print "offender: " $1 " " $2 ": WPE_READ_KIND_PIPE is named outside the owner.  The ask for a pipe is built inside we_read.c by wpe_read_load_open and nowhere else.  No allow line"
+      else if (rule == "r22h2")
+        print "offender: " $1 " " $2 ": a face of the load is called from the wrong function: wpe_read_load_open only from e_edit_source_open, e_pipe_load_begin only from e_edit_open, wpe_read_note_own_fifo and mkfifo only from e_d_fifos_make.  A FIFO the owner was not told about, or a second asker of a pipe, is how a read waited or took another program'"'"'s bytes.  No allow line"
+      else if (rule == "r22u")
+        print "offender: " $1 " " $2 ": the flags of the owner'"'"'s one open lost their guard: the openat of read_target_open_fd must pass the variable flags, assigned once from READ_FLAGS_BASE (which keeps O_NONBLOCK and O_NOCTTY), changed only with |=, and ~O_NONBLOCK belongs to read_clear_nonblock alone.  Without them a FIFO opened for reading waits for a writer.  No allow line"
       else if (rule == "r22i")
         print "offender: " $1 " " $2 ": a sentence word is spelt in we_read.c (Cannot, not found, it is, larger).  The words of a refusal are we_path.c'"'"'s: map the outcome onto them.  No allow line"
       else if (rule == "r22j")

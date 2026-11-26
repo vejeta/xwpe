@@ -103,6 +103,30 @@ typedef struct {
     plays FreeBSD, where the owner can move a birth back and no call moves it forward. */
 #define WPE_SEEN_TEST_FAIL_BIRTH_BACK_ONLY "seen-birth-back-only"
 
+/** What XWPE_TEST_FAIL carries to make every pipe look like one on NetBSD and
+    OpenBSD, where each has device 0 and number 0, so a Linux run plays them. */
+#define WPE_SEEN_TEST_FAIL_NO_PIPE_IDENTITY "read-no-pipe-identity"
+
+/**
+ * WpeSeenIdent - Device and number of a descriptor held now, for the start table.
+ *
+ * Not a record kept from an earlier moment (that is WpeSeen): the editor
+ * compares it with the same descriptor while it still holds that descriptor
+ * open.  ident_known is 0 for an object with device 0 and number 0 (a pipe on
+ * NetBSD and OpenBSD), which has no identity to compare.
+ */
+typedef struct {
+ int   ident_known;
+ dev_t ident_dev;
+ ino_t ident_ino;
+} WpeSeenIdent;
+
+void wpe_seen_ident_of(const struct stat *st, WpeSeenIdent *id);
+void wpe_seen_ident_of_device(const struct stat *st, WpeSeenIdent *id);
+int  wpe_seen_ident_known(const WpeSeenIdent *id);
+int  wpe_seen_ident_same(const WpeSeenIdent *a, const WpeSeenIdent *b);
+int  wpe_seen_ident_on_device(const struct stat *st, const WpeSeenIdent *dev);
+
 int  wpe_seen_look_fd(int fd, WpeSeen *s);
 int  wpe_seen_look_name(const char *path, int follow, WpeSeen *s);
 int  wpe_seen_look_at(int dirfd, const char *leaf, int follow, WpeSeen *s);

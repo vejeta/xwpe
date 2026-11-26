@@ -18,6 +18,7 @@
 #include "we_debsess.h"
 #include "we_buffer.h"
 #include "we_lineend.h"
+#include "we_read.h"
 #include "we_startcmd.h"
 #include "we_startplan.h"
 
@@ -8225,8 +8226,11 @@ static int e_d_fifos_make(void)
   remove(npipe[i]);
  }
  for (i = 0; i < E_D_FIFO_N; i++)
+ {
   if (mkfifo(npipe[i], S_IRUSR | S_IWUSR) < 0)
    return(-1);
+  wpe_read_note_own_fifo(npipe[i]);   /* File > Open never reads the debugger's own pipes */
+ }
  return(0);
 }
 

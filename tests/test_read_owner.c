@@ -18,6 +18,15 @@
  * changes between the look and the open, the memory stream, a file that grows
  * while it is read, and the folder face.
  *
+ * The load face (wpe_read_load_open) has its own rows after those: every
+ * object asked by its name and by a descriptor name (/dev/fd/N), a pipe made
+ * before the start noted and one made after it, the same two on a system
+ * where every pipe has device 0 and number 0 (played by a test hook), a
+ * descriptor open for writing only, descriptors 0 to 2 refilled with the null
+ * device, the system refusing a descriptor name, /dev/stdin after the
+ * terminal backend kept the data apart, a FIFO the editor made, and a name
+ * swapped for a link to an unnamed pipe between the look and the open.
+ *
  * Each cell runs under test_watchdog_case, so a wait is a FAIL that names
  * the cell, never a hang.
  */
@@ -1265,6 +1274,732 @@ static void row_terminal_by_descriptor(void)
  chk_int("a terminal: tty", o.tty, 1);
 }
 
+/* ---- the load face --------------------------------------------------------- */
+
+#define LOAD_FD_BASE     120      /* the rows hold the objects at 120 + the object's number */
+#define LOAD_PIPE_TEXT   "pipe text\n"
+#define LOAD_PIPE_LEN    10
+#define LOAD_HIDE_HOOK   "read-no-pipe-identity"
+#define LOAD_HOOK_ENV    "XWPE_TEST_FAIL"
+
+/**
+ * LoadGot - What one load gave: the return, the outcome, and what was done with it.
+ * @stream_given: a stream came back (and was read and closed).
+ * @bytes: what the stream held, -1 for none.
+ * @nonblock, @cloexec: a descriptor came back non-blocking, closed on exec.
+ */
+typedef struct {
+ int            rc;
+ int            fd;
+ int            stream_given;
+ long           bytes;
+ int            nonblock;
+ int            cloexec;
+ WpeReadOutcome o;
+} LoadGot;
+
+/**
+ * load_take - Ask the load face and look at what came back.
+ * @path: the name; @g: receives the answer.
+ *
+ * A stream is read to its end and closed; a descriptor is left open for the
+ * row to close with load_release.
+ */
+static void load_take(const char *path, LoadGot *g)
+{
+ FILE *fp = NULL;
+
+ memset(g, 0, sizeof *g);
+ g->bytes = -1;
+ g->fd = -2;
+ g->rc = wpe_read_load_open(path, "file", &fp, &g->fd, &g->o);
+ if (fp != NULL)
+ {
+  g->stream_given = 1;
+  g->bytes = drain_stream(fp);
+  fclose(fp);
+ }
+ if (g->fd >= 0)
+ {
+  g->nonblock = (fcntl(g->fd, F_GETFL) & O_NONBLOCK) != 0;
+  g->cloexec = (fcntl(g->fd, F_GETFD) & FD_CLOEXEC) != 0;
+ }
+}
+
+/**
+ * load_release - Close the descriptor a load gave, if it gave one.
+ * @g: the answer.
+ */
+static void load_release(LoadGot *g)
+{
+ if (g->fd >= 0)
+  close(g->fd);
+ g->fd = -2;
+}
+
+/**
+ * check_load_refused - A load was refused, for this reason, and gave nothing.
+ * @label: the row; @g: the answer; @why, @err, @kind, @tty: what the refusal must say.
+ */
+static void check_load_refused(const char *label, const LoadGot *g, WpeReadWhy why, int err,
+                               mode_t kind, int tty)
+{
+ int ok = g->rc == -1 && !g->stream_given && g->fd < 0 && g->o.why == why;
+
+ if (why == WPE_READ_REFUSED_BY_SYSTEM)
+  ok = ok && g->o.err == err;
+ if (why == WPE_READ_NOT_A_FILE)
+  ok = ok && g->o.kind == kind && g->o.tty == tty;
+ if (!ok)
+ {
+  printf("FAIL: %s: rc %d stream %d fd %d why %d err %d kind 0%o tty %d, want a refusal why %d err %d kind 0%o tty %d\n",
+         label, g->rc, g->stream_given, g->fd, g->o.why, g->o.err, (unsigned)g->o.kind, g->o.tty,
+         why, err, (unsigned)kind, tty);
+  fails++;
+ }
+}
+
+/**
+ * check_load_stream - A load gave a stream of these bytes.
+ * @label: the row; @g: the answer; @bytes: what the file holds; @stream: o.stream must be this.
+ */
+static void check_load_stream(const char *label, const LoadGot *g, long bytes, int stream)
+{
+ if (g->rc != 0 || !g->stream_given || g->fd >= 0 || g->o.why != WPE_READ_DONE ||
+     g->bytes != bytes || g->o.stream != stream)
+ {
+  printf("FAIL: %s: rc %d stream %d fd %d why %d bytes %ld o.stream %d, want a stream of %ld bytes, o.stream %d\n",
+         label, g->rc, g->stream_given, g->fd, g->o.why, g->bytes, g->o.stream, bytes, stream);
+  fails++;
+ }
+}
+
+/**
+ * check_load_pipe - A load gave a non-blocking descriptor of a pipe, closed on exec.
+ * @label: the row; @g: the answer.
+ */
+static void check_load_pipe(const char *label, const LoadGot *g)
+{
+ if (g->rc != 0 || g->stream_given || g->fd < 0 || g->o.why != WPE_READ_DONE ||
+     g->o.stream != 1 || !g->nonblock || !g->cloexec || !S_ISFIFO(g->o.mode))
+ {
+  printf("FAIL: %s: rc %d stream %d fd %d why %d o.stream %d nonblock %d cloexec %d, want a descriptor, non-blocking, closed on exec\n",
+         label, g->rc, g->stream_given, g->fd, g->o.why, g->o.stream, g->nonblock, g->cloexec);
+  fails++;
+ }
+}
+
+/**
+ * descriptor_is_open - Is a descriptor number open?
+ * @fd: the number.
+ */
+static int descriptor_is_open(int fd)
+{
+ return fcntl(fd, F_GETFD) >= 0;
+}
+
+/**
+ * run_load_name_cell - One object asked of the load face by its name.
+ * @which: the object.
+ *
+ * A regular file comes back as a stream with no stream mark, a FIFO as a
+ * non-blocking descriptor, and everything else is refused as the other faces
+ * refuse it; the reference is the matrix's own, with the FIFO now taken.
+ */
+static void run_load_name_cell(Obj which)
+{
+ Expect e = reference(which, 0, FACE_DESC, BOUND_NONE);
+ int fifo = object_kind_followed(which) == S_IFIFO;
+ char label[128];
+ LoadGot g;
+
+ snprintf(label, sizeof label, "load by name: %s", obj_label[which]);
+ cells++;
+ if (e.skip)
+ {
+  skips++;
+  return;
+ }
+ test_watchdog_case(label, CELL_SECS);
+ watch_name = obj_path[which];
+ watch_opens = 0;
+ load_take(obj_path[which], &g);
+ watch_name = NULL;
+ if (fifo)
+  check_load_pipe(label, &g);
+ else if (e.why == WPE_READ_DONE)
+  check_load_stream(label, &g, e.bytes, 0);
+ else
+  check_load_refused(label, &g, e.why, e.err, e.kind, 0);
+ chk_int(label, watch_opens, (fifo || e.opens) ? 1 : 0);
+ load_release(&g);
+}
+
+/**
+ * open_start_descriptor - Open an object the way a program started with it would hold it.
+ * @which: the object.
+ * Return: the descriptor, or -1 for an object that cannot be held (missing, a loop).
+ */
+static int open_start_descriptor(Obj which)
+{
+ switch (which)
+ {
+ case OB_MISSING: case OB_LOOP:
+  return(-1);
+ case OB_FIFO_IDLE: case OB_FIFO_WRITER: case OB_LINK_FIFO:
+  return(open(obj_path[which], O_RDONLY | O_NONBLOCK));
+ case OB_SOCKET:
+  return(socket(AF_UNIX, SOCK_STREAM, 0));
+ case OB_PTY:
+  return(open(obj_path[which], O_RDWR | O_NOCTTY));
+ case OB_DENIED:
+  return(open(obj_path[which], O_WRONLY));
+ default:
+  return(open(obj_path[which], O_RDONLY));
+ }
+}
+
+/**
+ * hold_start_descriptors - Put each object on a number of its own, before the start is noted.
+ * @held: receives 1 for each object that is held.
+ */
+static void hold_start_descriptors(int held[OB_COUNT])
+{
+ int ob;
+
+ for (ob = 0; ob < OB_COUNT; ob++)
+ {
+  int fd = open_start_descriptor((Obj)ob);
+
+  held[ob] = fd >= 0;
+  if (fd < 0)
+   continue;
+  if (dup2(fd, LOAD_FD_BASE + ob) < 0)
+   held[ob] = 0;
+  close(fd);
+ }
+}
+
+/**
+ * check_load_descriptor_cell - One object asked of the load face by its descriptor name.
+ * @which: the object; @n: its number.
+ *
+ * A regular file is read as a stream marked "no name"; a FIFO is moved, so the
+ * descriptor that comes back is the number itself; a socket, a device, a
+ * terminal and a folder are refused with their kind, and a descriptor open for
+ * writing only as a bad descriptor.  A refusal leaves the number open.
+ */
+static void check_load_descriptor_cell(Obj which, int n)
+{
+ mode_t kind = object_kind_followed(which);
+ char label[128], name[64];
+ LoadGot g;
+
+ snprintf(label, sizeof label, "load by descriptor: %s", obj_label[which]);
+ snprintf(name, sizeof name, "/dev/fd/%d", n);
+ test_watchdog_case(label, CELL_SECS);
+ load_take(name, &g);
+ if (which == OB_DENIED)
+ {
+  check_load_refused(label, &g, WPE_READ_REFUSED_BY_SYSTEM, EBADF, 0, 0);
+  chk_int("a write-only descriptor is left open", descriptor_is_open(n), 1);
+ }
+ else if (kind == S_IFIFO)
+ {
+  check_load_pipe(label, &g);
+  chk_int("a pipe is moved, not copied: the number comes back", g.fd, n);
+ }
+ else if (kind == S_IFREG)
+ {
+  check_load_stream(label, &g, object_length(which), 1);
+  chk_int("a regular file's number is closed with its stream", descriptor_is_open(n), 0);
+ }
+ else
+ {
+  check_load_refused(label, &g, WPE_READ_NOT_A_FILE, 0, kind, which == OB_PTY);
+  chk_int("a refused descriptor is left open", descriptor_is_open(n), 1);
+ }
+ load_release(&g);
+}
+
+/**
+ * row_load_taken_is_bad_descriptor - A descriptor read once says what a closed one says.
+ * @n: the number a pipe was taken from.
+ */
+static void row_load_taken_is_bad_descriptor(int n)
+{
+ char name[64];
+ LoadGot g;
+
+ snprintf(name, sizeof name, "/dev/fd/%d", n);
+ load_take(name, &g);
+ check_load_refused("load: a descriptor taken before", &g, WPE_READ_REFUSED_BY_SYSTEM, EBADF, 0, 0);
+}
+
+/**
+ * run_load_matrix - Every object by its name, and by its descriptor name.
+ */
+static void run_load_matrix(void)
+{
+ int held[OB_COUNT];
+ int ob;
+
+ (void)test_premise(denied_holds, "the load rows of a write-only file", "this user reads a 0200 file");
+ for (ob = 0; ob < OB_COUNT; ob++)
+  run_load_name_cell((Obj)ob);
+ hold_start_descriptors(held);
+ wpe_read_note_start();
+ for (ob = 0; ob < OB_COUNT; ob++)
+ {
+  if (!held[ob])
+   continue;
+  cells++;
+  check_load_descriptor_cell((Obj)ob, LOAD_FD_BASE + ob);
+  if (object_kind_followed((Obj)ob) == S_IFIFO)
+   row_load_taken_is_bad_descriptor(LOAD_FD_BASE + ob);
+ }
+ for (ob = 0; ob < OB_COUNT; ob++)
+  if (held[ob] && descriptor_is_open(LOAD_FD_BASE + ob))
+   close(LOAD_FD_BASE + ob);
+}
+
+/**
+ * make_pipe_with_text - A pipe with a line already in it.
+ * @ends: receives both ends.  Return: 0, or -1 (counted).
+ */
+static int make_pipe_with_text(int ends[2])
+{
+ if (pipe(ends) != 0 || write(ends[1], LOAD_PIPE_TEXT, LOAD_PIPE_LEN) != LOAD_PIPE_LEN)
+ {
+  test_dir_fail("FAIL: setup pipe: %s\n", strerror(errno));
+  return(-1);
+ }
+ return(0);
+}
+
+/**
+ * drain_pipe_text - What a non-blocking pipe holds now.
+ * @fd: its read end; @out/@n: the buffer.  Return: the bytes.
+ */
+static long drain_pipe_text(int fd, char *out, size_t n)
+{
+ ssize_t got = read(fd, out, n - 1);
+
+ if (got < 0)
+  got = 0;
+ out[got] = '\0';
+ return((long)got);
+}
+
+/**
+ * row_load_start_descriptors - A pipe made before the start is read; one made after is refused.
+ * @label: the row; @hide: play a system whose pipes have no identity.
+ *
+ * What goes wrong if the guard breaks: a name such as /proc/self/fd/9 or
+ * /dev/fd/9 that leads to a pipe the editor made for a child or a server is
+ * read, and the bytes meant for the other end are taken.  The guard goes by
+ * the descriptor number, so it holds where every pipe has device 0 and number
+ * 0 too (NetBSD, OpenBSD), which the hook plays here.
+ */
+static void row_load_start_descriptors(const char *label, int hide)
+{
+ int before[2], after[2];
+ char name[64], text[64];
+ LoadGot g;
+
+ test_watchdog_case(label, CELL_SECS);
+ if (hide)
+  setenv(LOAD_HOOK_ENV, LOAD_HIDE_HOOK, 1);
+ if (make_pipe_with_text(before) != 0)
+  return;
+ wpe_read_note_start();
+ if (make_pipe_with_text(after) != 0)
+  return;
+ snprintf(name, sizeof name, "/dev/fd/%d", after[0]);
+ load_take(name, &g);
+ check_load_refused(label, &g, WPE_READ_NOT_A_FILE, 0, S_IFIFO, 0);
+ chk_int("a pipe made after the start is left open", descriptor_is_open(after[0]), 1);
+ snprintf(name, sizeof name, "/proc/self/fd/%d", after[0]);
+ load_take(name, &g);
+ check_load_refused(label, &g, WPE_READ_NOT_A_FILE, 0, S_IFIFO, 0);
+ snprintf(name, sizeof name, "/dev/fd/%d", before[0]);
+ load_take(name, &g);
+ check_load_pipe(label, &g);
+ chk_int("the pipe made before the start comes back as itself", g.fd, before[0]);
+ (void)drain_pipe_text(g.fd, text, sizeof text);
+ chk_str("what the pipe held", text, LOAD_PIPE_TEXT);
+ load_release(&g);
+ row_load_taken_is_bad_descriptor(before[0]);
+ close(after[0]);
+ close(after[1]);
+ close(before[1]);
+ unsetenv(LOAD_HOOK_ENV);
+}
+
+/**
+ * row_load_replaced_descriptor - A number reopened on another pipe after the start is refused.
+ *
+ * A started pipe that has an identity is also compared when asked, so a
+ * number the editor closed and something else took is not read.
+ */
+static void row_load_replaced_descriptor(void)
+{
+ int started[2], other[2];
+ char name[64];
+ LoadGot g;
+
+ test_watchdog_case("load replaced descriptor", CELL_SECS);
+ if (make_pipe_with_text(started) != 0 || make_pipe_with_text(other) != 0)
+  return;
+ wpe_read_note_start();
+ if (dup2(other[0], started[0]) < 0)
+  return;
+ snprintf(name, sizeof name, "/dev/fd/%d", started[0]);
+ load_take(name, &g);
+ check_load_refused("load: a number another pipe took", &g, WPE_READ_NOT_A_FILE, 0, S_IFIFO, 0);
+ close(started[0]);
+ close(started[1]);
+ close(other[0]);
+ close(other[1]);
+}
+
+/**
+ * row_load_write_only_pipe - A pipe's write end is refused and nothing is closed.
+ *
+ * `xwpe /dev/fd/1 | cat` must not lose its output, so a descriptor open for
+ * writing only is a bad descriptor and stays as it was.
+ */
+static void row_load_write_only_pipe(void)
+{
+ int ends[2];
+ char name[64];
+ LoadGot g;
+
+ test_watchdog_case("load write-only pipe", CELL_SECS);
+ if (make_pipe_with_text(ends) != 0)
+  return;
+ wpe_read_note_start();
+ snprintf(name, sizeof name, "/dev/fd/%d", ends[1]);
+ load_take(name, &g);
+ check_load_refused("load: the write end of a pipe", &g, WPE_READ_REFUSED_BY_SYSTEM, EBADF, 0, 0);
+ chk_int("the write end is still open", descriptor_is_open(ends[1]), 1);
+ close(ends[0]);
+ close(ends[1]);
+}
+
+/**
+ * row_load_low_descriptor - Descriptor 0, 1 or 2 is refilled with /dev/null once taken.
+ * @n: the number.
+ *
+ * What goes wrong if the refill breaks: the next open of the editor gets the
+ * number that standard error or output still writes to, and later lines land
+ * in that file.  The stand-in for the number is a regular file, read as any
+ * file; the number must then be the null device, and the original restored.
+ */
+static void row_load_low_descriptor(int n)
+{
+ struct stat now, null;
+ char name[64];
+ int saved, file, still_null;
+ LoadGot g;
+
+ test_watchdog_case("load low descriptor", CELL_SECS);
+ saved = dup(n);
+ file = open(obj_path[OB_REG], O_RDONLY);
+ if (saved < 0 || file < 0 || dup2(file, n) < 0)
+ {
+  test_dir_fail("FAIL: setup low descriptor %d: %s\n", n, strerror(errno));
+  return;
+ }
+ close(file);
+ wpe_read_note_start();
+ if (n == 0)
+  snprintf(name, sizeof name, "/dev/stdin");
+ else
+  snprintf(name, sizeof name, "/dev/fd/%d", n);
+ load_take(name, &g);
+ still_null = fstat(n, &now) == 0 && stat("/dev/null", &null) == 0 &&
+              S_ISCHR(now.st_mode) && now.st_rdev == null.st_rdev;
+ dup2(saved, n);
+ close(saved);
+ check_load_stream("load: a low descriptor holding a file", &g, LEN_REG, 1);
+ chk_int("a taken low descriptor is the null device", still_null, 1);
+}
+
+/**
+ * row_load_system_refuses_a_name - A descriptor name the system does not serve is refused with its reason.
+ *
+ * FreeBSD has no /dev/fd/3 and NetBSD will not open it: the name is refused
+ * with the open's own reason and the descriptor is not taken, so asking again
+ * where the system serves it works.
+ */
+static void row_load_system_refuses_a_name(void)
+{
+ int ends[2];
+ char name[64], said[WPE_PATH_REFUSED_MAX], want[WPE_PATH_REFUSED_MAX];
+ LoadGot g;
+
+ test_watchdog_case("load system refuses", CELL_SECS);
+ if (make_pipe_with_text(ends) != 0)
+  return;
+ wpe_read_note_start();
+ snprintf(name, sizeof name, "/dev/fd/%d", ends[0]);
+ snprintf(fail_at, sizeof fail_at, "%s", name);
+ fail_with = ENOENT;
+ load_take(name, &g);
+ check_load_refused("load: the system does not serve the name", &g, WPE_READ_REFUSED_BY_SYSTEM, ENOENT, 0, 0);
+ chk_int("the unserved name is a missing one", wpe_read_outcome_missing(&g.o), 1);
+ (void)wpe_read_say(said, sizeof said, "file", name, &g.o);
+ snprintf(want, sizeof want, "File not found: %s.", name);
+ chk_str("the sentence is the system's", said, want);
+ load_take(name, &g);
+ check_load_pipe("load: asked again where the system serves it", &g);
+ load_release(&g);
+ close(ends[1]);
+}
+
+/**
+ * row_load_stdin_kept - /dev/stdin is the kept descriptor once the backend moved the data.
+ *
+ * The terminal backend makes descriptor 0 the keyboard's terminal and keeps
+ * the data apart.  The stand-in for the terminal here is the null device.
+ */
+static void row_load_stdin_kept(void)
+{
+ int ends[2], saved, quiet, kept;
+ struct stat now, null;
+ LoadGot g;
+ int null_stays;
+
+ test_watchdog_case("load stdin kept", CELL_SECS);
+ if (make_pipe_with_text(ends) != 0)
+  return;
+ saved = dup(0);
+ if (saved < 0 || dup2(ends[0], 0) < 0)
+  return;
+ wpe_read_note_start();
+ kept = fcntl(0, F_DUPFD_CLOEXEC, 3);
+ quiet = open("/dev/null", O_RDWR);
+ if (kept < 0 || quiet < 0 || dup2(quiet, 0) < 0)
+ {
+  dup2(saved, 0);
+  return;
+ }
+ close(quiet);
+ wpe_read_stdin_kept(kept);
+ load_take("/dev/stdin", &g);
+ null_stays = fstat(0, &now) == 0 && stat("/dev/null", &null) == 0 && S_ISCHR(now.st_mode) &&
+              now.st_rdev == null.st_rdev;
+ dup2(saved, 0);
+ close(saved);
+ check_load_pipe("load: /dev/stdin after the data was kept apart", &g);
+ chk_int("the kept descriptor is the one taken", g.fd, kept);
+ chk_int("descriptor 0 stays the terminal's", null_stays, 1);
+ load_release(&g);
+ close(ends[0]);
+ close(ends[1]);
+}
+
+/**
+ * row_load_names_stdin - Which names mean the standard input.
+ */
+static void row_load_names_stdin(void)
+{
+ test_watchdog_case("load names stdin", CELL_SECS);
+ chk_int("/dev/stdin", wpe_read_names_stdin("/dev/stdin"), 1);
+ chk_int("/dev/fd/0", wpe_read_names_stdin("/dev/fd/0"), 1);
+ chk_int("/proc/self/fd/0", wpe_read_names_stdin("/proc/self/fd/0"), 1);
+ chk_int("/dev/fd/3", wpe_read_names_stdin("/dev/fd/3"), 0);
+ chk_int("/dev/fd/", wpe_read_names_stdin("/dev/fd/"), 0);
+ chk_int("/dev/fd/0x", wpe_read_names_stdin("/dev/fd/0x"), 0);
+ chk_int("/dev/stdin/", wpe_read_names_stdin("/dev/stdin/"), 0);
+ chk_int("a plain name", wpe_read_names_stdin("notes.txt"), 0);
+}
+
+/**
+ * row_load_own_fifo - A FIFO the editor made is refused; another in the same folder is read.
+ *
+ * The debugger's FIFOs sit on a file system like a user's.  The table is
+ * keyed by path and judged by what the path leads to when asked, because
+ * the debugger makes them again at every start.
+ */
+static void row_load_own_fifo(void)
+{
+ char own[TEST_DIR_PATH_SIZE], plain[TEST_DIR_PATH_SIZE], via[TEST_DIR_PATH_SIZE];
+ LoadGot g;
+
+ test_watchdog_case("load own fifo", CELL_SECS);
+ (void)test_path_join(own, sizeof own, dir, "own_fifo");
+ (void)test_path_join(plain, sizeof plain, dir, "plain_fifo");
+ (void)test_path_join(via, sizeof via, dir, "own_link");
+ if (mkfifo(own, 0600) != 0 || mkfifo(plain, 0600) != 0 || symlink("own_fifo", via) != 0)
+ {
+  test_dir_fail("FAIL: setup own fifo: %s\n", strerror(errno));
+  return;
+ }
+ wpe_read_note_start();
+ wpe_read_note_own_fifo(own);
+ wpe_read_note_own_fifo(own);
+ load_take(own, &g);
+ check_load_refused("load: a FIFO the editor made", &g, WPE_READ_NOT_A_FILE, 0, S_IFIFO, 0);
+ load_take(via, &g);
+ check_load_refused("load: a link to a FIFO the editor made", &g, WPE_READ_NOT_A_FILE, 0, S_IFIFO, 0);
+ load_take(plain, &g);
+ check_load_pipe("load: another FIFO in the same folder", &g);
+ load_release(&g);
+ (void)remove(own);
+ if (mkfifo(own, 0600) != 0)
+  return;
+ load_take(own, &g);
+ check_load_refused("load: the FIFO made again at the same path", &g, WPE_READ_NOT_A_FILE, 0, S_IFIFO, 0);
+}
+
+/**
+ * row_load_pipe_by_a_name - A name that leads to an unnamed pipe is refused, also when it is swapped in.
+ *
+ * A link to /proc/self/fd/N of a pipe the program made reads the bytes meant
+ * for the other end.  The guard runs on the object held, so a name that was
+ * a regular file at the look and became such a link before the open is
+ * caught there too.
+ */
+static void row_load_pipe_by_a_name(void)
+{
+ int ends[2];
+ char target[64], plain[TEST_DIR_PATH_SIZE], link_path[TEST_DIR_PATH_SIZE];
+ LoadGot g;
+
+ test_watchdog_case("load pipe by a name", CELL_SECS);
+ if (make_pipe_with_text(ends) != 0)
+  return;
+ snprintf(target, sizeof target, "/proc/self/fd/%d", ends[0]);
+ (void)test_path_join(link_path, sizeof link_path, dir, "pipe_link");
+ if (symlink(target, link_path) != 0)
+ {
+  test_dir_fail("FAIL: setup pipe link: %s\n", strerror(errno));
+  return;
+ }
+ load_take(link_path, &g);
+ check_load_refused("load: a link to an unnamed pipe", &g, WPE_READ_NOT_A_FILE, 0, S_IFIFO, 0);
+ (void)test_path_join(plain, sizeof plain, dir, "swap_plain");
+ if (make_other_file("swap_plain", "plain\n") != 0)
+  return;
+ (void)remove(link_path);
+ if (symlink(target, link_path) != 0)
+  return;
+ snprintf(swap_at, sizeof swap_at, "%s", plain);
+ snprintf(swap_from, sizeof swap_from, "%s", link_path);
+ load_take(plain, &g);
+ check_load_refused("load: a name swapped for a link to an unnamed pipe", &g, WPE_READ_NOT_A_FILE, 0, S_IFIFO, 0);
+ chk_int("the pipe behind the link keeps its bytes", (int)drain_pipe_text(ends[0], target, sizeof target), LOAD_PIPE_LEN);
+ close(ends[0]);
+ close(ends[1]);
+}
+
+/**
+ * row_load_late_regular_file - A file the editor opened after the start is no start descriptor.
+ *
+ * What the user gets: /dev/fd/N of a file the editor holds for itself says
+ * what the system says of a closed descriptor, not that it is "not a regular
+ * file", and the descriptor is left alone.
+ */
+static void row_load_late_regular_file(void)
+{
+ char name[64];
+ int fd;
+ LoadGot g;
+
+ test_watchdog_case("load late regular file", CELL_SECS);
+ wpe_read_note_start();
+ fd = open(obj_path[OB_REG], O_RDONLY);
+ if (fd < 0)
+  return;
+ snprintf(name, sizeof name, "/dev/fd/%d", fd);
+ load_take(name, &g);
+ check_load_refused("load: a file opened after the start", &g, WPE_READ_REFUSED_BY_SYSTEM, EBADF, 0, 0);
+ chk_int("the late file is left open", descriptor_is_open(fd), 1);
+ close(fd);
+}
+
+/**
+ * row_hook_hides_pipe_identity - The no-identity hook still makes a pipe anonymous.
+ *
+ * The rows that play NetBSD and OpenBSD mean nothing if the hook stops
+ * working, so this asserts it: a pipe has an identity, and under the hook none.
+ */
+static void row_hook_hides_pipe_identity(void)
+{
+ int ends[2];
+ struct stat st;
+ WpeSeenIdent id;
+
+ test_watchdog_case("hook hides pipe identity", CELL_SECS);
+ if (pipe(ends) != 0 || fstat(ends[0], &st) != 0)
+  return;
+ wpe_seen_ident_of(&st, &id);
+ chk_int("a pipe has an identity", wpe_seen_ident_known(&id), 1);
+ setenv(LOAD_HOOK_ENV, LOAD_HIDE_HOOK, 1);
+ wpe_seen_ident_of(&st, &id);
+ chk_int("a pipe under the hook has none", wpe_seen_ident_known(&id), 0);
+ unsetenv(LOAD_HOOK_ENV);
+ close(ends[0]);
+ close(ends[1]);
+}
+
+/**
+ * row_load_by_name_under_hook - Under the hook an unnamed pipe by a link is refused, a named FIFO read.
+ *
+ * Where every pipe has device 0, the unnamed pipe is told from a FIFO on a
+ * file system by its device, which the probe learned.
+ */
+static void row_load_by_name_under_hook(void)
+{
+ int ends[2];
+ char target[64], link_path[TEST_DIR_PATH_SIZE], plain[TEST_DIR_PATH_SIZE];
+ LoadGot g;
+
+ test_watchdog_case("load by name under hook", CELL_SECS);
+ setenv(LOAD_HOOK_ENV, LOAD_HIDE_HOOK, 1);
+ wpe_read_note_start();
+ if (make_pipe_with_text(ends) != 0)
+  return;
+ snprintf(target, sizeof target, "/proc/self/fd/%d", ends[0]);
+ (void)test_path_join(link_path, sizeof link_path, dir, "hook_pipe_link");
+ (void)test_path_join(plain, sizeof plain, dir, "hook_fifo");
+ if (symlink(target, link_path) != 0 || mkfifo(plain, 0600) != 0)
+  return;
+ load_take(link_path, &g);
+ check_load_refused("load under hook: a link to an unnamed pipe", &g, WPE_READ_NOT_A_FILE, 0, S_IFIFO, 0);
+ load_take(plain, &g);
+ check_load_pipe("load under hook: a FIFO on a file system", &g);
+ load_release(&g);
+ unsetenv(LOAD_HOOK_ENV);
+ close(ends[0]);
+ close(ends[1]);
+}
+
+/**
+ * run_load_rows - The load face beside its matrix.
+ */
+static void run_load_rows(void)
+{
+ run_load_matrix();
+ row_load_start_descriptors("load start descriptors", 0);
+ row_load_start_descriptors("load start descriptors, no pipe identity", 1);
+ row_load_replaced_descriptor();
+ row_load_write_only_pipe();
+ row_load_low_descriptor(0);
+ row_load_low_descriptor(1);
+ row_load_low_descriptor(2);
+ row_load_system_refuses_a_name();
+ row_load_stdin_kept();
+ row_load_names_stdin();
+ row_load_own_fifo();
+ row_load_pipe_by_a_name();
+ row_load_late_regular_file();
+ row_hook_hides_pipe_identity();
+ row_load_by_name_under_hook();
+}
+
 /**
  * remove_entry - nftw's callback: remove one entry of the test folder.
  */
@@ -1319,6 +2054,7 @@ int main(void)
  row_folder_entry_is_not_followed();
  row_sentences();
  row_terminal_by_descriptor();
+ run_load_rows();
  test_watchdog_disarm();
  remove_test_folder();
  before_failures = fails + test_dir_failures;

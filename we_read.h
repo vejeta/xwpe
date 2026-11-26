@@ -43,7 +43,7 @@ typedef enum {
 
 /** What may be under the name.  A caller that names nothing gets FILE. */
 #define WPE_READ_KIND_FILE 0x1u   /* a regular file */
-#define WPE_READ_KIND_PIPE 0x2u   /* a FIFO: handed back still non-blocking (the pipe load only) */
+#define WPE_READ_KIND_PIPE 0x2u   /* a FIFO: handed back still non-blocking (named only in this owner, by wpe_read_load_open) */
 
 /** What happens to a file larger than the bound. */
 typedef enum {
@@ -166,7 +166,12 @@ typedef struct {
  time_t   mtime;       /* for the header check, which compared a second stat by name */
  mode_t   mode;        /* its st_mode */
  uid_t    uid;         /* its owner, for a store that is believed only when it is the user's */
+ int      stream;      /* with a load: the text has no name to write back to (a pipe, or a descriptor the editor was started with) */
 } WpeReadOutcome;
+
+/** How many descriptor numbers wpe_read_note_start looks at: 0 to this minus 1.
+    A descriptor name above it is refused. */
+#define WPE_READ_STARTED_MAX 256
 
 /* The descriptor face: judged, no longer non-blocking (a pipe asked for by
    kind stays non-blocking).  For a reader with its own loop: the copy, the
@@ -187,6 +192,37 @@ WPE_READ_RESULT int wpe_read_name_ok(const char *path, const WpeReadAsk *ask, Wp
    holds a second pointer to release: the bytes themselves, or on a system
    with no memory stream call a temporary file that goes with the stream. */
 WPE_READ_RESULT FILE *wpe_read_stream_open(const char *path, const WpeReadAsk *ask, WpeReadOutcome *o);
+
+/* The load face, for File > Open and the command line: the one place that
+   asks for a pipe.  Exactly one of *@fp and *@fd is set on success: *@fp for a
+   regular file (by name, or on a descriptor the editor was started with), with
+   no bound; *@fd for a pipe, non-blocking and closed on exec, for an event
+   loop's reader.  The caller owns what it gets and nothing else in the editor
+   refers to it.  The names /dev/stdin, /dev/fd/N and /proc/self/fd/N mean the
+   descriptor N the editor was started with, on every system; any other name
+   is opened without waiting, and a FIFO is taken only when it has a name on a
+   file system and the editor did not make it.  A refusal has its kind in @o,
+   as the other faces; on success @o->stream tells that the text has no name
+   to write back to. */
+WPE_READ_RESULT int wpe_read_load_open(const char *path, const char *what,
+                                       FILE **fp, int *fd, WpeReadOutcome *o);
+
+/* First in main, before anything opens a descriptor: which descriptor numbers
+   (0 to WPE_READ_STARTED_MAX - 1) the editor was started with, and the device
+   an unnamed pipe carries on this system. */
+void wpe_read_note_start(void);
+
+/* A FIFO the editor made by name (the debugger's): never read as a file.  Its
+   one caller makes the FIFO and then notes it; a path noted twice is one. */
+void wpe_read_note_own_fifo(const char *path);
+
+/* The terminal backend moved the data of descriptor 0 to @fd, and made 0 the
+   terminal.  /dev/stdin then means @fd. */
+void wpe_read_stdin_kept(int fd);
+
+/* Does this name mean the standard input the editor was started with
+   (/dev/stdin, /dev/fd/0, /proc/self/fd/0)?  Returns 1 or 0. */
+int wpe_read_names_stdin(const char *path);
 
 /* The text face: the whole file as malloc'd bytes, NUL-ended; @len is the
    count and the bytes may hold NUL.  NULL on a refusal. */

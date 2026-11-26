@@ -25,6 +25,36 @@
 #define READ_FLAGS_BASE (O_RDONLY | O_NONBLOCK | O_NOCTTY | O_CLOEXEC)
 #define READ_CHUNK      ((size_t)65536)   /* what one read asks for */
 
+/* The load face (wpe_read_load_open). */
+#define READ_SPELLING_STDIN         "/dev/stdin"
+#define READ_SPELLING_DEV_FD        "/dev/fd/"
+#define READ_SPELLING_PROC_FD       "/proc/self/fd/"
+#define READ_NULL_DEVICE            "/dev/null"
+#define READ_LOW_DESCRIPTORS        3        /* 0, 1 and 2: the standard ones stay occupied */
+#define READ_NO_NUMBER              (-1)     /* a name that is no descriptor spelling */
+#define READ_HUGE_NUMBER            1000000  /* a spelled number no descriptor can have */
+#define READ_NUMBER_DIGITS_MAX      9
+
+/**
+ * ReadStarted - What the editor knows of one descriptor number it was started with.
+ * @was_open: the number was open when the editor started.
+ * @taken: the reader moved it, so it is no longer the start descriptor.
+ * @ident: its device and number (unknown for a NetBSD or OpenBSD pipe, which
+ * has neither, so no identity is asked of such a pipe).
+ */
+typedef struct {
+ int   was_open;
+ int   taken;
+ WpeSeenIdent ident;
+} ReadStarted;
+
+static ReadStarted read_started[WPE_READ_STARTED_MAX];
+static int         read_kept_fd = -1;      /* the data of descriptor 0, moved off it by the terminal backend */
+static int         read_probe_known;       /* read_probe_ident is the device of an unnamed pipe here */
+static WpeSeenIdent read_probe_ident;
+static char      **read_own_fifos;         /* the FIFOs the editor made, by path */
+static size_t      read_own_count;
+
 /**
  * read_note_system - Record a refusal that came from the system.
  * @o: the outcome; @err: the errno.
@@ -91,6 +121,98 @@ static int read_bound_refuses(const WpeReadAsk *ask, const struct stat *st)
 }
 
 /**
+ * read_probe_pipe_device - Learn which device an unnamed pipe carries here.
+ *
+ * Lets the load tell a pipe that a program made (no name anywhere) from a FIFO
+ * on a file system: the first has the device of this probe, the second the
+ * file system's own.  The probe is made and closed at once.
+ */
+static void read_probe_pipe_device(void)
+{
+ int ends[2];
+ struct stat st;
+
+ read_probe_known = 0;
+ if (pipe(ends) != 0)
+  return;
+ if (fstat(ends[0], &st) == 0)
+ {
+  wpe_seen_ident_of_device(&st, &read_probe_ident);
+  read_probe_known = 1;
+ }
+ close(ends[0]);
+ close(ends[1]);
+}
+
+/**
+ * read_forget_own_fifos - Drop the table of FIFOs the editor made.
+ */
+static void read_forget_own_fifos(void)
+{
+ size_t i;
+
+ for (i = 0; i < read_own_count; i++)
+  free(read_own_fifos[i]);
+ free(read_own_fifos);
+ read_own_fifos = NULL;
+ read_own_count = 0;
+}
+
+/**
+ * read_pipe_is_unnamed - Is this FIFO one that a program made with no name?
+ * @st: the stat of the object held.
+ * Return: 1 for an unnamed pipe, and also when this system's pipe device is not known.
+ */
+static int read_pipe_is_unnamed(const struct stat *st)
+{
+ if (!read_probe_known)
+  read_probe_pipe_device();
+ if (!read_probe_known)
+  return 1;
+ return wpe_seen_ident_on_device(st, &read_probe_ident);
+}
+
+/**
+ * read_pipe_is_own - Is this FIFO one the editor made by name?
+ * @st: the stat of the object held.
+ *
+ * Each noted path is asked what it leads to now, because the debugger makes
+ * its FIFOs again at every start: the table is keyed by path and the
+ * comparison is with what that path leads to at this moment.
+ * Return: 1 when the object is one of them.
+ */
+static int read_pipe_is_own(const struct stat *st)
+{
+ struct stat own;
+ size_t i;
+
+ for (i = 0; i < read_own_count; i++)
+ {
+  if (stat(read_own_fifos[i], &own) != 0 || !S_ISFIFO(own.st_mode))
+   continue;
+  if (wpe_seen_same_now(&own, st))
+   return 1;
+ }
+ return 0;
+}
+
+/**
+ * read_named_pipe_ok - May a FIFO met by a name be read?
+ * @st: the stat of the name or of the descriptor held.
+ *
+ * Lets a user open a FIFO that has a name on a file system and keeps a
+ * pipe the editor made itself (a server's, the debugger's) out of reach of a
+ * name that leads to it, such as a link to /proc/self/fd/N.
+ * Return: 1 when it may.
+ */
+static int read_named_pipe_ok(const struct stat *st)
+{
+ if (read_pipe_is_unnamed(st))
+  return 0;
+ return !read_pipe_is_own(st);
+}
+
+/**
  * read_judge_stat - Decide from a stat whether the object may be read.
  * @ask: the ask; @st: the stat of the name or of the descriptor; @tty: the
  * descriptor is a terminal (0 for a look by name); @folder: the folder face;
@@ -106,6 +228,11 @@ static int read_judge_stat(const WpeReadAsk *ask, const struct stat *st, int tty
   return -1;
  }
  if (!read_kind_is_asked(ask, st->st_mode, folder))
+ {
+  read_note_not_a_file(o, st->st_mode, tty, folder);
+  return -1;
+ }
+ if (S_ISFIFO(st->st_mode) && !read_named_pipe_ok(st))
  {
   read_note_not_a_file(o, st->st_mode, tty, folder);
   return -1;
@@ -935,4 +1062,490 @@ char *wpe_read_say_dup(const char *what, const char *path, const WpeReadOutcome 
   return wpe_path_say_refused_dup(what, path, o->err);
  (void)wpe_read_reason(reason, sizeof reason, o);
  return wpe_path_say_refused_because_dup(what, path, reason);
+}
+
+/* ---- the load face ------------------------------------------------------- */
+
+/**
+ * read_note_started_one - Record one descriptor number as the editor started with it.
+ * @s: its slot; @st: what fstat said of it.
+ */
+static void read_note_started_one(ReadStarted *s, const struct stat *st)
+{
+ s->was_open = 1;
+ wpe_seen_ident_of(st, &s->ident);
+}
+
+/**
+ * wpe_read_note_start - Remember which descriptors the editor was started with.
+ *
+ * Called first in main, before anything opens a descriptor.  Lets a name
+ * such as /dev/fd/63 (bash's <(command)) or /dev/stdin be read when it is
+ * the data the user started the editor with, and refused when it leads to a
+ * pipe the editor itself made later (a server's, a child's): the number was
+ * not open at the start.  The 256 looks come before the probe pipe, so a
+ * start with descriptor 0 to 2 closed is not mistaken for the probe's.
+ */
+void wpe_read_note_start(void)
+{
+ struct stat st;
+ int n;
+
+ read_forget_own_fifos();
+ memset(read_started, 0, sizeof read_started);
+ read_kept_fd = -1;
+ for (n = 0; n < WPE_READ_STARTED_MAX; n++)
+ {
+  if (fstat(n, &st) == 0)
+   read_note_started_one(&read_started[n], &st);
+ }
+ read_probe_pipe_device();
+}
+
+/**
+ * wpe_read_note_own_fifo - Record a FIFO the editor made by name.
+ * @path: where it is.
+ *
+ * Lets File > Open refuse the debugger's own FIFOs, which sit on a file
+ * system like a user's but carry the editor's talk with its helper.  A path
+ * noted again is the same entry: the debugger makes its FIFOs again at every
+ * start, and a name is compared with what the path leads to when asked.
+ */
+void wpe_read_note_own_fifo(const char *path)
+{
+ char **grown;
+ char *copy;
+ size_t i;
+
+ for (i = 0; i < read_own_count; i++)
+  if (strcmp(read_own_fifos[i], path) == 0)
+   return;
+ copy = strdup(path);
+ grown = realloc(read_own_fifos, (read_own_count + 1) * sizeof *read_own_fifos);
+ if (copy == NULL || grown == NULL)
+ {
+  free(copy);
+  if (grown != NULL)
+   read_own_fifos = grown;
+  return;
+ }
+ grown[read_own_count++] = copy;
+ read_own_fifos = grown;
+}
+
+/**
+ * wpe_read_stdin_kept - The terminal backend moved the data of descriptor 0.
+ * @fd: where the data is now (a number above 2, closed on exec).
+ *
+ * Lets /dev/stdin mean the data when descriptor 0 has become the terminal
+ * the keys come from.
+ */
+void wpe_read_stdin_kept(int fd)
+{
+ read_kept_fd = fd;
+}
+
+/**
+ * read_spelling_number - The descriptor number a name spells, if it spells one.
+ * @path: the name.
+ *
+ * What the user gets: /dev/stdin, /dev/fd/N and /proc/self/fd/N mean the same
+ * descriptor on every system, whatever each system's own /dev/stdin is (a
+ * character device on the BSDs that stat cannot tell from the pipe behind it).
+ * Return: the number, READ_HUGE_NUMBER for one too long to be a descriptor, or
+ * READ_NO_NUMBER for any other name.
+ */
+static int read_spelling_number(const char *path)
+{
+ const char *digits = NULL;
+ int number = 0;
+ int count = 0;
+
+ if (strcmp(path, READ_SPELLING_STDIN) == 0)
+  return 0;
+ if (strncmp(path, READ_SPELLING_DEV_FD, strlen(READ_SPELLING_DEV_FD)) == 0)
+  digits = path + strlen(READ_SPELLING_DEV_FD);
+ else if (strncmp(path, READ_SPELLING_PROC_FD, strlen(READ_SPELLING_PROC_FD)) == 0)
+  digits = path + strlen(READ_SPELLING_PROC_FD);
+ if (digits == NULL || *digits == '\0')
+  return READ_NO_NUMBER;
+ for (; *digits != '\0'; digits++)
+ {
+  if (*digits < '0' || *digits > '9')
+   return READ_NO_NUMBER;
+  if (++count > READ_NUMBER_DIGITS_MAX)
+   return READ_HUGE_NUMBER;
+  number = number * 10 + (*digits - '0');
+ }
+ return number;
+}
+
+/**
+ * wpe_read_names_stdin - Does this name mean the standard input the editor started with?
+ * @path: the name.
+ *
+ * Lets the terminal backend know it must keep the data of descriptor 0 apart
+ * from the keys before the first key is read.
+ * Return: 1 for /dev/stdin, /dev/fd/0 and /proc/self/fd/0, else 0.
+ */
+int wpe_read_names_stdin(const char *path)
+{
+ return read_spelling_number(path) == 0;
+}
+
+/**
+ * read_source_number - The descriptor that holds the data of number @n now.
+ * @n: the number a name spelled.
+ *
+ * Descriptor 0 is the terminal's keys once the backend moved the data off it.
+ * Return: the number to look at.
+ */
+static int read_source_number(int n)
+{
+ if (n == 0 && read_kept_fd >= 0)
+  return read_kept_fd;
+ return n;
+}
+
+/**
+ * read_number_is_taken - Did the reader already take this start descriptor?
+ * @n: the number.
+ */
+static int read_number_is_taken(int n)
+{
+ return n >= 0 && n < WPE_READ_STARTED_MAX && read_started[n].was_open && read_started[n].taken;
+}
+
+/**
+ * read_started_with - Is this the descriptor the editor was started with at @n?
+ * @n: the number; @st: what fstat says of it now.
+ *
+ * The guard goes by the number: the editor closes a number it was started with
+ * only in read_adopt, which marks it taken.  Where the object had an identity
+ * at the start it is also compared now, as a second check.
+ * Return: 1 when it is.
+ */
+static int read_started_with(int n, const struct stat *st)
+{
+ const ReadStarted *s;
+ WpeSeenIdent now;
+
+ if (n < 0 || n >= WPE_READ_STARTED_MAX)
+  return 0;
+ s = &read_started[n];
+ if (!s->was_open || s->taken)
+  return 0;
+ if (!wpe_seen_ident_known(&s->ident))
+  return 1;
+ wpe_seen_ident_of(st, &now);
+ return wpe_seen_ident_same(&now, &s->ident);
+}
+
+/**
+ * read_stat_is_tty - Is the object a terminal?
+ * @fd: the descriptor; @st: its stat.
+ */
+static int read_stat_is_tty(int fd, const struct stat *st)
+{
+ return S_ISCHR(st->st_mode) && isatty(fd);
+}
+
+/**
+ * read_start_refuses - Refuse a descriptor number the editor was not started with.
+ * @n: the number a name spelled; @src: the descriptor that holds it now; @o: the outcome.
+ *
+ * What the user gets: a name that leads to a pipe the editor made later is
+ * refused as "a pipe", and a descriptor already read once says what the system
+ * says of a closed one, whatever holds the number now.
+ * Return: 0 when it is a start descriptor not taken, else -1 with the outcome set.
+ */
+static int read_start_refuses(int n, int src, WpeReadOutcome *o)
+{
+ struct stat st;
+
+ if (read_number_is_taken(n))
+ {
+  read_note_system(o, EBADF);
+  return -1;
+ }
+ if (fstat(src, &st) != 0)
+ {
+  read_note_system(o, errno);
+  return -1;
+ }
+ if (read_started_with(n, &st))
+  return 0;
+ if (S_ISREG(st.st_mode))
+ {
+  read_note_system(o, EBADF);   /* a file the editor opened itself: not its start data */
+  return -1;
+ }
+ read_note_not_a_file(o, st.st_mode, read_stat_is_tty(src, &st), 0);
+ return -1;
+}
+
+/**
+ * read_judge_own - Judge a descriptor the editor was started with.
+ * @src: the descriptor; @o: the outcome.
+ *
+ * A terminal, a device, a socket and a folder are refused with their kind, and
+ * a descriptor open for writing only is refused as a bad descriptor, so
+ * `xwpe /dev/fd/1 | cat` does not lose its output.  A pipe and a regular file
+ * go on.
+ * Return: 0, or -1 with the outcome set.
+ */
+static int read_judge_own(int src, WpeReadOutcome *o)
+{
+ struct stat st;
+ int flags;
+
+ if (fstat(src, &st) != 0)
+ {
+  read_note_system(o, errno);
+  return -1;
+ }
+ if (!S_ISREG(st.st_mode) && !S_ISFIFO(st.st_mode))
+ {
+  read_note_not_a_file(o, st.st_mode, read_stat_is_tty(src, &st), 0);
+  return -1;
+ }
+ flags = fcntl(src, F_GETFL);
+ if (flags < 0 || (flags & O_ACCMODE) == O_WRONLY)
+ {
+  read_note_system(o, EBADF);
+  return -1;
+ }
+ read_note_stat(o, &st);
+ return 0;
+}
+
+/**
+ * read_system_serves - Does the system serve this descriptor name?
+ * @path: the spelling; @ask: the ask; @o: the outcome.
+ *
+ * For a number of 3 and above only, and only once the number passed as one the
+ * editor was started with: FreeBSD has no /dev/fd/3 and NetBSD refuses to open
+ * it, so there the name is refused with the open's own reason, as cat does.
+ * The one open is closed at once and nothing more is tried.
+ * Return: 0, or -1 with the outcome set.
+ */
+static int read_system_serves(const char *path, const WpeReadAsk *ask, WpeReadOutcome *o)
+{
+ int probe = read_target_open_fd(path, ask, 0);
+
+ if (probe < 0)
+ {
+  read_note_system(o, errno);
+  return -1;
+ }
+ close(probe);
+ return 0;
+}
+
+/**
+ * read_dup_above_low - Copy a descriptor to a number above 2, closed on exec.
+ * @n: the descriptor.
+ * Return: the copy, or -1 with errno set.
+ */
+static int read_dup_above_low(int n)
+{
+#ifdef F_DUPFD_CLOEXEC
+ return fcntl(n, F_DUPFD_CLOEXEC, READ_LOW_DESCRIPTORS);
+#else
+ int held = fcntl(n, F_DUPFD, READ_LOW_DESCRIPTORS);
+
+ if (held >= 0)
+  (void)fcntl(held, F_SETFD, FD_CLOEXEC);
+ return held;
+#endif
+}
+
+/**
+ * read_move_above_low - Take descriptor 0, 1 or 2 away from the editor's start.
+ * @n: the number; @ask: the ask; @o: the outcome.
+ *
+ * What the user gets: no child of the editor inherits the pipe, and no later
+ * open takes a number that standard error or output still writes to, because
+ * /dev/null takes the place of the descriptor moved.
+ * Return: the descriptor now holding the data (above 2), or -1 with the outcome set.
+ */
+static int read_move_above_low(int n, const WpeReadAsk *ask, WpeReadOutcome *o)
+{
+ int held = read_dup_above_low(n);
+ int quiet;
+ int err;
+
+ if (held < 0)
+ {
+  read_note_system(o, errno);
+  return -1;
+ }
+ quiet = read_target_open_fd(READ_NULL_DEVICE, ask, 0);
+ if (quiet < 0 || dup2(quiet, n) < 0)
+ {
+  err = errno;
+  if (quiet >= 0)
+   close(quiet);
+  close(held);
+  read_note_system(o, err);
+  return -1;
+ }
+ close(quiet);
+ return held;
+}
+
+/**
+ * read_deliver_pipe - Hand a pipe to the caller, non-blocking and closed on exec.
+ * @held: the descriptor; @fd: receives it; @o: the outcome.
+ * Return: 0, or -1 with the outcome set and the descriptor closed.
+ */
+static int read_deliver_pipe(int held, int *fd, WpeReadOutcome *o)
+{
+ int flags = fcntl(held, F_GETFL);
+
+ if (flags < 0 || fcntl(held, F_SETFL, flags | O_NONBLOCK) != 0)
+ {
+  read_note_system(o, errno);
+  close(held);
+  return -1;
+ }
+ *fd = held;
+ return 0;
+}
+
+/**
+ * read_deliver - Hand what the editor was started with to the caller.
+ * @held: the descriptor; @fp, @fd: receive the stream or the descriptor; @o: the outcome.
+ *
+ * A pipe goes as a descriptor for the event loop's reader; a regular file as
+ * a stream, read as any file.
+ * Return: 0, or -1 with the outcome set and the descriptor closed.
+ */
+static int read_deliver(int held, FILE **fp, int *fd, WpeReadOutcome *o)
+{
+ (void)fcntl(held, F_SETFD, FD_CLOEXEC);
+ (void)wpe_seen_look_fd(held, &o->seen);
+ o->stream = 1;
+ if (S_ISFIFO(o->mode))
+  return read_deliver_pipe(held, fd, o);
+ *fp = read_stream_of_descriptor(held, o);
+ return *fp == NULL ? -1 : 0;
+}
+
+/**
+ * read_adopt - Make a start descriptor the caller's, moving it, never copying.
+ * @n: the number a name spelled; @src: the descriptor holding the data now;
+ * @ask: the ask; @fp, @fd: receive the stream or the descriptor; @o: the outcome.
+ *
+ * What the user gets: closing what comes back really ends a pipe for its
+ * writer, so `yes` stops when the user presses Esc.  Number 0, 1 or 2 is
+ * refilled with /dev/null in every backend.  When the terminal backend kept
+ * the data of descriptor 0 apart, that kept descriptor is the one taken.
+ * Return: 0, or -1 with the outcome set.
+ */
+static int read_adopt(int n, int src, const WpeReadAsk *ask, FILE **fp, int *fd,
+                      WpeReadOutcome *o)
+{
+ int held = src;
+
+ if (src == n && n < READ_LOW_DESCRIPTORS)
+ {
+  held = read_move_above_low(n, ask, o);
+  if (held < 0)
+   return -1;
+ }
+ if (n < WPE_READ_STARTED_MAX)
+  read_started[n].taken = 1;
+ if (src != n)
+  read_kept_fd = -1;
+ return read_deliver(held, fp, fd, o);
+}
+
+/**
+ * read_load_own - Load the descriptor a name spells.
+ * @path: the spelling; @ask: the ask; @n: the number it spells; @fp, @fd: receive
+ * the stream or the descriptor; @o: the outcome.
+ *
+ * The object is asked of descriptor @n by fstat, never of the name, because a
+ * system's /dev/stdin may be a character device that is not the pipe behind it.
+ * Return: 0, or -1 with the outcome set.
+ */
+static int read_load_own(const char *path, const WpeReadAsk *ask, int n, FILE **fp,
+                         int *fd, WpeReadOutcome *o)
+{
+ int src = read_source_number(n);
+
+ if (read_start_refuses(n, src, o) != 0)
+  return -1;
+ if (read_judge_own(src, o) != 0)
+  return -1;
+ if (n >= READ_LOW_DESCRIPTORS && read_system_serves(path, ask, o) != 0)
+  return -1;
+ return read_adopt(n, src, ask, fp, fd, o);
+}
+
+/**
+ * read_load_named - Load a name that is no descriptor spelling.
+ * @ask: the ask; @path: the name; @fp, @fd: receive the stream or the descriptor; @o: the outcome.
+ *
+ * A regular file comes back as a stream, as any file; a FIFO with a name on a
+ * file system comes back as a non-blocking descriptor.
+ * Return: 0, or -1 with the outcome set.
+ */
+static int read_load_named(const WpeReadAsk *ask, const char *path, FILE **fp, int *fd,
+                           WpeReadOutcome *o)
+{
+ int held = read_begin(path, ask, 0, o);
+
+ if (held < 0)
+  return -1;
+ if (S_ISFIFO(o->mode))
+ {
+  o->stream = 1;
+  *fd = held;
+  return 0;
+ }
+ *fp = read_stream_of_descriptor(held, o);
+ return *fp == NULL ? -1 : 0;
+}
+
+/**
+ * read_load_ask - What the user's own open of a file asks for.
+ * @what: the noun of the refusal sentence.
+ *
+ * No bound, a link followed, and a FIFO accepted besides a regular file.
+ * Return: the ask.
+ */
+static WpeReadAsk read_load_ask(const char *what)
+{
+ WpeReadAsk ask = WPE_READ_ASK_LOAD(what);
+
+ ask.kinds |= WPE_READ_KIND_PIPE;
+ return ask;
+}
+
+/**
+ * wpe_read_load_open - Open what the user named on File > Open or the command line.
+ * @path: the name; @what: the noun of a refusal; @fp, @fd: receive the stream
+ * or the descriptor; @o: the outcome.
+ *
+ * Lets the user open a regular file, a FIFO, bash's <(command), /dev/stdin or
+ * /dev/fd/N without the editor ever waiting for a writer or taking the keys
+ * from a terminal.  Exactly one of *@fp and *@fd is set on success.  A socket,
+ * a device, a terminal and a folder are refused with their kind.
+ * Return: 0, or -1 with the outcome set.
+ */
+int wpe_read_load_open(const char *path, const char *what, FILE **fp, int *fd,
+                       WpeReadOutcome *o)
+{
+ WpeReadAsk ask = read_load_ask(what);
+ int number = read_spelling_number(path);
+
+ memset(o, 0, sizeof *o);
+ o->why = WPE_READ_DONE;
+ *fp = NULL;
+ *fd = -1;
+ if (number != READ_NO_NUMBER)
+  return read_load_own(path, &ask, number, fp, fd, o);
+ return read_load_named(&ask, path, fp, fd, o);
 }

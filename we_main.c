@@ -17,6 +17,7 @@
 #include "we_ai.h"      /* AI assistant config init (guarded by WPE_AI) */
 #include "we_features.h"
 #include "we_lineend.h"
+#include "we_read.h"
 #include "we_testdump.h"
 #include "we_startplan.h"   /* where the debugger's own folders are made */
 
@@ -415,6 +416,10 @@ int main(int argc, char **argv)
  char *tp;
  const char *bad_keys = NULL;
  int new_profile;
+
+ /* Which descriptors the editor was started with, before anything opens one:
+    a name such as /dev/fd/63 is the user's data only if its number is here. */
+ wpe_read_note_start();
 
  /* Non-interactive query flags, answered before any terminal/UI setup so they
     work with no controlling tty -- in scripts, pipes and packaging test suites.
