@@ -338,6 +338,8 @@ we_prog.c:e_run_text_serve_key:* 1 compose
 we_term.c:e_find_key:* 74 compose
 we_term.c:e_t_csi_paste_marker:* 2 compose
 we_term.c:e_t_decode_key:* 11 compose
+we_term.c:e_t_drop_one_byte:* 1 compose
+we_term.c:e_t_type_ahead_drop:* 2 compose
 we_term.c:e_t_getch:* 11 compose
 we_term.c:e_t_key_is_mouse_event:* 2 compose
 we_term.c:e_t_mouse_wheel_key:* 2 compose

@@ -1451,6 +1451,49 @@ static void e_paint_box_opens(void)
 }
 
 /**
+ * e_paint_settle_and_drop - A question is about to be read: the display
+ * lets the editor's output finish and drops what was typed before it.
+ * @pasted: set when pasted text was among it.
+ *
+ * The one caller of the display's e_u_type_ahead_drop, so no other code
+ * can throw away a user's keys.
+ * Return: how many key and button presses were dropped.
+ */
+static int e_paint_settle_and_drop(int *pasted)
+{
+ if (!e_u_type_ahead_drop)
+  return(0);
+ return((*e_u_type_ahead_drop)(pasted));
+}
+
+/**
+ * e_paint_paste_streaming - Is a terminal paste still arriving?
+ *
+ * Only the terminal says so; X11 and Wayland deliver a paste as keys.
+ */
+static int e_paint_paste_streaming(void)
+{
+ extern int g_bracketed_paste;
+
+ return(g_bracketed_paste);
+}
+
+/**
+ * e_paint_question_begins - The keys read now answer the question @what: a
+ * test's dump says so.
+ */
+static void e_paint_question_begins(const char *what)
+{
+ wpe_test_ctx_enter(WPE_TEST_CTX_QUESTION, what);
+}
+
+/** e_paint_question_ends - The question's read is over. */
+static void e_paint_question_ends(void)
+{
+ wpe_test_ctx_leave();
+}
+
+/**
  * e_paint_say_lost - Name on the status row an update that was not shown
  * because too many waited behind a box, so the user knows to look again.
  */
@@ -1486,7 +1529,8 @@ void e_paint_desk_ready(void)
 {
  static const WpePaintDesk desk = {
   e_paint_text_on_top, e_paint_read_key, e_paint_box_opens, e_paint_say_lost,
-  e_paint_take_key, e_paint_top_count
+  e_paint_take_key, e_paint_top_count, e_paint_settle_and_drop,
+  e_paint_paste_streaming, e_paint_question_begins, e_paint_question_ends
  };
 
  wpe_paint_desk_set(&desk);

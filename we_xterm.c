@@ -51,6 +51,7 @@ void e_setlastpic(PIC *pic);
 int e_make_xr_rahmen(int xa, int ya, int xe, int ye, int sw);
 int e_x_kbhit(void);
 static int e_x_key_take(int want);
+static int e_x_type_ahead_drop(int *pasted);
 
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
@@ -165,6 +166,7 @@ int WpeDllInit(int *argc, char **argv)
  e_clip_os_set = e_clip_x_set;   /* ^C / ^Ins -> PRIMARY + CLIPBOARD (UTF-8) */
  e_clip_os_get = e_clip_x_get;   /* ^V <- the OS selection when another app owns it */
  e_u_key_take = e_x_key_take;
+ e_u_type_ahead_drop = e_x_type_ahead_drop;
  e_u_palette_rgb = e_x_palette_rgb;
  e_u_serve_display = e_x_serve_display;
  e_u_repaint_resized = e_x_repaint_resized;
@@ -1875,20 +1877,50 @@ static int e_x_key_press_code(XKeyEvent *ev)
  return(0);
 }
 
-/* Discard any typed-ahead keys / clicks (X11): the analogue of e_t_flush_input,
-   used after a long synchronous operation so events queued during the freeze are
-   not replayed afterwards as unintended actions. */
-void e_x_flush_input(void)
+/* The ordinary mouse buttons; the wheel's are 4 and 5 and are not presses. */
+#define E_X_LAST_BUTTON 3
+
+/**
+ * e_x_press_counts - Is a queued press something the user pressed?
+ * @report: a KeyPress or a ButtonPress.
+ *
+ * A modifier alone and a wheel step are not counted among the keys a
+ * question ignored.
+ * Return: non-zero for a key with a code or an ordinary button.
+ */
+static int e_x_press_counts(XEvent *report)
+{
+ if (report->type == ButtonPress)
+  return report->xbutton.button >= 1 && report->xbutton.button <= E_X_LAST_BUTTON;
+ return e_x_key_press_code(&report->xkey) > 0;
+}
+
+/**
+ * e_x_type_ahead_drop - X11's part of a question: drop what was typed before it.
+ * @pasted: not set; a paste on X11 is a key the question drops.
+ *
+ * What the user gets: keys and clicks typed before a question was shown are
+ * not its answer.  The editor's output is sent and the server has answered
+ * it (XSync) before the queue is read, so everything the user did before
+ * that moment is in the queue.  It takes presses only, as e_x_kbhit does:
+ * releases, focus and expose events stay for their readers.
+ * Return: how many key and button presses went.
+ */
+static int e_x_type_ahead_drop(int *pasted)
 {
  XEvent report;
+ int dropped = 0;
 
+ (void)pasted;
  if (!e_x_conn_usable("the event queue"))
-  return;
- while (XCheckMaskEvent(WpeXInfo.display,
-                        KeyPressMask | ButtonPressMask | ButtonReleaseMask,
+  return 0;
+ e_refresh();
+ XSync(WpeXInfo.display, False);
+ while (XCheckMaskEvent(WpeXInfo.display, KeyPressMask | ButtonPressMask,
                         &report))
-  ;
+  dropped += e_x_press_counts(&report);
  e_x_pending_utf8_len = e_x_pending_utf8_pos = 0;
+ return dropped;
 }
 
 /* Note a window pixel size the live-resize hook reports: clear the sub-cell

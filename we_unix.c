@@ -137,6 +137,7 @@ int (*e_u_d_switch_out)(int sw);
 int (*e_u_switch_screen)(int sw);
 int (*e_u_deb_out)(struct FNST *f);
 int (*e_u_key_take)(int want);
+int (*e_u_type_ahead_drop)(int *pasted);
 int (*e_u_palette_rgb)(int idx, unsigned char rgb[3]) = e_palette_rgb_unknown;
 void (*e_u_serve_display)(void) = WpeNullFunction;
 void (*e_u_focus_editor)(void) = WpeNullFunction;

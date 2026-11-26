@@ -201,6 +201,7 @@ static int s_t_pending_click_release = 0;
 int e_t_initscr(void);
 int e_t_kbhit(void);
 static int e_t_key_take(int want);
+static int e_t_type_ahead_drop(int *pasted);
 int e_t_d_switch_out(int sw);
 int e_t_switch_screen(int sw);
 int e_t_deb_out(FENSTER *f);
@@ -322,6 +323,7 @@ int WpeDllInit(int *argc, char **argv)
  e_u_switch_screen = e_t_switch_screen;
  e_u_deb_out = e_t_deb_out;
  e_u_key_take = e_t_key_take;
+ e_u_type_ahead_drop = e_t_type_ahead_drop;
  e_u_s_sys_end = e_s_sys_end;
  e_u_s_sys_ini = e_s_sys_ini;
  e_u_refresh = e_t_refresh;
@@ -2041,22 +2043,95 @@ static int e_t_utf8_assemble(int first)
  return cp;
 }
 
-/* Discard any typed-ahead keys (ncurses).  Called after a long synchronous
-   operation (e.g. the first language-server start, which can freeze the UI for
-   seconds while a JVM boots): keys mashed during the freeze would otherwise be
-   replayed afterwards and fire unintended actions. */
-void e_t_flush_input(void)
+static int e_t_read_key(int mode);
+static int e_t_decode_key(int c, int mode);
+static int e_t_read_raw(int wait_ms);
+static int e_t_take_unread_key(int *key);
+static void e_t_unread_key(int key);
+
+/**
+ * e_t_press_counts - Did the key just decoded come from a key or button press?
+ * @key: what e_t_decode_key returned; @held_before: g_mouse_buttons before it.
+ *
+ * Motion, a release, a wheel step, a resize and a code of the editor's own
+ * are not something the user pressed, so they are not counted among the keys
+ * a question ignored.
+ * Return: non-zero for a press.
+ */
+static int e_t_press_counts(int key, int held_before)
 {
- /* The type-ahead sits in the KERNEL tty queue: ncurses never getch()'d during
-    the freeze, so flushinp() (which only clears ncurses' own FIFO) does not see
-    it and the bytes get read later as stray commands (an F9 there fired a
-    spurious Make).  Discard the kernel queue first, then ncurses' buffer. */
- tcflush(0, TCIFLUSH);
- flushinp();
- e_t_unread_valid = 0;
- { const char *tp = getenv("XWPE_UI_TRACE");   /* XWPE_UI_TRACE: diag only */
-   if (tp) { FILE *tf = fopen(tp, "a");
-     if (tf) { fprintf(tf, "e_t_flush_input RAN\n"); fclose(tf); } } }
+ extern int g_mouse_buttons;
+
+ if (key == -1)
+  return (g_mouse_buttons & ~held_before) != 0;
+ if (key == 0)
+  return 0;
+ if (wpe_key_is_synthetic(key) && !e_input_was_char)
+  return 0;
+ return 1;
+}
+
+/**
+ * e_t_drop_one_byte - Take one byte off the keyboard and drop what it is.
+ * @c: what e_t_read_raw returned; @pasted: set when it belongs to a paste.
+ * @resized: set when it was a resize, which is kept.
+ * Return: 1 when the byte was a press that went, else 0.
+ */
+static int e_t_drop_one_byte(int c, int *pasted, int *resized)
+{
+ extern int g_mouse_buttons;
+ int held_before = g_mouse_buttons;
+ int key = e_t_decode_key(c, E_T_READ_NO_WAIT);
+
+ if (key == WPE_RESIZE && !e_input_was_char)
+ {
+  *resized = 1;
+  return 0;
+ }
+ if (g_bracketed_paste)
+ {
+  *pasted = 1;
+  return 0;
+ }
+ return e_t_press_counts(key, held_before);
+}
+
+/**
+ * e_t_type_ahead_drop - The terminal's part of a question: drop what was
+ * typed before it.
+ * @pasted: set when pasted text was among it.
+ *
+ * What the user gets: keys typed before a question was shown are not its
+ * answer.  The editor's output is drained first, so the question is on the
+ * terminal; then every byte the terminal has already given is read through
+ * the one decoder, so a paste's end marker, a resize and a half-sent escape
+ * sequence are handled as they are everywhere else and nothing is cut in
+ * two.  A resize is applied and handed back for the next read.  What is
+ * still on its way (in the terminal emulator, on a network link) is typed
+ * after the question as far as the editor can tell, and is an answer.
+ * Return: how many key and button presses went.
+ */
+static int e_t_type_ahead_drop(int *pasted)
+{
+ int dropped = 0, resized = 0, key, c;
+
+ e_refresh();
+ tcdrain(STDOUT_FILENO);
+ if (e_t_take_unread_key(&key))
+ {
+  if (key == WPE_RESIZE && !e_input_was_char)
+   resized = 1;
+  else
+   dropped++;
+ }
+ while ((c = e_t_read_raw(INPUT_NO_WAIT_MS)) != E_T_NO_BYTE)
+  dropped += e_t_drop_one_byte(c, pasted, &resized);
+ if (resized)
+ {
+  e_input_was_char = 0;      /* the resize is the editor's own code */
+  e_t_unread_key(WPE_RESIZE);
+ }
+ return dropped;
 }
 
 /* e_t_getch_poll maintains the shared e_input_was_char signal (declared in
@@ -2858,6 +2933,13 @@ static int e_t_read_key(int mode)
 {
  (void)mode;
  return(e_t_getch());
+}
+
+/* The termcap console has no decoder to drop through: nothing is dropped. */
+static int e_t_type_ahead_drop(int *pasted)
+{
+ (void)pasted;
+ return(0);
 }
 
 static int e_t_input_is_gone(void)

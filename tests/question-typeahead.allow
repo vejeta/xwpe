@@ -1,0 +1,56 @@
+# The readers of keys that are not questions, for tests/check-question-typeahead.sh.
+#
+# A question reads its answer with wpe_paint_ask_key and keeps nothing typed
+# before it.  Every other function that calls wpe_paint_modal_getch, or a
+# wrapper that reads for others (wpe_box_getch, e_opt_getch, e_opt_read_key),
+# is listed here with its kind and the reason it is that kind.  A function
+# that is not listed fails the build: its author says which kind it is.
+#
+#   keeps|function|reason    a place to type or move; the user asked for it
+#                            with a key and its keys are text or movement, so
+#                            it keeps what was typed ahead
+#   wraps|function|reason    reads for others; the callers are what is
+#                            classified
+#   pending|function|reason  a question that a later pass moves onto the
+#                            owner; the line is deleted then
+#
+# A line that matches nothing is stale and fails.
+
+# ---- menus, prefixes, the File Manager, pickers -----------------------------
+keeps|WpeMenuGetch|the menu bar and its dropdowns: arrows and letters
+keeps|e_prefix_read_letter|the letter after Ctrl-K, Ctrl-O or Ctrl-Q, typed with the prefix
+keeps|e_file_window|the File Manager: its keys are movement and type-ahead into the name
+keeps|e_ai_pick|the assistant's pickers (models, scopes): the Down typed before one opens moves it
+keeps|ai_mp_run|the model picker
+keeps|e_dif_colors|a colour picker
+keeps|e_frb_x_menue|a colour picker
+keeps|e_frb_t_menue|a colour picker
+keeps|e_opt_sec_box|a submenu list: letters and arrows
+keeps|e_size_move|Size/Move of a window frame: arrows
+keeps|e_opt_move|the keyboard mover of a dialog box: arrows
+keeps|e_opt_wait_esc_or_resize|a dialog the screen cannot show: every key is swallowed until Esc or a resize
+keeps|e_vterm_user_screen|the User Screen: any key returns, asked for with Alt-F5
+
+# ---- line editors -------------------------------------------------------------
+keeps|e_schreib_zif|a one-line field: text is typed in it
+keeps|e_schreib_leiste_lines|a line editor: text is typed in it, and Ctrl-O T inside it
+
+# ---- the debugger and language server prefixes and peeks ------------------------
+keeps|e_deb_inp|the letter after the Ctrl-G prefix
+keeps|e_lsp_cursor_popup|a peek that changes nothing; . and , walk the diagnostics
+keeps|e_lsp_hover_show|the letter after Alt-Q in a peek
+keeps|e_lsp_signature_show|the letter after Alt-Q in a peek
+keeps|e_lsp_ui_jump_diag|the letter after Alt-Q in a peek
+keeps|e_lsp_ui_key|the Alt-Q prefix letter
+
+# ---- readers for others ---------------------------------------------------------
+wraps|wpe_box_getch|reads a key for a box and refolds a resize; its callers are classified
+wraps|e_opt_getch|reads a dialog's key and leaves a paste alone; its callers are classified
+wraps|e_opt_read_key|reads the focused widget's key; its callers are classified
+
+# ---- questions the message engine's pass moves onto the owner -----------------------
+pending|e_error_read_answer|the answer of e_error (an error box): a question
+pending|e_opt_box_wait_key|the key of About, System Info and the other any-key boxes
+pending|e_opt_run_checkbox|the dialog engine, which also runs as a message or error box
+pending|e_opt_run_radio|the dialog engine, which also runs as a message or error box
+pending|e_opt_run_button|the dialog engine, which also runs as a message or error box

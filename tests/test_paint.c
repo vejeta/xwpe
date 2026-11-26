@@ -92,9 +92,45 @@ static int desk_take_key(int want)
 	return 0;
 }
 
+/* A question's settle: how many presses the display says it dropped, whether
+   it saw a paste, and how often it was asked.  The paste the display reports
+   as still streaming lasts for streaming_reads more reads of the key. */
+#define DROPPED_BY_THE_DISPLAY 3
+static int settles = 0;
+static int paste_in_the_drop = 0;
+static int streaming_reads = 0;
+static int question_begun = 0;
+static int question_ended = 0;
+static char question_name[LOG_MAX];
+
+static int desk_settle_and_drop(int *pasted)
+{
+	settles++;
+	*pasted = paste_in_the_drop;
+	return DROPPED_BY_THE_DISPLAY;
+}
+
+static int desk_paste_streaming(void)
+{
+	if (streaming_reads > 0) {
+		streaming_reads--;
+		return 1;
+	}
+	return 0;
+}
+
+static void desk_question_begins(const char *what)
+{
+	question_begun++;
+	snprintf(question_name, sizeof question_name, "%s", what);
+}
+
+static void desk_question_ends(void) { question_ended++; }
+
 static const WpePaintDesk desk = {
 	desk_text_on_top, desk_read_key, desk_box_opens, desk_say_lost,
-	desk_take_key, desk_top_count
+	desk_take_key, desk_top_count, desk_settle_and_drop,
+	desk_paste_streaming, desk_question_begins, desk_question_ends
 };
 
 /* ---- the paints: each appends its letter to the log ---- */
@@ -608,6 +644,90 @@ static void test_a_timer_is_a_callback_too(void)
 	chk_str("a timer's paint is drawn when it returns", order, "C");
 }
 
+/* A question drops what was typed before it, once, on its first read. */
+static void test_a_question_settles_once_and_counts_what_it_dropped(void)
+{
+	WpeAsk ask = WPE_ASK("review");
+	WpeAsk next = WPE_ASK("approve");
+	int key;
+
+	reset();
+	settles = 0;
+	key = wpe_paint_ask_key(&ask);
+	chk("the answer is the key read after the settle", key, KEY_ON_THE_BOX);
+	chk("the first read settles", settles, 1);
+	chk("the display's count is the question's", wpe_paint_ask_dropped(&ask),
+	    DROPPED_BY_THE_DISPLAY);
+	wpe_paint_ask_key(&ask);
+	wpe_paint_ask_key(&ask);
+	chk("later reads of the same question settle nothing", settles, 1);
+	wpe_paint_ask_key(&next);
+	chk("a new question settles again", settles, 2);
+}
+
+/* A place to type or move never settles: its type-ahead is kept. */
+static void test_a_plain_box_read_drops_nothing(void)
+{
+	reset();
+	settles = 0;
+	wpe_paint_modal_getch();
+	wpe_paint_modal_getch();
+	chk("a menu's or a field's key read does not settle", settles, 0);
+}
+
+/* The settle can be asked for before the first read, so the question can
+   say what it ignored while it waits; the read then does not settle again. */
+static void test_the_settle_can_come_before_the_read(void)
+{
+	WpeAsk ask = WPE_ASK("review");
+
+	reset();
+	settles = 0;
+	chk("the settle says what went", wpe_paint_ask_settle(&ask),
+	    DROPPED_BY_THE_DISPLAY);
+	wpe_paint_ask_key(&ask);
+	chk("the read after it settles nothing more", settles, 1);
+}
+
+/* Pasted text is never an answer: the read goes on until the paste has
+   ended, and the question knows a paste was ignored. */
+static void test_a_paste_is_never_the_answer(void)
+{
+	WpeAsk ask = WPE_ASK("review");
+
+	reset();
+	settles = 0;
+	streaming_reads = 3;
+	wpe_paint_ask_key(&ask);
+	chk("the question read on while the paste streamed", streaming_reads, 0);
+	chk("it knows it ignored a paste", wpe_paint_ask_pasted(&ask), 1);
+}
+
+static void test_a_paste_in_the_drop_is_remembered(void)
+{
+	WpeAsk ask = WPE_ASK("review");
+
+	reset();
+	paste_in_the_drop = 1;
+	wpe_paint_ask_settle(&ask);
+	paste_in_the_drop = 0;
+	chk("the display's paste is the question's", wpe_paint_ask_pasted(&ask), 1);
+}
+
+/* The test's dump learns which question the keys answer, around each read. */
+static void test_a_question_names_itself_around_its_read(void)
+{
+	WpeAsk ask = WPE_ASK("diff-box");
+
+	reset();
+	question_begun = question_ended = 0;
+	wpe_paint_ask_key(&ask);
+	chk("the desk was told the question began", question_begun, 1);
+	chk("the desk was told the question ended", question_ended, 1);
+	chk_str("it was told which question", question_name, "diff-box");
+	chk("the question gives the screen back", wpe_paint_modal_depth(), 0);
+}
+
 int main(void)
 {
 	test_nothing_is_idle_before_the_desk_is_known();
@@ -636,6 +756,12 @@ int main(void)
 	test_what_a_callback_kept_is_drawn_when_it_returns_idle();
 	test_only_the_outermost_callback_draws_what_was_kept();
 	test_a_timer_is_a_callback_too();
+	test_a_question_settles_once_and_counts_what_it_dropped();
+	test_a_plain_box_read_drops_nothing();
+	test_the_settle_can_come_before_the_read();
+	test_a_paste_is_never_the_answer();
+	test_a_paste_in_the_drop_is_remembered();
+	test_a_question_names_itself_around_its_read();
 	if (fails) {
 		printf("test_paint: %d failure(s)\n", fails);
 		return 1;

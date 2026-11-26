@@ -21,6 +21,7 @@ we_fl_unix.c|r22a:WpeGrepFile|1|P3c|every entry of a folder
 # not a name a user, a folder, a model or a server chose
 we_debug.c|r22a:e_d_compile_show_errors|1|keep|a file the editor wrote in its own 0700 temporary folder
 we_debug.c|r22a:e_d_debugger_pid_read|1|keep|a file the editor wrote in its own 0700 temporary folder
+we_ai.c|r22b:wpe_ai_mock_hold|1|keep|the test backend's hold: it waits on the fifo a test named in its own environment, for the test to open it for writing; no user, model or server chooses that name
 we_debug.c|r22b:e_d_script_connect|4|keep|the debugger's own pipes and terminal, in the editor's 0700 temporary folder
 we_debug.c|r22c:e_find_supported_jdk|1|keep|lists fixed system folders for a JDK and opens no file
 we_debug.o|r22k:glob|1|keep|e_find_supported_jdk

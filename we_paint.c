@@ -248,6 +248,120 @@ int wpe_paint_modal_getch(void)
 }
 
 /**
+ * wpe_paint_ask_trace_drop - Write what a question's first read ignored.
+ * @ask: the question.
+ *
+ * A line a test reads: which question, how many presses it dropped, whether
+ * pasted text was among them, and whether a paint was still waiting (the
+ * question's words may not have been on the screen yet).
+ */
+static void wpe_paint_ask_trace_drop(const WpeAsk *ask)
+{
+ if (paint_queued > 0)
+  wpe_paint_trace("ask %s paint pending", wpe_paint_label(ask->what));
+ wpe_paint_trace("ask %s dropped=%d pasted=%d", wpe_paint_label(ask->what),
+                 ask->dropped, ask->pasted);
+}
+
+/**
+ * wpe_paint_ask_settle - Let the display finish, and drop what was typed
+ * before the question.
+ * @ask: the question, its words already drawn.
+ *
+ * What the user gets: a key or click typed before the question was shown is
+ * never its answer, so typing the next request while a run ends cannot
+ * revert the run.  The drop happens once per question; a caller that wants
+ * to say what was ignored calls this first, says it, then reads.
+ * Return: how many key and button presses were ignored.
+ */
+int wpe_paint_ask_settle(WpeAsk *ask)
+{
+ int pasted = 0;
+
+ if (ask->shown)
+  return ask->dropped;
+ ask->shown = 1;
+ if (paint_desk_known && paint_desk.settle_and_drop)
+  ask->dropped = paint_desk.settle_and_drop(&pasted);
+ ask->pasted = pasted;
+ wpe_paint_ask_trace_drop(ask);
+ return ask->dropped;
+}
+
+/**
+ * wpe_paint_ask_stream - Is pasted text still arriving?
+ */
+static int wpe_paint_ask_stream(void)
+{
+ if (!paint_desk_known || !paint_desk.paste_streaming)
+  return 0;
+ return paint_desk.paste_streaming();
+}
+
+/**
+ * wpe_paint_ask_key - Read the user's answer to a question on the screen.
+ * @ask: the question; its words are already drawn.
+ *
+ * The only way a question reads its answer.  What was typed before the
+ * question was shown is dropped on the first read, and pasted text is never
+ * an answer: the read goes on until the paste has ended.  A place to type
+ * or move (a menu, a picker, a field) reads with wpe_paint_modal_getch and
+ * keeps its type-ahead.
+ * Return: the key, as wpe_paint_modal_getch gives it.
+ */
+int wpe_paint_ask_key(WpeAsk *ask)
+{
+ int c, streaming;
+
+ wpe_paint_ask_settle(ask);
+ if (paint_desk_known && paint_desk.question_begins)
+  paint_desk.question_begins(wpe_paint_label(ask->what));
+ do
+ {
+  c = wpe_paint_modal_getch();
+  streaming = wpe_paint_ask_stream();
+  if (streaming)
+   ask->pasted = 1;
+ }
+ while (streaming);
+ if (paint_desk_known && paint_desk.question_ends)
+  paint_desk.question_ends();
+ return c;
+}
+
+/**
+ * wpe_paint_ask_dropped - How many presses the question ignored.
+ * @ask: the question, after its first read or settle.
+ *
+ * For the line that tells the user what was ignored.
+ */
+int wpe_paint_ask_dropped(const WpeAsk *ask)
+{
+ return ask->dropped;
+}
+
+/**
+ * wpe_paint_ask_shown - Has the question settled already?
+ * @ask: the question.
+ *
+ * For a caller that says what was ignored once, however many times it comes
+ * round (a box that paints again after a resize or a scroll).
+ */
+int wpe_paint_ask_shown(const WpeAsk *ask)
+{
+ return ask->shown;
+}
+
+/**
+ * wpe_paint_ask_pasted - Did the question ignore pasted text?
+ * @ask: the question, after its first read or settle.
+ */
+int wpe_paint_ask_pasted(const WpeAsk *ask)
+{
+ return ask->pasted;
+}
+
+/**
  * wpe_paint_take_key - Take a key the user has typed, without waiting.
  * @want: WPE_PAINT_ANY_KEY for the first key, whatever it is; or one key
  * (WPE_ESC), taken only if it was typed, every other key left where it is.

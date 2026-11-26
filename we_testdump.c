@@ -183,6 +183,11 @@ static void dump_ctx_name(DumpBuf *d, int waiting)
    dump_printf(d, "menu");
   else if (c->kind == WPE_TEST_CTX_MESSAGE)
    dump_printf(d, "message");
+  else if (c->kind == WPE_TEST_CTX_QUESTION)
+  {
+   dump_printf(d, "question:");
+   dump_string(d, c->title);
+  }
   else
   {
    dump_printf(d, "dialog:");

@@ -775,6 +775,27 @@ static void ai_pane_attn(FENSTER *f, const char *text)
 }
 
 /**
+ * ai_pane_ask_settle - The question is on the screen: drop what was typed
+ * before it and say so in the pane.
+ * @f: the window the pane belongs to; @ask: the question.
+ *
+ * What the user gets: a key or pasted text typed before the question was
+ * shown is not its answer, and one pane line says it was ignored; nothing is
+ * said when nothing was typed.  It is said once per question, however often
+ * a box paints again.
+ */
+static void ai_pane_ask_settle(FENSTER *f, WpeAsk *ask)
+{
+ if (wpe_paint_ask_shown(ask))
+  return;
+ wpe_paint_ask_settle(ask);
+ if (wpe_paint_ask_dropped(ask) > 0)
+  ai_pane(f, WPE_AI_IGNORED_KEYS_LINE, AI_ROLE_MACHINERY, 0);
+ if (wpe_paint_ask_pasted(ask))
+  ai_pane(f, WPE_AI_IGNORED_PASTE_LINE, AI_ROLE_MACHINERY, 0);
+}
+
+/**
  * ai_pane_multiline - Append a possibly multi-line string as `role`, one pane
  * line per '\n', so a multi-line answer or summary is shown in full instead
  * of only its first line.
@@ -6647,6 +6668,7 @@ static int ai_diff_box_show(FENSTER *f, char **rt, int *ra, int nrows,
  ai_box_frame fr;
  int width = ai_box_content_width(rt, nrows, title, hint);
  int top = 0, ret = WPE_ESC;
+ WpeAsk ask = WPE_ASK("diff-box");
  wpe_paint_modal_enter("the review box");   /* async paints wait for it */
 
  ai_box_frame_fit(f, ya_pref, nrows, width, &fr);
@@ -6655,7 +6677,8 @@ static int ai_diff_box_show(FENSTER *f, char **rt, int *ra, int nrows,
   PIC *pic = ai_box_paint(f, &fr, rt, ra, nrows, top, title, hint);
   int c, decision;
   if (!pic) break;
-  c = wpe_paint_modal_getch();
+  ai_pane_ask_settle(f, &ask);          /* the box is drawn: what was typed before is no answer */
+  c = wpe_paint_ask_key(&ask);
   if (c == WPE_RESIZE) {
    /* The terminal layer has relaid the windows and repainted the desk under
       the box, so the background saved at the old size is dropped, not put
@@ -7286,6 +7309,7 @@ static int ai_diff_confirm_write(FENSTER *f, const char *path,
  nrows = rows.n;
  snprintf(title, sizeof title, " Write %.48s ? ", path ? path : "file");
  snprintf(hint, sizeof hint, " y allow  n / Esc deny  PgUp/PgDn ");
+ wpe_ai_mock_hold("write");
  key = ai_diff_box_show(f, rt, ra, nrows, title, hint, "YN", -1);
  allow = ai_write_box_allows(warn, key);
  for (k = 0; k < nrows; k++) free(rt[k]);
@@ -10936,10 +10960,13 @@ static int ai_menu_dispatch_key(FENSTER *f, int key);
  * itself is plain text, so the panel does not look like an error.  Pressing a
  * menu shortcut (a Ask, e Edit, g Agent, s Settings...) counts as the
  * go-ahead AND is reported back so the caller runs that action straight away --
- * so the very first "Alt-G a" reaches Ask instead of appearing to hang.
+ * so the very first "Alt-G a" reaches Ask instead of appearing to hang.  That
+ * holds when the letter is pressed after the notice is shown: a letter typed
+ * before it is dropped, as every key typed ahead of a question is.
  */
 static int ai_consent_gate(FENSTER *f, int *pass_key)
 {
+ WpeAsk ask = WPE_ASK("consent");
  if (pass_key) *pass_key = 0;
  if (ai_consent_given()) return 1;
  ai_pane(f, "AI assistant -- first use.  It runs LOCALLY by default (Ollama on",
@@ -10952,8 +10979,9 @@ static int ai_consent_gate(FENSTER *f, int *pass_key)
  ai_pane(f, "After enabling, Alt-G opens a menu: a Ask  e Edit  g Agent  s Settings.",
          AI_ROLE_MACHINERY, 1);
  ai_pane_attn(f, "Enter / y = enable and continue      n / Esc = not now");
+ ai_pane_ask_settle(f, &ask);
  for (;;) {
-  int c = wpe_paint_modal_getch();
+  int c = wpe_paint_ask_key(&ask);
   if (c == WPE_ESC || e_toupper(c) == 'N') {
    ai_pane(f, "[AI] not enabled - press Alt-G again when you want it", AI_ROLE_MACHINERY, 0);
    return 0;
@@ -11170,13 +11198,14 @@ static void ai_agent_note_auto_approved(FENSTER *f, const char *what)
  * ai_agent_read_yes_no - Wait for the user's answer to an approval question.
  *
  * y or Enter allows; n or Esc denies; any other key is ignored, so a stray
- * keystroke cannot approve a command by accident.
+ * keystroke cannot approve a command by accident.  Only a key pressed after
+ * the question was shown counts: what was typed before it is dropped.
  * Return: 1 to allow, 0 to deny.
  */
-static int ai_agent_read_yes_no(void)
+static int ai_agent_read_yes_no(WpeAsk *ask)
 {
  for (;;) {
-  int c = wpe_paint_modal_getch();
+  int c = wpe_paint_ask_key(ask);
   if (c == WPE_ESC || e_toupper(c) == 'N') return 0;
   if (e_toupper(c) == 'Y' || c == WPE_CR || c == WPE_WR) return 1;
  }
@@ -11194,14 +11223,17 @@ static int ai_agent_read_yes_no(void)
 static int ai_agent_approve(FENSTER *f, const char *what, int is_run)
 {
  char line[AI_AGENT_PANE_LINE_MAX];
+ WpeAsk ask = WPE_ASK("approve");
  if (ai_dial_passes(is_run)) {
   ai_agent_note_auto_approved(f, what);
   return 1;
  }
+ wpe_ai_mock_hold("approve");
  snprintf(line, sizeof line, "APPROVE?  %s", what);
  ai_pane_attn(f, line);
  ai_pane_attn(f, "y = allow    n / Esc = deny");
- return ai_agent_read_yes_no();
+ ai_pane_ask_settle(f, &ask);
+ return ai_agent_read_yes_no(&ask);
 }
 
 /* Room for a pane line that quotes a whole tool argument after its words. */
@@ -13628,6 +13660,7 @@ static char *ai_chat_refuse_tool(FENSTER *f, const char *tool, const char *lead,
 static int ai_web_notice(FENSTER *f)
 {
  char host[AI_URL_HOST_MAX], line[AI_CHAT_NOTE_MAX];
+ WpeAsk ask = WPE_ASK("web-notice");
  ai_url_host(ai_search_url_template(), host, sizeof host);
  ai_pane(f, "Web access -- first use.  To answer this the assistant wants to search the",
          AI_ROLE_MACHINERY, 1);
@@ -13641,8 +13674,9 @@ static int ai_web_notice(FENSTER *f)
  ai_pane(f, "and every page is shown here, and Options > AI turns this off again.",
          AI_ROLE_MACHINERY, 1);
  ai_pane_attn(f, AI_WEB_NOTICE_KEYS);
+ ai_pane_ask_settle(f, &ask);
  for (;;) {
-  int c = wpe_paint_modal_getch();
+  int c = wpe_paint_ask_key(&ask);
   if (c == WPE_ESC || e_toupper(c) == 'N') {
    ai_pane(f, AI_WEB_NOT_NOW_LINE, AI_ROLE_MACHINERY, 0);
    wpe_ai_trace("chat web access not enabled");
@@ -14155,8 +14189,10 @@ static void ai_agent_finish(ai_async_op *op)
  wpe_ai_session_save(op->f);
  /* A run that took a checkpoint is reviewed whatever the dial reads now: the
     dial may have been lowered again after the writes it allowed. */
- if (op->checkpointed && wpe_ai_checkpoint_active())
+ if (op->checkpointed && wpe_ai_checkpoint_active()) {
+  wpe_ai_mock_hold("review");
   wpe_ai_changeset_review(op->f);
+ }
  ai_agent_offer_follow_up(op);
 }
 

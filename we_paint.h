@@ -47,7 +47,25 @@ typedef struct
  void (*say_lost)(const char *what);   /* a refused paint, said on the status row */
  int  (*take_key)(int want);        /* the display's key taken without waiting */
  unsigned long (*top_count)(void);  /* how often what is on top has changed */
+ /* A question is read: the display lets what the editor sent finish, then
+    drops every key and click typed before (set *pasted when a paste went)
+    and says how many presses went. */
+ int  (*settle_and_drop)(int *pasted);
+ int  (*paste_streaming)(void);     /* a paste is still arriving */
+ void (*question_begins)(const char *what);   /* the keys read now answer @what */
+ void (*question_ends)(void);
 } WpePaintDesk;
+
+/* One question put to the user; a new question is a new WpeAsk, made with
+   WPE_ASK.  Only we_paint.c writes its fields. */
+typedef struct
+{
+ const char *what;     /* names it in the trace and in a test's dump */
+ int shown;            /* its first read has settled and dropped */
+ int dropped;          /* key and button presses it ignored */
+ int pasted;           /* pasted text it ignored */
+} WpeAsk;
+#define WPE_ASK(what) { (what), 0, 0, 0 }
 
 void wpe_paint_desk_set(const WpePaintDesk *desk);
 
@@ -62,6 +80,11 @@ void wpe_paint_modal_enter(const char *what);
 void wpe_paint_modal_leave(void);
 int  wpe_paint_modal_depth(void);
 int  wpe_paint_modal_getch(void);
+int  wpe_paint_ask_settle(WpeAsk *ask);
+int  wpe_paint_ask_key(WpeAsk *ask);
+int  wpe_paint_ask_dropped(const WpeAsk *ask);
+int  wpe_paint_ask_pasted(const WpeAsk *ask);
+int  wpe_paint_ask_shown(const WpeAsk *ask);
 int  wpe_paint_take_key(int want);
 
 WpePaintVerdict wpe_paint_request(WpePaintReplay fn, void *data,

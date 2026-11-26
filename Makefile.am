@@ -1102,6 +1102,14 @@ TESTS += test_read_owner
 # the pass that moves it into a plan; the counts may only fall.
 TESTS += tests/check-start-plan.sh
 
+# One owner of which keys may answer a question: wpe_paint_ask_key
+# (we_paint.c) drops what was typed before the question was shown, through the
+# display's one table entry.  tests/check-question-typeahead.sh fails when a
+# reader of keys is not classified in tests/question-typeahead.allow, when the
+# drop is called around its desk entry or a terminal flush comes back, when a
+# question is built or measured by hand, or when a display lacks the entry.
+TESTS += tests/check-question-typeahead.sh
+
 # One owner of how the assistant quotes a word for /bin/sh:
 # wpe_ai_shell_quote.  tests/check-shell-quote.sh fails when a string in
 # we_ai*.c holds a hand-written '%s'.
@@ -1607,6 +1615,8 @@ EXTRA_DIST = \
   tests/check-interpose.sh \
   tests/check-start-plan.sh \
   tests/start-plan.allow \
+  tests/check-question-typeahead.sh \
+  tests/question-typeahead.allow \
   tests/check-shell-quote.sh \
   tests/check-ci-versions.sh \
   tests/ci-versions.txt \

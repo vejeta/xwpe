@@ -2522,6 +2522,71 @@ static int ai_mock_delay_ms(void)
  return ms;
 }
 
+/* How long a held editor waits before it asks again whether it must end. */
+#define AI_MOCK_HOLD_SLICE_MS 100
+
+/**
+ * ai_mock_hold_wait - Wait for the test's writer on the hold's fifo, unless
+ * the editor is asked to end.
+ * @fd: the fifo, opened for reading without blocking.
+ *
+ * A held editor still ends on SIGTERM or SIGHUP, as the assistant's other
+ * synchronous waits do: it asks wpe_end_requested on every slice.  A signal
+ * that interrupts the poll (a resize) is no end and the wait goes on.  The
+ * writer's open and close is what releases the hold.
+ */
+static void ai_mock_hold_wait(int fd)
+{
+ struct pollfd p;
+ int rc;
+
+ p.fd = fd;
+ p.events = POLLIN;
+ do {
+  if (wpe_end_requested())
+   return;
+  rc = poll(&p, 1, AI_MOCK_HOLD_SLICE_MS);
+ } while (rc == 0 || (rc < 0 && errno == EINTR));
+}
+
+/**
+ * wpe_ai_mock_hold - Let a test hold the editor at a named point.
+ * @point: where the editor is ("review", "approve", "write"), a string
+ * literal: it is kept to hold each point once.
+ *
+ * With the test backend, and $XWPE_AI_MOCK_HOLD set to "<point>=<fifo>",
+ * the editor stops once at that point until the test opens the named fifo
+ * for writing.  The trace says "mock hold <point>" first, so the test knows
+ * the editor is stopped and types its keys then: they are queued, not read,
+ * when the question that follows is drawn.  It is the hold that a question's
+ * type-ahead rows stand on; no row waits for a time, and the real backends
+ * never stop here.
+ */
+void wpe_ai_mock_hold(const char *point)
+{
+ static const char *done[3];                 /* the callers' literals */
+ const char *spec = getenv("XWPE_AI_MOCK_HOLD");
+ size_t plen = point ? strlen(point) : 0;
+ int fd, slot;
+
+ if (e_ai_backend != WPE_AI_MOCK || !spec || !plen)
+  return;
+ if (strncmp(spec, point, plen) != 0 || spec[plen] != '=')
+  return;
+ for (slot = 0; slot < 3 && done[slot]; slot++) {
+  if (!strcmp(done[slot], point))
+   return;                                   /* held once already */
+ }
+ if (slot < 3)
+  done[slot] = point;
+ wpe_ai_trace("mock hold %s", point);
+ fd = open(spec + plen + 1, O_RDONLY | O_NONBLOCK);
+ if (fd < 0)
+  return;
+ ai_mock_hold_wait(fd);
+ close(fd);
+}
+
 /**
  * ai_mock_reply_file - The test backend's whole HTTP response in a file.
  * @resp: the response.

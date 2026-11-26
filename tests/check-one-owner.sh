@@ -842,9 +842,12 @@ done
 # owner's bracket; the Run loop and a short command's Esc take a key
 # through the owner's one key peek, which every display answers alike.
 for loop in we_menue.o we_edit.o we_debug.o we_wind.o we_opt.o we_e_aus.o \
-            we_fl_fkt.o we_unix.o we_ai_ui.o we_ai_ws.o; do
+            we_fl_fkt.o we_unix.o we_ai_ui.o; do
   canary_import $loop wpe_paint_modal_getch "a key loop reads its keys around the owner"
 done
+# A question (the changeset review) reads its answer through the owner's
+# question reader, which drops what was typed before it was shown.
+canary_import we_ai_ws.o wpe_paint_ask_key "a question reads its answer around the owner"
 # Gone for good: the second flags, idle tests and replays the screen's owner
 # replaced, and the old key test each display answered its own way.  An
 # object that exports one again has brought back a flag or a replay of its
@@ -968,7 +971,7 @@ FILLS=$(echo fk_u_locate fk_u_cursor fk_u_putchar u_bioskey e_frb_u_menue \
   e_s_u_clr e_n_u_clr e_pr_u_col_kasten fk_mouse fk_u_grab_pointer \
   fk_u_drag_next e_u_refresh e_u_getch e_u_sys_ini e_u_sys_end \
   WpeMouseChangeShape WpeMouseRestoreShape e_u_d_switch_out \
-  e_u_switch_screen e_u_deb_out e_u_system e_u_key_take WpeDisplayEnd \
+  e_u_switch_screen e_u_deb_out e_u_system e_u_key_take e_u_type_ahead_drop WpeDisplayEnd \
   e_clip_os_set e_u_focus_editor e_u_raise_editor e_u_palette_rgb \
   e_u_serve_display e_u_repaint_resized e_clip_os_get WpeDisplayReleaseFromHandler)
 # "kind  slot  reason"

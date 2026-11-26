@@ -573,6 +573,18 @@ int   wpe_ai_checkpoint_active(void);
  * `path:line: [AI] ...` lines registered for Alt-T / Alt-V, and run the
  * review loop (a = keep all, r = revert all, f = file by file, c = commit). */
 int   wpe_ai_changeset_review(struct FNST *f);
+/* What a question says when it ignored what was typed before it.  Each
+ * sentence is also given in two halves, for the 38-column Messages window
+ * the docked pane leaves at 80 columns. */
+#define WPE_AI_IGNORED_KEYS_1   "[AI] keys typed before this"
+#define WPE_AI_IGNORED_KEYS_2   "question were ignored"
+#define WPE_AI_IGNORED_KEYS_LINE  WPE_AI_IGNORED_KEYS_1 " " WPE_AI_IGNORED_KEYS_2
+#define WPE_AI_IGNORED_PASTE_1  "[AI] pasted text ignored:"
+#define WPE_AI_IGNORED_PASTE_2  "answer the question first"
+#define WPE_AI_IGNORED_PASTE_LINE WPE_AI_IGNORED_PASTE_1 " " WPE_AI_IGNORED_PASTE_2
+/* The test backend's hold: stops the editor once at "review", "approve" or
+ * "write" until a test opens the fifo $XWPE_AI_MOCK_HOLD names for that point. */
+void  wpe_ai_mock_hold(const char *point);
 /* Before a run's first Messages row (the plan checklist, the review): empties
  * the window once per run, so Messages holds one run the way it holds one
  * compile, while a run that writes nothing leaves it as it was. */

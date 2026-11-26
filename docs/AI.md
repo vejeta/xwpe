@@ -452,7 +452,14 @@ out as "Ask each action", "Auto-accept edits" and "Auto (skip asks)"):
   (`[AI] 2 not seen (the pane says why)`), and the last line of `r` reads `ALL
   changes reverted` only when nothing was kept or left unseen; otherwise it
   counts both. PgUp, PgDn and the arrows scroll the pane while the review waits
-  for its key. Each row names the file by
+  for its key. The review is answered only by a key you press after it
+  is shown: what you typed while the run was ending (the first words of your
+  next request, say, whose `r` would have reverted the run) is ignored, and
+  Messages says so (`[AI] keys typed before this question were ignored`; for
+  pasted text, `[AI] pasted text ignored: answer the question first`). The same
+  holds for the file-by-file questions, for the approval of a command or a
+  write under *ask*, for the diff box of a write, and for the first-use notices
+  of the assistant and of web access. Each row names the file by
   its path under the workspace root and
   the first line the hunk changed, where `Alt-T` / `Alt-V` then jump; `Esc`
   keeps, at the top of the review and inside the file-by-file questions,

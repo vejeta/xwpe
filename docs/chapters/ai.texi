@@ -144,8 +144,9 @@ The very first time you open the menu, with @key{Alt-G} or with a click on the
 default, opt-in, every edit previewed and revertible with @kbd{Ctrl-U}) and
 asks you to confirm with @key{Enter} or @kbd{y} (or decline with @kbd{n} or
 @key{Esc}).  Answering it with a menu letter both accepts and runs that action,
-so a habitual @kbd{Alt-G a} still lands straight in Ask on the first use.  The
-acceptance is remembered in a marker file,
+so a habitual @kbd{Alt-G a} still lands straight in Ask on the first use, as
+long as the letter is pressed after the notice is shown: a key typed before it
+is ignored, as for every question.  The acceptance is remembered in a marker file,
 @file{$XDG_CONFIG_HOME/xwpe/ai_consented} or, with that variable unset,
 @file{~/.config/xwpe/ai_consented}; starting with @env{XWPE_AI_ENABLE} set or
 with @env{XWPE_AI_CONSENTED=1} skips the notice.  With no home folder known
@@ -1065,7 +1066,17 @@ A review prompt then offers @kbd{a} keep all, @kbd{r} revert everything back to
 the checkpoint, @kbd{f} decide file by file, and (in a git tree) @kbd{c} commit
 the change as one auditable commit.  The keys are spelled on two
 @samp{Messages} rows, so they are whole in the narrow window the docked pane
-leaves; @kbd{c} is shown only where a commit can be made.  @key{Esc} or
+leaves, under a first row that says the review is waiting
+(@samp{answer the review first:}); @kbd{c} is shown only where a commit can
+be made.  The review is answered only by a key pressed after it is shown.
+What you typed while the run was ending, such as the first words of your next
+request (an @kbd{r} among them would have reverted the run), is ignored, and
+@samp{Messages} says so (@samp{[AI] keys typed before this question were
+ignored}; for pasted text, @samp{[AI] pasted text ignored: answer the question
+first}).  Nothing is said when nothing was typed.  The file-by-file questions,
+the approval of a command or a write, the diff box of a write and the
+first-use notices of the assistant and of web access work the same way; a
+menu, a list you chose or a field keeps what you type ahead.  @key{Esc} or
 @key{Enter} at that prompt keeps everything, as @kbd{a} does: the files are
 already written, so leaving them is keeping them.  Under @kbd{f} each file
 asks @kbd{y} keep or @kbd{n} revert; @key{Esc} there keeps the files not yet

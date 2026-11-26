@@ -600,6 +600,21 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* Keys you type while the assistant finishes a run no longer answer its
+  question.  Typing the next request ("run the tests") as the run ended put
+  an `r` into the changeset review, and `r` reverts every change of the run;
+  other words picked "commit", "file by file" or "keep all" the same way, and
+  a `y` typed early allowed a command or a write.  A question that changes or
+  destroys something (the review, the file-by-file questions, the approval of
+  a command or a write, the diff box of a write, the first-use notices of the
+  assistant and of web access) is now answered only by a key pressed after it
+  is shown, on the terminal, X11 and Wayland.  What was typed before is
+  ignored, pasted text is never an answer, and the review says so in Messages
+  ("[AI] keys typed before this question were ignored", "[AI] pasted text
+  ignored: answer the question first"); it also names itself in a first row,
+  "answer the review first:".  Menus, pickers, fields and the File Manager
+  keep what you type ahead.  Rows: tests/test_question_typeahead.py and its
+  X11 and Wayland twins.
 * A pipe or a device named on File > Open, on the command line or with -pm
   ("wpe /dev/zero", "wpe <(command)", a pipe made with mkfifo) was skipped
   without a word.  It still opens no window, but a box now says why ("Cannot

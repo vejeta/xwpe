@@ -3186,17 +3186,23 @@ static int ws_commit_changeset_steps(FENSTER *f, ws_change *c, int n,
  return rc;
 }
 
+/* The review's first key row: it says the review owns the keys, so the user
+   who typed ahead sees why nothing they typed counted. */
+#define WS_REVIEW_KEYS_FIRST_ROW "   answer the review first:"
+
 /**
  * ws_show_review_keys - Print the keys the changeset review answers to.
  * @f: any window of the editor.
  *
- * Two Messages rows, so each is whole in the 38-column Messages window the
- * docked pane leaves at 80 columns; one row of them was cut before the commit
- * key.  The commit key is printed only in a git workspace, where it does
- * something: a key that does nothing is not offered.
+ * A first row says the review is waiting for its answer, then two Messages
+ * rows, so each is whole in the 38-column Messages window the docked pane
+ * leaves at 80 columns; one row of them was cut before the commit key.  The
+ * commit key is printed only in a git workspace, where it does something: a
+ * key that does nothing is not offered.
  */
 static void ws_show_review_keys(FENSTER *f)
 {
+ e_d_p_message(WS_REVIEW_KEYS_FIRST_ROW, f, 0);
  e_d_p_message("   a = keep all   r = REVERT all", f, 0);
  if (ck_mode == WS_CK_GIT) e_d_p_message("   f = file by file   c = commit", f, 0);
  else                      e_d_p_message("   f = file by file", f, 0);
@@ -3287,16 +3293,50 @@ static void ws_say_unseen(FENSTER *f, int unseen)
 }
 
 /**
+ * ws_say_ignored - Tell the user what the review ignored.
+ * @f: any window of the editor; @ask: the question, already settled.
+ *
+ * What the user gets: when keys or pasted text typed before the question
+ * were ignored, two short Messages rows each say so, whole in the 38-column
+ * window; nothing is said when nothing was typed.
+ */
+static void ws_say_ignored(FENSTER *f, const WpeAsk *ask)
+{
+ if (wpe_paint_ask_dropped(ask) > 0) {
+  e_d_p_message(WPE_AI_IGNORED_KEYS_1, f, 0);
+  e_d_p_message(WPE_AI_IGNORED_KEYS_2, f, 0);
+ }
+ if (wpe_paint_ask_pasted(ask)) {
+  e_d_p_message(WPE_AI_IGNORED_PASTE_1, f, 0);
+  e_d_p_message(WPE_AI_IGNORED_PASTE_2, f, 0);
+ }
+}
+
+/**
+ * ws_ask_settle - The review's question is on the screen: drop what was
+ * typed before it and say so.
+ * @f: any window of the editor; @ask: the question.
+ */
+static void ws_ask_settle(FENSTER *f, WpeAsk *ask)
+{
+ if (wpe_paint_ask_shown(ask))
+  return;
+ wpe_paint_ask_settle(ask);
+ ws_say_ignored(f, ask);
+}
+
+/**
  * ws_review_key - The next key of the review that is the review's own.
- * @f: any window of the editor.
+ * @f: any window of the editor; @ask: the question being answered.
  *
  * PgUp, PgDn and the arrows browse the pane, so the user can read every
  * sentence at the moment of the decision; the answer keys come back upper case.
+ * Only a key pressed after the question was shown is read.
  */
-static int ws_review_key(FENSTER *f)
+static int ws_review_key(FENSTER *f, WpeAsk *ask)
 {
  for (;;) {
-  int raw = wpe_paint_modal_getch();
+  int raw = wpe_paint_ask_key(ask);
   if (!wpe_ai_pane_browse_key(f, raw)) return e_toupper(raw);
  }
 }
@@ -3325,6 +3365,22 @@ static void ws_revert_all(FENSTER *f, ws_change *c, int n, int unseen)
 }
 
 /**
+ * ws_read_kept_file_key - The key that answers the line about a file the
+ * review leaves alone.
+ * @f: any window of the editor.
+ *
+ * A question of its own: only a key pressed after the line was shown reads.
+ * Return: the key, upper case.
+ */
+static int ws_read_kept_file_key(FENSTER *f)
+{
+ WpeAsk ask = WPE_ASK("review-kept-file");
+
+ ws_ask_settle(f, &ask);
+ return ws_review_key(f, &ask);
+}
+
+/**
  * ws_ask_file_by_file - Ask about each file in turn: keep it or revert it.
  * @f: any window of the editor; @c/@n: the rows; @unseen: the places not seen.
  * Return: how many files were kept or never asked about.
@@ -3334,13 +3390,14 @@ static int ws_ask_file_by_file(FENSTER *f, ws_change *c, int n, int unseen)
  char **seen = NULL, line[1400];
  int ns = 0, sc = 0, bad = 0, nk = 0, left = 0, kept = 0, i;
  for (i = 0; i < n; i++) {
+  WpeAsk ask = WPE_ASK("review-file");
   if (ws_list_has(seen, ns, c[i].path)) continue;
   ws_list_push(&seen, &ns, &sc, ws_strdup(c[i].path));
   if (wpe_ckrec_kind_is_kept(c[i].kind)) {
    wpe_ckrec_kept_question(line, sizeof line, c[i].kind, ws_path_under_root(c[i].path, ck_dir));
    e_d_p_message(line, f, 0);
    nk++;
-   if (ws_review_key(f) == WPE_ESC) { left = ws_files_left(c, n, i, seen, ns); break; }
+   if (ws_read_kept_file_key(f) == WPE_ESC) { left = ws_files_left(c, n, i, seen, ns); break; }
    continue;
   }
   /* the question names the file the way its row does, so it fits the
@@ -3348,8 +3405,9 @@ static int ws_ask_file_by_file(FENSTER *f, ws_change *c, int n, int unseen)
   WPE_FMT_SHOWN(line, "keep %s ?  y = keep  n = revert",
                 ws_path_under_root(c[i].path, ck_dir));
   e_d_p_message(line, f, 0);
+  ws_ask_settle(f, &ask);
   for (;;) {
-   int kk = ws_review_key(f);
+   int kk = ws_review_key(f, &ask);
    if (kk == 'Y' || kk == 13 || kk == '\r' || kk == '\n') { kept++; break; }
    if (kk == 'N') {
     if (ws_revert_path(f, c[i].path, c[i].kind) != 0) bad++;
@@ -3377,8 +3435,10 @@ static int ws_ask_file_by_file(FENSTER *f, ws_change *c, int n, int unseen)
 static int ws_review_answer(FENSTER *f, ws_change *c, int n, int unseen)
 {
  int kept = 0;
+ WpeAsk ask = WPE_ASK("review");
+ ws_ask_settle(f, &ask);
  for (;;) {
-  int k = ws_review_key(f);
+  int k = ws_review_key(f, &ask);
   if (k == 'A' || k == WPE_ESC || k == 13 || k == '\r' || k == '\n') {
    kept = n;
    e_d_p_message("[AI] changes kept", f, 0);

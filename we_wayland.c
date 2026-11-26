@@ -1733,6 +1733,47 @@ static int e_w_key_take(int want)
 }
 
 /**
+ * wl_keys_queued - How many keys wait in the key ring.
+ */
+static int wl_keys_queued(void)
+{
+ return (WpeWl.key_tail - WpeWl.key_head + WL_KEYQ_LEN) % WL_KEYQ_LEN;
+}
+
+/**
+ * e_w_type_ahead_drop - Wayland's part of a question: drop what was typed
+ * before it.
+ * @pasted: not set; a paste on Wayland is a key the question drops.
+ *
+ * What the user gets: keys and clicks typed before a question was shown are
+ * not its answer.  The editor's output is sent and the compositor has
+ * answered it (the roundtrip), and what the user did before that sits in
+ * the key ring by then, so the ring and the pending click are emptied.
+ * One thing differs from the other displays: a held key repeats from the
+ * editor's own timer here, so the timer is disarmed and the held key stops
+ * repeating until it is pressed again.  A resize or a close stays with the
+ * frame owner and is applied at the top of the key reader as always.
+ * Return: how many key and button presses went.
+ */
+static int e_w_type_ahead_drop(int *pasted)
+{
+ int dropped;
+
+ (void)pasted;
+ if (!WpeWl.display)
+  return 0;
+ e_refresh();
+ wl_conn_roundtrip();
+ dropped = wl_keys_queued();
+ WpeWl.key_head = WpeWl.key_tail;
+ if (g_mouse_pending < 0)
+  dropped++;
+ g_mouse_pending = 0;
+ wl_repeat_disarm();
+ return dropped;
+}
+
+/**
  * wl_watch_display - Let the shared loop wake for the compositor's events.
  *
  * Asked again on every key read, as the X11 backend does, so the keyboard
@@ -2216,6 +2257,7 @@ int WpeWaylandInit(int *argc, char **argv)
  fk_u_grab_pointer = fk_w_grab_pointer;
  fk_u_drag_next    = fk_w_drag_next;
  e_u_key_take      = e_w_key_take;
+ e_u_type_ahead_drop = e_w_type_ahead_drop;
  e_u_palette_rgb   = wpe_render_wayland_palette_rgb;
  e_u_serve_display = e_w_serve_display;
  e_u_repaint_resized = e_w_repaint_resized;

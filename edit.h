@@ -1246,6 +1246,12 @@ extern int (*e_u_system)(struct WpeStartPlan *plan);
 /* The key the user typed, taken without waiting: the first one for
    WPE_PAINT_ANY_KEY, else only @want, the others left queued.  0 for none. */
 extern int (*e_u_key_take)(int want);
+/* The display's part of "a question is answered only by a key pressed after
+   it was shown": let what the editor sent finish, then drop every key and
+   click typed before, setting *pasted when pasted text went.  Returns how
+   many key and button presses went.  Called only by the screen owner's
+   desk entry (e_paint_settle_and_drop); every display assigns it. */
+extern int (*e_u_type_ahead_drop)(int *pasted);
 extern void (*WpeDisplayEnd)(void);
 /* The display's answer to a signal that ends the editor at once: give the
    terminal back, in a way a signal handler may run (write and tcsetattr

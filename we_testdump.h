@@ -19,7 +19,7 @@
    key reader is the display's own.
 
    The format, one record per line, every field on one line:
-     S <seq> ctx=<edit|prefix|menu|dialog:<title>|message|filemanager|window|box|wait> top=<n> autosaved=<0|1> says=<n>
+     S <seq> ctx=<edit|prefix|menu|dialog:<title>|question:<what>|message|filemanager|window|box|wait> top=<n> autosaved=<0|1> says=<n>
        (says: the status lines said since the dump before)
      W <n> <name> ro=<0|1> mx=<width> y=<n> x=<n> mb=<y>,<x> me=<y>,<x> ks=<y>,<x>
        ins=<n> flg=<n> save=<n> view=<c.y>,<c.x>,<a.y>,<a.x>,<e.y>,<e.x>
@@ -45,7 +45,8 @@ typedef enum
  WPE_TEST_CTX_PREFIX,     /* the letter after Ctrl-K or Ctrl-O */
  WPE_TEST_CTX_MENU,       /* the menu bar or one of its dropdowns */
  WPE_TEST_CTX_DIALOG,     /* a dialog box: its title is named */
- WPE_TEST_CTX_MESSAGE     /* a message or error box */
+ WPE_TEST_CTX_MESSAGE,    /* a message or error box */
+ WPE_TEST_CTX_QUESTION    /* a question: its name is given (review, approve) */
 } WpeTestCtx;
 
 void wpe_test_dump_from_env(void);

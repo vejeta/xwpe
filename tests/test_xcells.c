@@ -244,6 +244,7 @@ int (*e_u_deb_out)(FENSTER *f);
 int (*e_u_palette_rgb)(int idx, unsigned char rgb[3]);
 int (*e_u_system)(struct WpeStartPlan *plan);
 int (*e_u_key_take)(int want);
+int (*e_u_type_ahead_drop)(int *pasted);
 void (*WpeMouseChangeShape)(WpeMouseShape new_shape);
 void (*WpeMouseRestoreShape)(void);
 void (*e_clip_os_set)(const char *utf8, int len);
