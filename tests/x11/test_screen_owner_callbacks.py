@@ -16,13 +16,20 @@ import time
 
 import pytest
 
+import program_gate
 from conftest import changed_pixels, _sleep
 
 SOURCE = "int main(void)\n{\n    return 0;\n}\n"
-SLOW_MAKEFILE = (
-    "all:\n"
-    "\t@for i in $$(seq 1 80); do echo BUILDLINE$$i; sleep 0.25; done\n"
-)
+BUILD_BODY = "echo BUILDLINE$i"
+BUILD_LAST = "echo BUILDDONE"
+
+
+def slow_makefile(gate):
+    """A Makefile whose build prints a line every tenth of a second until
+    the row opens the gate: the build streams for as long as the row looks,
+    with no count of lines or sleep of its own to run out."""
+    return "all:\n\t@" + gate.ticker_line("sh", BUILD_BODY, BUILD_LAST,
+                                          make=True) + "\n"
 TRACE = "ui.trace"
 SHOW_TIMEOUT_S = 15
 HOLD_S = 1.5
@@ -66,8 +73,9 @@ def test_a_build_streaming_under_a_dialog_paints_nothing_under_it_and_shows_when
     """While the Find dialog is up the window does not change at all; the
     trace shows the build's output waited and was drawn once the dialog
     closed."""
+    gate = program_gate.ProgramGate(os.path.dirname(xwpe.srcfile))
     with open(_in_dir(xwpe, "Makefile"), "w") as fh:
-        fh.write(SLOW_MAKEFILE)
+        fh.write(slow_makefile(gate))
     xwpe.key("alt+a", delay=0.8)
     assert _wait(lambda: _screen_moves(xwpe), SHOW_TIMEOUT_S), \
         "the build's output should be drawn in Messages"
@@ -85,4 +93,6 @@ def test_a_build_streaming_under_a_dialog_paints_nothing_under_it_and_shows_when
         "the output should be drawn again once the dialog closes"
     assert REPLAYED_OUTPUT in _trace(xwpe), \
         "the waiting output should be drawn by the key loop:\n%s" % _trace(xwpe)
+    gate.open(1)                         # the build ends, its last line printed
+    assert gate.seen(1), "the build never reached the end of its output"
     assert xwpe.proc.poll() is None, "xwpe died closing the dialog"

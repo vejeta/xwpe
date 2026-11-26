@@ -18,6 +18,7 @@ from conftest import changed_pixels, _sleep
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 import procinfo  # noqa: E402  (the tests/ directory is added just above)
+import program_gate  # noqa: E402
 
 # A program that waits for a line on stdin and writes what it read to a file,
 # so the test sees what reached the program from outside the editor.
@@ -171,22 +172,42 @@ def test_ctrl_break_pauses(xwpe, keystroke):
     assert xwpe.proc.poll() is None, "xwpe died pausing the program"
 
 
-# A Java program that prints, then sleeps; the breakpoint is on the print.
+# The stop line's bar, as the backends draw it, and how many of its pixels
+# say that the editor has drawn a stop (about 2000 at the fixture's font; a
+# screen with no stop has about 75 of that green).
+STOP_GREEN = (0, 255, 0)
+JDB_STOP_BAR_PIXELS = 500
+
+
+def _count(img, rgb):
+    """How many pixels of @img are exactly @rgb."""
+    colours = img.getcolors(maxcolors=img.width * img.height) or []
+    return sum(count for count, px in colours if px == rgb)
+
+
+def _jdb_stopped(xwpe):
+    """True once the editor has drawn the stop bar of the debugger's stop."""
+    return _count(xwpe.screenshot(), STOP_GREEN) >= JDB_STOP_BAR_PIXELS
+
+
+# A Java program that prints, then stays (a gate the row never opens, so the
+# program is running for as long as the row lasts); the breakpoint is on the
+# print.
 JDB_SLEEP_PROG = (
     "public class P {\n"
     "    public static void main(String[] a) throws Exception {\n"
     "        System.out.println(\"ready\");\n"
-    "        Thread.sleep(600000);\n"
+    "        @@STAY@@\n"
     "    }\n"
     "}\n"
 )
 JDB_SLEEP_LINE = 3
 JDB_START_TIMEOUT_S = 60
-JDB_SETTLE_S = 3.0
 
 
 @needs("jdb", "javac")
 @pytest.mark.parametrize("xwpe", [{"XWPE_TEST_SOURCE": JDB_SLEEP_PROG,
+                                   "XWPE_TEST_GATE": "java",
                                    "XWPE_TEST_FILE": "P.java"}],
                          indirect=True)
 def test_debug_quit_under_jdb_leaves_no_java_process(xwpe):
@@ -206,9 +227,10 @@ def test_debug_quit_under_jdb_leaves_no_java_process(xwpe):
                  JDB_START_TIMEOUT_S), \
         "jdb and its VM should be running: %s" \
         % procinfo.descendants(xwpe.proc.pid)
-    _sleep(JDB_SETTLE_S)
+    assert _wait(lambda: _jdb_stopped(xwpe), JDB_START_TIMEOUT_S), \
+        "jdb should stop on the breakpoint and the editor draw the stop"
     xwpe.key("ctrl+g", "r")
-    _sleep(JDB_SETTLE_S)
+    xwpe.gate.arrived_seen(program_gate.STAY_PASS)   # running, held at its gate
     tree = procinfo.descendants(xwpe.proc.pid)
     xwpe.menu("d", "q")
     assert _wait(lambda: procinfo.all_ended(tree), 10), \
@@ -217,28 +239,27 @@ def test_debug_quit_under_jdb_leaves_no_java_process(xwpe):
     assert xwpe.proc.poll() is None, "xwpe died ending the session"
 
 
-# A Java program that sleeps, prints a block of text, then sleeps again.
+# A Java program that waits at a gate, prints a block of text, then stays.
 JDB_PRINT_BLOCK = "#" * 60
 JDB_PRINT_PROG = (
     "public class P {\n"
     "    public static void main(String[] a) throws Exception {\n"
     "        int x = 1;\n"
-    "        Thread.sleep(4000);\n"
+    "        @@GATE@@\n"
     "        for (int i = 0; i < 6; i++)\n"
     "            System.out.println(\"%s\");\n"
-    "        Thread.sleep(600000);\n"
+    "        @@STAY@@\n"
     "    }\n"
     "}\n" % JDB_PRINT_BLOCK
 )
 JDB_PRINT_LINE = 3
-JDB_PRINT_SETTLE_S = 5.0      # the first stop is reached and painted
-JDB_PRINT_BEFORE_S = 1.0      # the program sleeps, nothing printed yet
-JDB_PRINT_AFTER_S = 6.0       # the sleep ended and the block was printed
 JDB_PRINT_PIXELS = 3000       # six rows of '#' change far more than this
+JDB_PRINT_SHOWN_S = 30        # the block is printed and painted
 
 
 @needs("jdb", "javac")
 @pytest.mark.parametrize("xwpe", [{"XWPE_TEST_SOURCE": JDB_PRINT_PROG,
+                                   "XWPE_TEST_GATE": "java",
                                    "XWPE_TEST_FILE": "P.java"}],
                          indirect=True)
 def test_jdb_program_output_appears_in_messages(xwpe):
@@ -253,13 +274,15 @@ def test_jdb_program_output_appears_in_messages(xwpe):
                  JDB_START_TIMEOUT_S), \
         "jdb and its VM should be running: %s" \
         % procinfo.descendants(xwpe.proc.pid)
-    _sleep(JDB_PRINT_SETTLE_S)
+    assert _wait(lambda: _jdb_stopped(xwpe), JDB_START_TIMEOUT_S), \
+        "jdb should stop on the breakpoint and the editor draw the stop"
     xwpe.key("ctrl+g", "r")
-    _sleep(JDB_PRINT_BEFORE_S)
+    xwpe.gate.arrived_seen(1)            # running, held before the print
     before = xwpe.screenshot()
-    _sleep(JDB_PRINT_AFTER_S)
-    after = xwpe.screenshot()
-    assert changed_pixels(before, after) > JDB_PRINT_PIXELS, \
+    xwpe.gate.open(1)
+    xwpe.gate.seen(1)                    # the program went on and prints
+    assert _wait(lambda: changed_pixels(before, xwpe.screenshot())
+                 > JDB_PRINT_PIXELS, JDB_PRINT_SHOWN_S), \
         "the program's output should be painted in Messages"
     xwpe.menu("d", "q")
     assert xwpe.proc.poll() is None, "xwpe died ending the session"

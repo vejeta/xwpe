@@ -433,6 +433,47 @@ def wait_for(event_fn, what, timeout, poll=DEFAULT_POLL_S, state_fn=None):
     raise OwnerTimeout(_timeout_message(deadline_s, scale, what, state))
 
 
+def _trace_lines(path):
+    """The lines of the trace file at @path, or none while it is not there."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            return fh.read().splitlines()
+    except OSError:
+        return []
+
+
+def trace_order(path, first, then, tmo, count=1, pump=None):
+    """Prove from the editor's trace that @first happened at least @count
+    times before the first line holding @then.
+
+    A row that acts inside a bound the product keeps to itself (it sends its
+    keys as one burst) cannot read the order from a clock; the trace is an
+    ordered record, so the order is read from it.  Waits, stretched by the
+    wait scale, until a line holding @then is in the trace; then raises
+    AssertionError, naming the positions of both, unless @count lines holding
+    @first come before it.  @pump, when given, is called on every look (a
+    terminal row hands its drain, so the editor's output is read meanwhile).
+    Returns the line numbers (0-based) of the @first lines before @then."""
+    def then_is_there():
+        if pump is not None:
+            pump()
+        return any(then in line for line in _trace_lines(path))
+
+    wait_for(then_is_there, "%r in the trace %s" % (then, path), tmo,
+             state_fn=lambda: "\n".join(_trace_lines(path)[-20:]))
+    lines = _trace_lines(path)
+    at_then = next(i for i, line in enumerate(lines) if then in line)
+    before = [i for i, line in enumerate(lines[:at_then]) if first in line]
+    after = [i for i, line in enumerate(lines[at_then:], at_then)
+             if first in line]
+    if len(before) < count:
+        raise AssertionError(
+            "%r should come %d time(s) before %r (line %d); it comes before "
+            "at lines %s and after at lines %s" %
+            (first, count, then, at_then, before, after))
+    return before
+
+
 # ---------------------------------------------------------------------------
 # The row clock
 

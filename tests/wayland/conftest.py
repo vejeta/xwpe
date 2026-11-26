@@ -598,6 +598,16 @@ def xwpe(xserver, gui_owner, tmp_path, request):
     param = dict(getattr(request, "param", None) or {})
     # XWPE_TEST_SOURCE: a test that needs its own program in t.c, not env.
     source = param.pop("XWPE_TEST_SOURCE", None)
+    # XWPE_TEST_GATE: the language of the program's gate lines (tests/
+    # program_gate.py).  The gate's folder is the row's own, known only here,
+    # so the lines of the source that stand for a hold or a stay are filled
+    # in now; the row opens the gate through session.gate.
+    gate_lang = param.pop("XWPE_TEST_GATE", None)
+    gate = None
+    if gate_lang is not None:
+        import program_gate
+        gate = program_gate.ProgramGate(tmp_path)
+        source = gate.fill_markers(source, gate_lang)
     if source is not None:
         src.write_text(source)
     # XWPE_TEST_FILE: the name the program is edited under, for a language
@@ -653,6 +663,7 @@ def xwpe(xserver, gui_owner, tmp_path, request):
     wait_frame_quiet(dump, floor=0.1)
     session = WaylandSession(owned.proc, owned.env, wid, dump, owned)
     session.srcfile = str(src)
+    session.gate = gate
     session.pty_master = pty_master
     session.focus()
     yield session

@@ -1124,6 +1124,32 @@ class WpeSession(procinfo.ChildAsker):
             self._drain(delay)
         return self
 
+    def burst(self, *keys, delay=0.45):
+        """Send every key in ONE write, with no drain between them, then
+        drain for @delay.
+
+        For a row that must act inside a time the product bounds by itself
+        (an adapter's disconnect, an end grace): the keys land together
+        whatever the speed of the host, so the row never races the bound, and
+        the row reads the order of what happened from the editor's trace
+        instead of from a clock.
+
+        A burst never crosses a question: the keys are taken as typed ahead,
+        so one that would answer a dialog the burst itself opens would be
+        eaten by it.  Use it only for keys the editor takes as a menu or an
+        edit, never for the answer to a question.
+
+        A lone Esc that is not the last key is refused: with the escape delay
+        the editor reads Esc and the next byte in the same write as Alt plus
+        that byte, so the row would send something it did not mean."""
+        for position, k in enumerate(keys):
+            if k == "\033" and position != len(keys) - 1:
+                raise ValueError("a lone Esc may only end a burst: with the "
+                                 "next key in the same write it reads as Alt")
+        os.write(self.input_fd, "".join(keys).encode())
+        self._drain(delay)
+        return self
+
     def paste(self, text, when_stalled):
         """Type ``text`` as fast as the editor takes it, draining its
         output meanwhile.  ``when_stalled()`` is called once, when the

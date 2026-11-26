@@ -20,6 +20,7 @@ import pytest
 import build_config
 import gui_owner
 import host_tools
+import program_gate
 # A live file is not imported unless the run opened the gate (live_gate.py):
 # pytest finds the hook of a conftest by its name.
 from live_gate import pytest_pycollect_makemodule  # noqa: F401
@@ -281,3 +282,12 @@ def end_row_processes(process_owner):
     before = process_owner.ledger.pids()
     yield
     process_owner.end_since(before)
+
+
+@pytest.fixture(autouse=True)
+def close_program_gates():
+    """Close, when the row ends (passed or failed), every program gate the row
+    made, so a held or ticking program that the end ladder missed leaves by
+    itself instead of running on."""
+    yield
+    program_gate.close_all()

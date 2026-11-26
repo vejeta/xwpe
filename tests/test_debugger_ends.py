@@ -22,11 +22,12 @@ import time
 import pytest
 
 import procinfo
+import program_gate
 from wpe_driver import ALT, WpeSession, WAIT_SCALE
 from test_debugger_integration import (
     A68_PRINT_FIRST_LINE, A68_PRINT_PROG, A68_PRINT_STOP_LINE, JAVA_PROG,
     PY_BREAK_LINE, PY_PROG, START_TIMEOUT_S, _c_session, _children, _need,
-    _start_a68_session_on, _start_c_session, _start_java_session,
+    _a68_gated, _start_a68_session_on, _start_c_session, _start_java_session,
     _start_py_session)
 from test_legacy_debuggers import (
     _cursor_field, _mark_line, _messages, _screen,
@@ -285,8 +286,9 @@ def _start_real(tmp_path, debugger):
         return w
     if debugger == "a68g":
         _need("a68g")
-        w = WpeSession(str(tmp_path), A68_PRINT_PROG, filename="p.a68",
-                       wait=1.5)
+        gate = program_gate.ProgramGate(tmp_path)
+        w = WpeSession(str(tmp_path), _a68_gated(gate, A68_PRINT_PROG),
+                       filename="p.a68", wait=1.5)
         _start_a68_session_on(w, A68_PRINT_FIRST_LINE, A68_PRINT_STOP_LINE)
         return w
     _need("jdb", "javac")

@@ -111,7 +111,7 @@ tests/test_debug_prefix_after_end.py WS=2
 tests/test_debugger_chain_outcome.py WD=1 WF=1
 tests/test_debugger_dies_with_editor.py WD=1 WF=1 WS=3
 tests/test_debugger_ends.py WF=1 WS=5
-tests/test_debugger_integration.py WD=9 WE=2 WF=49 WS=12
+tests/test_debugger_integration.py WD=9 WE=2 WF=46 WS=12
 tests/test_debugger_watchdog.py WE=2 WS=12
 tests/test_describe_children.py WS=3
 tests/test_empty_desktop.py WS=3
@@ -220,7 +220,7 @@ tests/x11/test_font_query.py WF=1 WS=3
 tests/x11/test_keymap.py WS=2
 tests/x11/test_legacy_debuggers.py WS=2
 tests/x11/test_lsp_positions.py WS=6
-tests/x11/test_menu_debug.py WF=3 WS=4
+tests/x11/test_menu_debug.py WF=1 WS=4
 tests/x11/test_menu_file.py WS=3
 tests/x11/test_menu_project.py WS=1
 tests/x11/test_menu_run.py WS=4
@@ -233,7 +233,7 @@ tests/x11/test_program_name.py WS=2
 tests/x11/test_resize.py WS=4
 tests/x11/test_run_typing.py WS=2
 tests/x11/test_screen_owner.py WF=2 WS=2
-tests/x11/test_screen_owner_callbacks.py WF=1 WS=2
+tests/x11/test_screen_owner_callbacks.py WS=2
 tests/x11/test_short_command_cancel.py WE=1 WF=2 WS=2
 tests/x11/test_short_command_repaint.py WF=1 WS=3
 tests/x11/test_signal_save.py WE=1

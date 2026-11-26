@@ -2172,11 +2172,13 @@ QUIT_MARGIN_S = 5.0
 # @scenario SC-debug-18
 def test_debug_quit_while_the_program_runs_under_a68g(tmp_path):
     """a68g reads the keyboard while the program runs: Debug > Quit ends it.
-    (A busy loop stands in for the sleep, which a68g has no call for.)"""
+    (A program held at a gate that the row never opens stands in for the
+    long run.)"""
     _need("a68g")
+    gate = program_gate.ProgramGate(tmp_path)
     prog = ("print ((\"rea\" + \"dy\", new line));\nINT n := 0;\n"
-            "WHILE n < 2000000000 DO n +:= 1 OD;\nINT x := 3;\n"
-            "print ((x, new line))\n")
+            + gate.stay_line("a68") + "\nINT x := 3;\n"
+            "print ((x + n, new line))\n")
     with WpeSession(str(tmp_path), prog, filename="p.a68", wait=2.0) as w:
         _move_down(w, 3)
         w.key(CTRL_G, "b", delay=0.5)
@@ -2185,26 +2187,47 @@ def test_debug_quit_while_the_program_runs_under_a68g(tmp_path):
             "a68g should be running:\n%s" % _screen(w)
         assert _wait_for(w, lambda: "ready" in _screen(w), START_TIMEOUT_S), \
             "the program should have started and printed:\n%s" % _screen(w)
+        assert gate.arrived(w, program_gate.STAY_PASS), \
+            "the program should be running at its stay line before Quit"
         w.menu(ALT.DEBUG, "q", delay=0.5)
         assert _wait_for(w, lambda: not _children(w, "a68g"), STEP_TIMEOUT_S), \
             "Debug > Quit should end a68g while the program runs:\n%s" \
             % _screen(w)
 
 
-# A busy loop that runs until nine seconds of a68g's own clock have passed
-# since t0, longer than the five the editor used to wait for a68g, which has
-# no call to sleep.  It lasts the same on a fast or a slow machine.
-A68_LONG_LOOP = "WHILE seconds - t0 < 9.0 DO SKIP OD;\n"
+# A program that waits at a gate line (tests/program_gate.py) instead of
+# looping on a68g's own clock: the row decides when the program goes on, so a
+# slow host cannot end the loop before the row has looked.  A gate line is one
+# source line, so the lines of the program keep the numbers the rows name; a
+# stop is on a plain statement before it (a68g does not stop on a line that
+# opens a closed clause).  A68_HELD_QUIET_S is a quiet look, past the five seconds the
+# editor used to wait for a68g, with the program held: nothing happens in it.
+A68_GATE = program_gate.MARKER + "\n"
+A68_HELD_QUIET_S = 6
 A68_LONG_RUN_S = 40
+
+
+def _a68_gated(gate, program):
+    """@program with each of its marker lines replaced by the gate line of
+    the next pass (1, then 2, ...)."""
+    lines = program.split("\n")
+    n = 0
+    for i, text in enumerate(lines):
+        if text.strip() == program_gate.MARKER:
+            n += 1
+            lines[i] = gate.line("a68", fixed_pass=n)
+    return "\n".join(lines)
+
+
 A68_LONG_PROG = (
     "INT y := 0;\n"
-    "REAL t0 := seconds;\n"
-    + A68_LONG_LOOP +
+    "y := 1;\n"
+    + A68_GATE +
     "y := 2;\n"
     "print ((y, new line))\n"
 )
-A68_LONG_FIRST_LINE = 2      # REAL t0 := seconds;  the first stop
-A68_LONG_AFTER_LINE = 4      # y := 2;  past the loop
+A68_LONG_FIRST_LINE = 2      # y := 1;  the first stop
+A68_LONG_AFTER_LINE = 4      # y := 2;  past the gate
 
 
 def _start_a68_session_on(w, first_line, later_line):
@@ -2222,13 +2245,17 @@ def _start_a68_session_on(w, first_line, later_line):
 
 # @scenario SC-debug-05
 def test_a68g_continue_to_a_breakpoint_far_away_marks_it(tmp_path):
-    """Ctrl-G R to a breakpoint nine seconds of run time away marks it when
-    it is reached: the editor does not give up on a68g after five seconds."""
+    """Ctrl-G R to a breakpoint that the program reaches only after more
+    than five seconds marks it when it is reached: the editor does not give
+    up on a68g after five seconds."""
     _need("a68g")
-    with WpeSession(str(tmp_path), A68_LONG_PROG, filename="p.a68",
-                    wait=1.5) as w:
+    gate = program_gate.ProgramGate(tmp_path)
+    with WpeSession(str(tmp_path), _a68_gated(gate, A68_LONG_PROG),
+                    filename="p.a68", wait=1.5) as w:
         _start_a68_session_on(w, A68_LONG_FIRST_LINE, A68_LONG_AFTER_LINE)
         w.key(CTRL_G, "r", delay=0.5)
+        w._drain(A68_HELD_QUIET_S)       # held: nothing happens meanwhile
+        gate.open(1)
         assert _wait_for(w, lambda: _mark_line(w) == A68_LONG_AFTER_LINE,
                          A68_LONG_RUN_S), \
             "Ctrl-G R should mark line %d (mark on %s):\n%s" \
@@ -2241,42 +2268,46 @@ def test_a68g_keys_reach_the_editor_while_the_program_runs(tmp_path):
     the program is running and opens no Stack window: the key belongs to the
     editor, and a68g is told nothing until the program stops."""
     _need("a68g")
-    with WpeSession(str(tmp_path), A68_LONG_PROG, filename="p.a68",
-                    wait=1.5) as w:
+    gate = program_gate.ProgramGate(tmp_path)
+    with WpeSession(str(tmp_path), _a68_gated(gate, A68_LONG_PROG),
+                    filename="p.a68", wait=1.5) as w:
         _start_a68_session_on(w, A68_LONG_FIRST_LINE, A68_LONG_AFTER_LINE)
         w.key(CTRL_G, "r", delay=0.5)
         _says_the_program_is_running(w)
+        gate.open(1)
         assert _wait_for(w, lambda: _mark_line(w) == A68_LONG_AFTER_LINE,
                          A68_LONG_RUN_S), \
             "the stop should be marked once the program gets there " \
             "(mark on %s):\n%s" % (_mark_line(w), _screen(w))
 
 
-# A procedure whose call takes about nine seconds.
+# A procedure whose call waits at a gate until the row lets it go.
 A68_SLOW_CALL_PROG = (
     "PROC busy = (INT k) INT:\n"
     "BEGIN\n"
-    "   REAL t0 := seconds;\n"
-    "   " + A68_LONG_LOOP +
-    "   k\n"
+    "   INT j = k;\n"
+    "   " + A68_GATE +
+    "   j\n"
     "END;\n"
     "INT a := 1;\n"
     "INT y := busy (a);\n"
     "INT z := 2;\n"
     "print ((y, z, new line))\n"
 )
-A68_SLOW_BODY_LINE = 3       # REAL t0 := seconds;  in busy, before its loop
+A68_SLOW_BODY_LINE = 3       # INT j = k;  in busy, before its gate
 A68_SLOW_CALL_LINE = 8       # INT y := busy (a);
 A68_SLOW_AFTER_LINE = 9      # INT z := 2;
 
 
 # @scenario SC-debug-05
 def test_a68g_f8_over_a_call_that_runs_long_marks_the_next_line(tmp_path):
-    """F8 on a call that takes nine seconds marks the line after it once the
-    call returns, and the editor refuses debugger keys meanwhile."""
+    """F8 on a call that runs on until the row lets it go marks the line
+    after it once the call returns, and the editor refuses debugger keys
+    meanwhile."""
     _need("a68g")
-    with WpeSession(str(tmp_path), A68_SLOW_CALL_PROG, filename="p.a68",
-                    wait=1.5) as w:
+    gate = program_gate.ProgramGate(tmp_path)
+    with WpeSession(str(tmp_path), _a68_gated(gate, A68_SLOW_CALL_PROG),
+                    filename="p.a68", wait=1.5) as w:
         _go_to_line(w, A68_SLOW_CALL_LINE)
         w.key(CTRL_G, "b", delay=0.4)
         w.key(CTRL_G, "r", delay=1.0)
@@ -2286,6 +2317,7 @@ def test_a68g_f8_over_a_call_that_runs_long_marks_the_next_line(tmp_path):
             % (A68_SLOW_CALL_LINE, _mark_line(w), _screen(w))
         w.key(F8, delay=0.5)
         _says_the_program_is_running(w)
+        gate.open(1)
         assert _wait_for(w, lambda: _mark_line(w) == A68_SLOW_AFTER_LINE,
                          A68_LONG_RUN_S), \
             "F8 should mark line %d (mark on %s):\n%s" \
@@ -2294,12 +2326,13 @@ def test_a68g_f8_over_a_call_that_runs_long_marks_the_next_line(tmp_path):
 
 # @scenario SC-debug-34
 def test_a68g_finish_over_a_long_call_marks_the_caller(tmp_path):
-    """Ctrl-G F from inside a procedure that runs nine seconds more marks the
-    line after the call when it returns, and the editor refuses debugger
-    keys meanwhile."""
+    """Ctrl-G F from inside a procedure that runs on until the row lets it
+    go marks the line after the call when it returns, and the editor
+    refuses debugger keys meanwhile."""
     _need("a68g")
-    with WpeSession(str(tmp_path), A68_SLOW_CALL_PROG, filename="p.a68",
-                    wait=1.5) as w:
+    gate = program_gate.ProgramGate(tmp_path)
+    with WpeSession(str(tmp_path), _a68_gated(gate, A68_SLOW_CALL_PROG),
+                    filename="p.a68", wait=1.5) as w:
         _go_to_line(w, A68_SLOW_BODY_LINE)
         w.key(CTRL_G, "b", delay=0.4)
         w.key(CTRL_G, "r", delay=1.0)
@@ -2310,6 +2343,7 @@ def test_a68g_finish_over_a_long_call_marks_the_caller(tmp_path):
         _go_to_line(w, A68_SLOW_AFTER_LINE)
         w.key(CTRL_G, "f", delay=0.5)
         _says_the_program_is_running(w)
+        gate.open(1)
         assert _wait_for(w, lambda: _mark_line(w) == A68_SLOW_AFTER_LINE,
                          A68_LONG_RUN_S), \
             "Ctrl-G F should mark line %d (mark on %s):\n%s" \
@@ -2317,19 +2351,21 @@ def test_a68g_finish_over_a_long_call_marks_the_caller(tmp_path):
 
 
 # The program prints while the user has closed Messages and opened the File
-# Manager; it runs on to a far breakpoint.  Times are a68g's own clock.
+# Manager; it runs on to a far breakpoint.  The program waits at two gate
+# lines (pass 1 before the print, pass 2 after it): the row lets it print
+# while the File Manager is open and knows when it has.
 A68_PRINT_PROG = (
     "INT y := 0;\n"
-    "REAL t0 := seconds;\n"
-    "WHILE seconds - t0 < 5.0 DO SKIP OD;\n"
+    "y := 1;\n"
+    + A68_GATE +
     "print ((\"late\", new line));\n"
-    "WHILE seconds - t0 < 10.0 DO SKIP OD;\n"
+    + A68_GATE +
     "y := 2;\n"
     "print ((y, new line))\n"
 )
 A68_PRINT_FIRST_LINE = 2
 A68_PRINT_STOP_LINE = 6
-A68_PRINT_WAIT_S = 6         # past the print, with the File Manager open
+A68_PRINT_QUIET_S = 1        # a quiet look after the print was written
 
 
 # @scenario SC-debug-36
@@ -2338,8 +2374,9 @@ def test_a68g_output_while_a_box_is_open_opens_no_window_over_it(tmp_path):
     Messages window opens over the File Manager, Esc closes it, and after
     the stop Ctrl-G K opens the Stack window."""
     _need("a68g")
-    with WpeSession(str(tmp_path), A68_PRINT_PROG, filename="p.a68",
-                    wait=1.5) as w:
+    gate = program_gate.ProgramGate(tmp_path)
+    with WpeSession(str(tmp_path), _a68_gated(gate, A68_PRINT_PROG),
+                    filename="p.a68", wait=1.5) as w:
         _start_a68_session_on(w, A68_PRINT_FIRST_LINE, A68_PRINT_STOP_LINE)
         w.key(CTRL_G, "r", delay=0.5)
         w.key(F6, delay=0.5)             # Messages on top
@@ -2347,11 +2384,14 @@ def test_a68g_output_while_a_box_is_open_opens_no_window_over_it(tmp_path):
         assert " Messages " not in _screen(w), \
             "Ctrl-W should have closed Messages:\n%s" % _screen(w)
         w.key(F3, delay=0.8)
-        w._drain(A68_PRINT_WAIT_S)       # the program prints meanwhile
+        gate.open(1)                     # the program prints now
+        assert gate.arrived(w, 2), "the program never printed and went on"
+        w._drain(A68_PRINT_QUIET_S)
         assert " Messages " not in _screen(w), \
             "no Messages window should open over the File Manager:\n%s" \
             % _screen(w)
         w.key(ESC, delay=0.8)
+        gate.open(2)
         assert _wait_for(w, lambda: _mark_line(w) == A68_PRINT_STOP_LINE,
                          A68_LONG_RUN_S), \
             "the stop should be marked on line %d (mark on %s):\n%s" \
@@ -2369,15 +2409,15 @@ A68_FAKE_TEXT = "print ((\"(a68g) \"));\n"
 A68_FAKE_THREAD_TEXT = ("print ((\"This is the main thread\", new line, "
                         "\"(a68g) \"));\n")
 A68_FAKE_STOP_LINE = 5
-A68_FAKE_SETTLE_S = 2        # well inside the nine-second loop
+A68_FAKE_SEEN = "(a68g)"     # what the editor shows once it has read the text
 
 
-def _a68g_fake_prog(fake_text):
-    """A program that prints @fake_text, then runs nine seconds to line
-    A68_FAKE_STOP_LINE."""
+def _a68g_fake_prog(gate, fake_text):
+    """A program that prints @fake_text, waits at a gate and then goes on to
+    line A68_FAKE_STOP_LINE."""
     return ("INT y := 0;\n" + fake_text +
-            "REAL t0 := seconds;\n"
-            "WHILE seconds - t0 < 9.0 DO SKIP OD;\n"
+            "y := 1;\n" +
+            gate.line("a68", fixed_pass=1) + "\n"
             "y := 2;\n"
             "print ((y, new line))\n")
 
@@ -2385,15 +2425,22 @@ def _a68g_fake_prog(fake_text):
 def _assert_the_fake_prompt_does_not_end_the_run(tmp_path, fake_text):
     """Run to the far breakpoint past @fake_text: debugger keys are still
     refused after it, and the real stop is the one marked."""
-    with WpeSession(str(tmp_path), _a68g_fake_prog(fake_text),
+    gate = program_gate.ProgramGate(tmp_path)
+    with WpeSession(str(tmp_path), _a68g_fake_prog(gate, fake_text),
                     filename="p.a68", wait=1.5) as w:
         _go_to_line(w, A68_FAKE_STOP_LINE)
         w.key(CTRL_G, "b", delay=0.4)
         w.key(CTRL_G, "r", delay=1.0)
         assert _wait_for(w, lambda: _children(w, "a68g"), START_TIMEOUT_S), \
             "a68g should be running:\n%s" % _screen(w)
-        w._drain(A68_FAKE_SETTLE_S)      # past the start and the fake prompt
+        assert gate.arrived(w, 1), "the program never reached its gate"
+        # The editor has read the fake prompt when it shows it; only then
+        # does the refusal below test anything.
+        assert _wait_for(w, lambda: A68_FAKE_SEEN in _screen(w),
+                         STEP_TIMEOUT_S), \
+            "the editor should have read the program's text:\n%s" % _screen(w)
         _says_the_program_is_running(w)
+        gate.open(1)
         assert _wait_for(w, lambda: _mark_line(w) == A68_FAKE_STOP_LINE,
                          A68_LONG_RUN_S), \
             "the real stop, line %d, should be marked (mark on %s):\n%s" \
@@ -2473,11 +2520,13 @@ DAP_CASES = {
                 "need": ("rustc", "gdb"), "child": "gdb", "start_s": 60},
 }
 DAP_PIDFILE = "program.pid"
-DAP_LONG_SLEEP_S = 600        # the program is running for as long as a test needs
-DAP_FAR_SLEEP_S = 8           # long enough to press keys while it runs
-DAP_TICKS = 60                # six seconds of one line every tenth of a second
+DAP_TRACE = "ui.trace"
 DAP_FAR_RUN_S = 40
 DAP_TICK_LAST_LINE = "TICK 59"
+# The program holds at a gate line until the row lets it go (hold), stays at
+# one for as long as the row lasts (stay), or prints a tick every tenth of a
+# second until the row lets it go (ticker): no clock of its own to race.
+DAP_QUIET_S = 2               # a quiet look while the program is held
 
 GO_DAP_HEAD = (
     "package main\n\nimport (\n\t\"fmt\"\n\t\"os\"\n\t\"strconv\"\n"
@@ -2485,31 +2534,42 @@ GO_DAP_HEAD = (
     "\tos.WriteFile(%(pidfile)s, []byte(strconv.Itoa(os.Getpid())), 0644)\n"
     "\tfmt.Println(\"ready\")\n")
 GO_DAP_SLEEP = "\ttime.Sleep(%d * time.Second)\n"
-GO_DAP_TICKS = (
-    "\tfor i := 0; i < %d; i++ {\n\t\tfmt.Println(\"TICK\", i)\n"
-    "\t\ttime.Sleep(100 * time.Millisecond)\n\t}\n")
+GO_DAP_TICK = 'fmt.Println("TICK", i)'
+GO_DAP_TICK_LAST = 'fmt.Println("%s")' % DAP_TICK_LAST_LINE
 GO_DAP_TAIL = "\tfmt.Println(\"done\")\n}\n"
 RUST_DAP_HEAD = (
     "fn main() {\n"
     "    std::fs::write(%(pidfile)s, std::process::id().to_string()).unwrap();\n"
     "    println!(\"ready\");\n")
 RUST_DAP_SLEEP = "    std::thread::sleep(std::time::Duration::from_secs(%d));\n"
-RUST_DAP_TICKS = (
-    "    for i in 0..%d {\n        println!(\"TICK {}\", i);\n"
-    "        std::thread::sleep(std::time::Duration::from_millis(100));\n    }\n")
+RUST_DAP_TICK = 'println!("TICK {}", i)'
+RUST_DAP_TICK_LAST = 'println!("%s")' % DAP_TICK_LAST_LINE
 RUST_DAP_TAIL = "    println!(\"done\");\n}\n"
-DAP_PROGRAM_PARTS = {"go": (GO_DAP_HEAD, GO_DAP_SLEEP, GO_DAP_TICKS,
-                            GO_DAP_TAIL),
-                     "rust": (RUST_DAP_HEAD, RUST_DAP_SLEEP, RUST_DAP_TICKS,
-                              RUST_DAP_TAIL)}
+DAP_PROGRAM_PARTS = {"go": (GO_DAP_HEAD, GO_DAP_SLEEP, GO_DAP_TAIL),
+                     "rust": (RUST_DAP_HEAD, RUST_DAP_SLEEP, RUST_DAP_TAIL)}
+DAP_TICK_BODIES = {"go": (GO_DAP_TICK, GO_DAP_TICK_LAST),
+                   "rust": (RUST_DAP_TICK, RUST_DAP_TICK_LAST)}
 
 
-def _dap_program(case, pidfile, sleep_s=None, ticks=None):
-    """The source text, with the file name of the PID file in it, and the
-    1-based lines of its "ready" and "done" prints."""
-    head, sleep, tick, tail = DAP_PROGRAM_PARTS[case["lang"]]
+def _dap_middle(case, gate, how, sleep_s):
+    """The line between the "ready" and "done" prints: a hold, a stay or a
+    ticker of @gate, or (@how is None) a sleep of @sleep_s seconds."""
+    lang = case["lang"]
+    if how == "hold":
+        return gate.line(lang, fixed_pass=1) + "\n"
+    if how == "stay":
+        return gate.stay_line(lang) + "\n"
+    if how == "ticker":
+        body, last = DAP_TICK_BODIES[lang]
+        return gate.ticker_line(lang, body, last) + "\n"
+    return DAP_PROGRAM_PARTS[lang][1] % sleep_s
+
+
+def _dap_program(case, pidfile, middle):
+    """The source text, with the file name of the PID file and @middle in
+    it, and the 1-based lines of its "ready" and "done" prints."""
+    head, _sleep, tail = DAP_PROGRAM_PARTS[case["lang"]]
     quoted = '"%s"' % pidfile
-    middle = (sleep % sleep_s) if sleep_s is not None else (tick % ticks)
     text = (head % {"pidfile": quoted}) + middle + tail
     lines = text.splitlines()
     ready = [i + 1 for i, l in enumerate(lines) if '"ready"' in l][0]
@@ -2519,19 +2579,29 @@ def _dap_program(case, pidfile, sleep_s=None, ticks=None):
 
 class DapRun:
     """A session on one adapter's program: its editor, its two lines and the
-    file the program writes its PID to."""
+    file the program writes its PID to.  Between its two lines the program
+    does what @how says: "hold" (until the row opens gate 1), "stay" (until
+    the row ends), "ticker" (prints until the row opens gate 1), or, with no
+    @how, sleeps @sleep_s seconds.  With @trace the editor writes its trace
+    (what it said on the status row, its buffer's records) to self.trace."""
 
-    def __init__(self, tmp_path, adapter, sleep_s=None, ticks=None):
+    def __init__(self, tmp_path, adapter, how=None, sleep_s=None, trace=False):
         self.case = DAP_CASES[adapter]
         _need(*self.case["need"])
         if self.case["lang"] == "go":
             (tmp_path / "go.mod").write_text("module dapdemo\n\ngo 1.21\n")
         self.pidfile = tmp_path / DAP_PIDFILE
+        self.gate = program_gate.ProgramGate(tmp_path)
+        middle = _dap_middle(self.case, self.gate, how, sleep_s)
         self.text, self.ready, self.done = _dap_program(
-            self.case, str(self.pidfile), sleep_s, ticks)
+            self.case, str(self.pidfile), middle)
+        self.trace = str(tmp_path / DAP_TRACE)
+        env = dict(self.case["env"])
+        if trace:
+            env["XWPE_UI_TRACE"] = self.trace
         self.session = WpeSession(
             str(tmp_path), self.text, filename=self.case["file"], wait=2.0,
-            env_extra=self.case["env"] or None)
+            env_extra=env or None)
 
     def pid(self):
         """The program's own PID, from the file it wrote."""
@@ -2582,7 +2652,7 @@ def test_quit_while_running_leaves_no_program_under_every_adapter(
         tmp_path, adapter):
     """Debug > Quit while the program sleeps ends the adapter and the
     program itself: its PID is gone, not left running under init."""
-    run = DapRun(tmp_path, adapter, sleep_s=DAP_LONG_SLEEP_S)
+    run = DapRun(tmp_path, adapter, how="stay")
     try:
         with run.session as w:
             run.stop_on_ready(w)
@@ -2605,20 +2675,21 @@ def test_quit_while_running_leaves_no_program_under_every_adapter(
 @pytest.mark.parametrize("adapter", DAP_ADAPTERS)
 def test_continue_to_a_breakpoint_far_away_is_marked_under_every_adapter(
         tmp_path, adapter):
-    """Ctrl-G R to a breakpoint eight seconds of run time away: the editor
-    takes keys meanwhile, and the stop is marked when it is reached.  The
-    editor's keys are what this row guards; the late mark already worked
-    with the blocking wait, so it is kept here as a guard."""
-    run = DapRun(tmp_path, adapter, sleep_s=DAP_FAR_SLEEP_S)
+    """Ctrl-G R to a breakpoint the program reaches only when the row lets
+    it: the editor takes keys meanwhile, and the stop is marked when it is
+    reached.  The editor's keys are what this row guards; the late mark
+    already worked with the blocking wait, so it is kept here as a guard."""
+    run = DapRun(tmp_path, adapter, how="hold")
     with run.session as w:
         _run_on_towards_done(run, w)
         _says_the_program_is_running(w)
+        run.gate.open(1)
         assert _wait_for(w, lambda: _mark_line(w) == run.done, DAP_FAR_RUN_S), \
             "the stop on line %d should be marked (mark on %s):\n%s" \
             % (run.done, _mark_line(w), _screen(w))
         w.key(CTRL_G, "r", delay=0.5)    # the session goes on: to the end
         assert _wait_for(w, lambda: not _children(w, run.case["child"]),
-                         STEP_TIMEOUT_S + DAP_FAR_SLEEP_S), \
+                         STEP_TIMEOUT_S), \
             "Ctrl-G R after the late stop should run the program out:\n%s" \
             % _screen(w)
 
@@ -2630,7 +2701,7 @@ def test_keys_reach_the_editor_while_the_program_runs_under_every_adapter(
     """While the program sleeps, Ctrl-G K is refused on the status row with
     the line that offers only Debug > Quit, no Stack window opens, and the
     letters the user types go into the file."""
-    run = DapRun(tmp_path, adapter, sleep_s=DAP_LONG_SLEEP_S)
+    run = DapRun(tmp_path, adapter, how="stay")
     try:
         with run.session as w:
             run.stop_on_ready(w)
@@ -2655,6 +2726,8 @@ def test_keys_reach_the_editor_while_the_program_runs_under_every_adapter(
 DAP_HELD_WATCH = "1+1"
 DAP_WAITING_FOR_EVALUATE = "to answer `evaluate`"
 DAP_QUIT_LATE = "did not answer `disconnect`"
+# What the editor's trace holds for each letter typed into the source.
+DAP_TYPED_RECORD = "buffer record kind=a"
 DAP_RUN_SETTLE_S = 2          # the program has gone on into its sleep
 
 
@@ -2701,7 +2774,7 @@ def test_keys_reach_the_editor_while_it_answers_under_an_adapter(tmp_path,
     its value is owed: the editor keeps its keys (Ctrl-G K is refused with
     the waiting line, letters go into the file), and once the adapter is let
     go the watch is shown."""
-    run = DapRun(tmp_path, adapter, sleep_s=DAP_LONG_SLEEP_S)
+    run = DapRun(tmp_path, adapter, how="stay")
     pid = None
     try:
         with run.session as w:
@@ -2768,25 +2841,28 @@ def test_quit_while_running_takes_keys_during_disconnect_under_an_adapter(
     never answers `disconnect`: the editor takes keys at once, while the
     adapter is still there; at Quit's deadline the status row says so and
     the adapter is ended and reaped."""
-    run = DapRun(tmp_path, adapter, sleep_s=DAP_LONG_SLEEP_S)
+    run = DapRun(tmp_path, adapter, how="stay", trace=True)
     pid = None
     try:
         with run.session as w:
             run.stop_on_ready(w)
             w.key(CTRL_G, "r", delay=0.5)
-            w._drain(DAP_RUN_SETTLE_S)
+            assert run.gate.arrived(w, program_gate.STAY_PASS), \
+                "the program should be running, held at its gate"
             pid = _dap_adapter_pid(w, run)
             os.kill(pid, signal.SIGSTOP)
-            w.menu(ALT.DEBUG, "q", delay=0.3)
-            w.key(ALT_1, delay=0.3)
-            w.key(*TYPED_WHILE_RUNNING, delay=0.1)
-            w.save()
-            assert TYPED_WHILE_RUNNING in w.text(), \
+            # One write: Quit, the source window, the letters, Save.  The
+            # editor owes Quit's `disconnect` for a time of its own; the keys
+            # land inside it on any host, and the trace says which came first.
+            w.burst(ALT.DEBUG, "q", ALT_1, *TYPED_WHILE_RUNNING,
+                    ALT.FILE, "s")
+            assert _wait_for(w, lambda: TYPED_WHILE_RUNNING in w.text(),
+                             STEP_TIMEOUT_S), \
                 "keys typed while Quit waits for the adapter should edit " \
                 "the source:\n%s" % _screen(w)
-            assert not _process_gone(pid), \
-                "the keys should be taken while the adapter still owes its " \
-                "answer to Quit"
+            gui_owner.trace_order(
+                run.trace, DAP_TYPED_RECORD, DAP_QUIT_LATE, STEP_TIMEOUT_S,
+                count=len(TYPED_WHILE_RUNNING), pump=lambda: w._drain(0.2))
             assert _status_row_says(w, DAP_QUIT_LATE, STEP_TIMEOUT_S), \
                 "the status row should say the adapter did not answer:\n%s" \
                 % _screen(w)
@@ -2827,7 +2903,7 @@ def test_keys_during_the_editors_end_neither_cut_its_wait_nor_spin(tmp_path):
     the adapter is ended, and keys typed all the while neither end that
     wait early (which would leave the adapter behind) nor keep the editor
     busy."""
-    run = DapRun(tmp_path, "dlv", sleep_s=DAP_LONG_SLEEP_S)
+    run = DapRun(tmp_path, "dlv", how="stay")
     pid = None
     try:
         with run.session as w:
@@ -2864,7 +2940,7 @@ def test_adapter_end_is_an_event(tmp_path, adapter):
     with the line that names the adapter and its exit status, as for a line
     debugger that died, never "End of Debugging"; the status is the one the
     owner of the editor's children reported, and the adapter is reaped."""
-    run = DapRun(tmp_path, adapter, sleep_s=DAP_LONG_SLEEP_S)
+    run = DapRun(tmp_path, adapter, how="stay")
     try:
         with run.session as w:
             run.stop_on_ready(w)
@@ -2895,7 +2971,7 @@ def test_quit_right_after_the_adapter_died_still_says_how(tmp_path, adapter):
     itself, the reaped adapter's status read before Quit lets it go, is
     pinned by test_dap's
     test_an_adapter_reaped_but_not_reported_is_known_gone_with_its_status.)"""
-    run = DapRun(tmp_path, adapter, sleep_s=DAP_LONG_SLEEP_S)
+    run = DapRun(tmp_path, adapter, how="stay")
     try:
         with run.session as w:
             run.stop_on_ready(w)
@@ -2934,11 +3010,13 @@ def test_a_stop_while_the_file_manager_is_open_waits_for_it_under_an_adapter(
     """The File Manager is opened while the program runs on towards its
     second breakpoint: the stop arrives under it, is held, and is shown
     with the mark once Esc closes the File Manager."""
-    run = DapRun(tmp_path, adapter, sleep_s=DAP_FAR_SLEEP_S)
+    run = DapRun(tmp_path, adapter, how="hold")
     with run.session as w:
         _run_on_towards_done(run, w)
         _open_the_file_manager(w)
-        w._drain(DAP_FAR_SLEEP_S + 2)
+        run.gate.open(1)
+        assert run.gate.passed(w, 1), "the program never passed its gate"
+        w._drain(DAP_QUIET_S)            # the stop arrives under the box
         assert FILE_MANAGER_FIELD in _screen(w), \
             "the File Manager should still be drawn after the stop " \
             "(mark on %s):\n%s" % (_mark_line(w), _screen(w))
@@ -2957,8 +3035,9 @@ def test_output_with_messages_closed_leaves_the_editor_idle_under_an_adapter(
     """Messages is closed while the program prints a line every tenth of a
     second on its way to the second breakpoint: no window opens, the editor
     stays idle, the stop is marked, and everything the program printed is
-    on the User Screen (Alt-F5)."""
-    run = DapRun(tmp_path, adapter, ticks=DAP_TICKS)
+    on the User Screen (Alt-F5).  The program prints until the row has
+    looked, then prints its last line and goes on to the breakpoint."""
+    run = DapRun(tmp_path, adapter, how="ticker")
     with run.session as w:
         _run_on_towards_done(run, w)
         w.key(F6, delay=0.3)             # Messages on top, when it is open
@@ -2970,6 +3049,7 @@ def test_output_with_messages_closed_leaves_the_editor_idle_under_an_adapter(
         assert " Messages " not in _screen(w), \
             "no Messages window should open while the program runs:\n%s" \
             % _screen(w)
+        run.gate.open(1)                 # the last line, then the stop
         assert _wait_for(w, lambda: _mark_line(w) == run.done, DAP_FAR_RUN_S), \
             "the stop on line %d should be marked (mark on %s):\n%s" \
             % (run.done, _mark_line(w), _screen(w))
@@ -3045,28 +3125,24 @@ def test_closing_the_window_while_the_program_runs_keeps_the_editor(
         assert _children(w, "gdb"), "gdb should still run the session"
 
 
-# A program that prints a line every tenth of a second for six seconds on
-# its way to the next breakpoint.
+# A program that prints a line every tenth of a second, on its way to the
+# next breakpoint, until the row lets it go (one ticker line, on a gate).
 TICKING_C_PROG = (
     "#include <stdio.h>\n"
     "#include <unistd.h>\n"
     "int main(void)\n"
     "{\n"
     "  int i = 0;\n"
-    "  for (i = 0; i < 60; i++)\n"
-    "  {\n"
-    "    printf(\"TICK %d\\n\", i);\n"
-    "    fflush(stdout);\n"
-    "    usleep(100000);\n"
-    "  }\n"
+    + program_gate.MARKER + "\n"
     "  i = 99;\n"
     "  return 0;\n"
     "}\n"
 )
 TICKING_FIRST_LINE = 5    # int i = 0;
-TICKING_AFTER_LINE = 12   # i = 99;  after the loop
-TICKING_RUN_S = 6
+TICKING_AFTER_LINE = 7    # i = 99;  after the ticker
 TICKING_LAST_LINE = "TICK 59"
+TICKING_BODY = 'printf("TICK %d\\n", i)'
+TICKING_LAST = 'printf("%s\\n")' % TICKING_LAST_LINE
 CPU_SAMPLE_S = 2.0
 
 
@@ -3099,8 +3175,10 @@ def test_gdb_output_with_messages_closed_leaves_the_editor_idle(tmp_path):
     output nobody read kept the pty readable, so the editor woke without
     end and used a whole core until the program stopped."""
     _need("gcc", "gdb")
-    with WpeSession(str(tmp_path), TICKING_C_PROG, filename="p.c",
-                    wait=1.5) as w:
+    gate = program_gate.ProgramGate(tmp_path)
+    prog = gate.fill_with(TICKING_C_PROG, gate.ticker_line(
+        "c", TICKING_BODY, TICKING_LAST))
+    with WpeSession(str(tmp_path), prog, filename="p.c", wait=1.5) as w:
         _move_down(w, TICKING_FIRST_LINE - 1)
         w.key(CTRL_G, "b", delay=0.4)
         _move_down(w, TICKING_AFTER_LINE - TICKING_FIRST_LINE)
@@ -3115,8 +3193,9 @@ def test_gdb_output_with_messages_closed_leaves_the_editor_idle(tmp_path):
         assert " Messages " not in _screen(w), \
             "Ctrl-W should have closed Messages:\n%s" % _screen(w)
         _assert_idle(w, CPU_SAMPLE_S, "while the program prints")
+        gate.open(1)                     # the last line, then the stop
         assert _wait_for(w, lambda: _mark_line(w) == TICKING_AFTER_LINE,
-                         STEP_TIMEOUT_S + TICKING_RUN_S), \
+                         STEP_TIMEOUT_S), \
             "the stop on line %d should be marked (mark on %s):\n%s" \
             % (TICKING_AFTER_LINE, _mark_line(w), _screen(w))
         w.key(ALT_F5, delay=1.0)
@@ -7680,7 +7759,7 @@ def test_ctrl_c_while_a_stdio_adapter_runs_leaves_the_session_working(
     """Ctrl-C while the program runs under an adapter on the editor's pipes
     does nothing: the adapter is still there and the breakpoint ahead is
     marked when the program reaches it."""
-    run = DapRun(tmp_path, adapter, sleep_s=DAP_FAR_SLEEP_S)
+    run = DapRun(tmp_path, adapter, how="hold")
     try:
         with run.session as w:
             _run_on_towards_done(run, w)
@@ -7689,6 +7768,7 @@ def test_ctrl_c_while_a_stdio_adapter_runs_leaves_the_session_working(
             w._drain(CTRL_C_SETTLE_S)
             assert _children(w, run.case["child"]), \
                 "Ctrl-C should leave the adapter running:\n%s" % _screen(w)
+            run.gate.open(1)
             assert _wait_for(w, lambda: _mark_line(w) == run.done,
                              DAP_FAR_RUN_S), \
                 "the stop on line %d should be marked (mark on %s):\n%s" \
