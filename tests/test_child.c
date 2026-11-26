@@ -372,7 +372,7 @@ static void start_one_that_cannot_run(Run *r)
 	argv[1] = NULL;
 	chk("start", wpe_child_start(&spec, &r->c, on_ended, r), 0);
 	loop_until_ended(r, 1, SLACK_MS);
-	chk("called back", r->calls, 1);
+	chk("called back, a program that cannot run", r->calls, 1);
 	chk("could not run", exit_code(r->status), EXEC_FAILED_EXIT);
 	close_ends(r);
 }
@@ -1633,12 +1633,17 @@ static void test_capture_ends_a_command_at_its_deadline_with_a_status(void)
 }
 
 /* 24: an output larger than the pipe's buffer is read whole, and one larger
- * than the room is cut with the command left to end. */
+ * than the room is cut with the command left to end.  The producer is the
+ * shell itself, one printf of 1024 bytes 256 times, so the exit status the
+ * row checks is the producer's own (a pipeline would report its last stage
+ * only) and no tool beyond sh is needed: OpenBSD's head has no -c. */
 static void test_capture_reads_an_output_larger_than_a_pipe_buffer(void)
 {
 	static char big[BIG_OUT_MAX];
 	char small[CAPTURE_MAX];
-	char *gen[] = { "sh", "-c", "head -c 262144 /dev/zero | tr '\\0' x",
+	char *gen[] = { "sh", "-c",
+			"i=0; while [ $i -lt 256 ]; do "
+			"printf '%01024d' 0 || exit 1; i=$((i+1)); done",
 			NULL };
 	int status = 0, ran;
 

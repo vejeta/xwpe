@@ -65,7 +65,10 @@ export LC_ALL
 known_failures() {
   case $1 in
     freebsd)
-      # No test is known to fail on FreeBSD.
+      cat <<'EOF'
+test_child|called back, a program that cannot run|a child's end arrives late under load, after the 700 ms wait that is not yet scaled (run 45875549405); listed 2026-11-26|BT11|flaky
+test_child|could not run|the status of the row before it, whose end came late; known only when that row fails too; listed 2026-11-26|BT11|flaky|called back, a program that cannot run
+EOF
       ;;
     openbsd)
       cat <<'EOF'

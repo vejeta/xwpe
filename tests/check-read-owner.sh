@@ -87,6 +87,16 @@
 #     READ_FLAGS_BASE is defined with O_NONBLOCK and O_NOCTTY; ~O_NONBLOCK
 #     appears only in read_clear_nonblock.  Clause m only counts the word
 #     openat; this one keeps its flags from losing the guard.  No allow line.
+#  w. the load of a descriptor name: read_load_own and every function of
+#     we_read.c it reaches (derived from the calls, not listed;
+#     read_target_open_fd itself is the end of the walk) have no char pointer
+#     among their parameters and call read_target_open_fd only with
+#     READ_NULL_DEVICE; a macro body names read_target_open_fd only so too; in
+#     wpe_read_load_open the name is used as an argument of
+#     read_spelling_number and read_load_named only (never passed elsewhere,
+#     assigned or kept).  A name that reaches the load of a descriptor is
+#     how a system without /dev/fd/N refused a descriptor the editor held.
+#     No allow line.
 # Everywhere:
 #  k. symbols (nm -u of the editor's objects, normalised: the 64 spellings, a
 #     NetBSD __opendir30, a Mach-O $INODE64): opendir, scandir, nftw, ftw,
@@ -376,9 +386,83 @@ scan() {
         t = substr(t, RSTART + RLENGTH)
       }
     }
+    # clause u, the load of a descriptor name, in a macro: the one open of
+    # the owner is named in a macro body only to open the null device, so a
+    # macro cannot carry a name to the open out of sight of the reach below
+    function note_reach_macro(s,   t, p) {
+      t = s
+      while (match(t, /(^|[^A-Za-z0-9_.>])read_target_open_fd([^A-Za-z0-9_]|$)/)) {
+        p = RSTART + RLENGTH - 1
+        if (substr(t, p, 1) != "(" && match(substr(t, p), /^[ \t]*[(]/)) p = p + RLENGTH - 1
+        if (substr(t, p, 1) != "(" || nth_arg(t, p, 1) != "READ_NULL_DEVICE") note("r22w", 1)
+        t = substr(t, p + 1)
+      }
+    }
+    # clause u: how many times wpe_read_load_open uses its name in a
+    # statement other than as the argument of the two functions that take a
+    # name (a call that passes it on, an assignment into a variable that
+    # outlives the call, a macro).  The name leaving by any other road is
+    # how the load of a descriptor could come to hold it.
+    function name_uses_outside_two_faces(s,   t, n, p, e, name) {
+      t = s; gsub(/"([^"\\]|\\.)*"/, "\"\"", t)
+      while (match(t, /(^|[^A-Za-z0-9_.>])(read_spelling_number|read_load_named)[ \t]*[(]/)) {
+        p = RSTART + RLENGTH - 1
+        e = close_paren(t, p)
+        if (e <= 0) break
+        t = substr(t, 1, RSTART - 1) " " substr(t, e)
+      }
+      n = 0
+      while (match(t, /(^|[^A-Za-z0-9_.>])path([^A-Za-z0-9_]|$)/)) { n++; t = substr(t, RSTART + RLENGTH - 1) }
+      return n
+    }
+    # clause u, the load of a descriptor name: record what each function of
+    # we_read.c calls (the reach is derived at the end, so no list of names
+    # goes stale), the one-open calls with their first argument, and every call
+    # that hands the load face its name
+    function note_reach(s,   t, p, name, ps, header) {
+      if (ppmode) { note_reach_macro(s); return }
+      header = 0
+      if (!(fn in sig)) { ps = s; sub(/[{].*$/, "", ps); sub(/^[^(]*[(]/, "", ps); sig[fn] = ps; header = 1 }
+      if (fn == "wpe_read_load_open" && !header) badpath += name_uses_outside_two_faces(s)
+      t = s
+      while (match(t, /(^|[^A-Za-z0-9_.>])[A-Za-z_][A-Za-z0-9_]*[ \t]*[(]/)) {
+        name = substr(t, RSTART, RLENGTH); sub(/^[^A-Za-z_]/, "", name); sub(/[ \t]*[(]$/, "", name)
+        p = RSTART + RLENGTH - 1
+        if (name ~ /^(if|while|for|switch|return|sizeof)$/) { t = substr(t, p + 1); continue }
+        calls[fn, name] = 1
+        if (name == "read_target_open_fd" && nth_arg(t, p, 1) != "READ_NULL_DEVICE") badopen[fn]++
+        t = substr(t, p + 1)
+      }
+    }
+    # clause u at the end of we_read.c: the load of a descriptor name
+    # (read_load_own and every function of the file it reaches, the one open
+    # itself excepted) has no name in its parameters and opens only the null
+    # device; wpe_read_load_open hands its name to the two functions that
+    # take a name.  A name that reached the load of a descriptor is how a
+    # system that does not serve /dev/fd/N refused a descriptor in hand.
+    function note_reach_end(   k, kk, f, changed, n) {
+      if (file != "we_read.c") return
+      reach["read_load_own"] = 1
+      changed = 1
+      while (changed) {
+        changed = 0
+        for (k in calls) {
+          split(k, kk, SUBSEP)
+          if ((kk[1] in reach) && (kk[2] in sig) && kk[2] != "read_target_open_fd" && !(kk[2] in reach)) { reach[kk[2]] = 1; changed = 1 }
+        }
+      }
+      for (f in reach) {
+        if (!(f in sig)) continue
+        n = badopen[f]
+        if (sig[f] ~ /char[ \t]*[*]/) n++
+        if (n > 0) print "r22w", file, f, n
+      }
+      if (badpath > 0) print "r22w", file, "wpe_read_load_open", badpath
+    }
     # the clauses of we_read.c itself
     function note_owner(s, m,   t, p, e, lit, a, mode, name) {
       note_flags(s, m)
+      note_reach(s)
       t = s
       while (match(t, /"([^"\\]|\\.)*"/)) {
         lit = substr(t, RSTART, RLENGTH)
@@ -443,6 +527,7 @@ scan() {
     }
     END {
       statement(stmt); flush_fn()
+      note_reach_end()
       for (r in ppcnt) if (ppcnt[r] > 0) print r, file, "(preprocessor)", ppcnt[r]
     }' "$1"
 }
@@ -845,6 +930,70 @@ EOF
   u_variant no_assign "$base_def" 'int flags;' 'flags |= O_NOFOLLOW;' flags 'r22u we_read.c read_target_open_fd 1'
   u_variant base_loses_nonblock '#define READ_FLAGS_BASE (O_RDONLY | O_NOCTTY | O_CLOEXEC)' 'int flags = READ_FLAGS_BASE;' 'flags |= O_NOFOLLOW;' flags 'r22u we_read.c (preprocessor) 1'
   u_variant base_loses_noctty '#define READ_FLAGS_BASE (O_RDONLY | O_NONBLOCK | O_CLOEXEC)' 'int flags = READ_FLAGS_BASE;' 'flags |= O_NOFOLLOW;' flags 'r22u we_read.c (preprocessor) 1'
+  # clause u, the load of a descriptor name: a copy of the owner's load with
+  # one change.  The functions reached from read_load_own must hold no name
+  # and open only the null device; a function no load reaches may open a
+  # name (read_begin below); wpe_read_load_open gives its name to two
+  # functions only.  The proper one is quiet.
+  reach_variant() {
+    # reach_variant NAME JUDGE_BODY HELPER MOVE_CALL LOAD_CALL WANT
+    mkdir "$WORK/fx_r_$1"
+    {
+      echo "$3"
+      echo 'static int read_judge_own(int n, int src, WpeReadOutcome *o)'
+      echo '{'
+      echo " $2"
+      echo '}'
+      echo 'static int read_move_above_low(int n, const WpeReadAsk *ask, WpeReadOutcome *o)'
+      echo '{'
+      echo ' int quiet = read_target_open_fd(READ_NULL_DEVICE, ask, 0);'
+      echo " $4"
+      echo ' return(quiet);'
+      echo '}'
+      echo 'static int read_begin(const char *path, const WpeReadAsk *ask)'
+      echo '{'
+      echo ' return(read_target_open_fd(path, ask, 0));'
+      echo '}'
+      echo 'static int read_load_own(const WpeReadAsk *ask, int n, FILE **fp, int *fd, WpeReadOutcome *o)'
+      echo '{'
+      echo ' if (read_judge_own(n, n, o) != 0)'
+      echo '  return(-1);'
+      echo ' return(read_move_above_low(n, ask, o));'
+      echo '}'
+      echo 'int wpe_read_load_open(const char *path, const char *what, FILE **fp, int *fd, WpeReadOutcome *o)'
+      echo '{'
+      echo ' int number = read_spelling_number(path);'
+      echo ' if (number != -1)'
+      echo "  $5"
+      echo ' return(read_load_named(&ask, path, fp, fd, o));'
+      echo '}'
+    } > "$WORK/fx_r_$1/we_read.c"
+    scan "$WORK/fx_r_$1/we_read.c" | grep '^r22w ' >"$WORK/fx_r_$1/found"
+    if [ -z "$6" ]; then
+      if [ -s "$WORK/fx_r_$1/found" ]; then
+        echo "check-read-owner: FAIL (selftest: clause w names the proper load of a descriptor ($1); it found:)"
+        cat "$WORK/fx_r_$1/found"
+        exit $BAD
+      fi
+    elif ! grep -qx "$6" "$WORK/fx_r_$1/found"; then
+      echo "check-read-owner: FAIL (selftest: clause w does not name $1: want $6; it found:)"
+      cat "$WORK/fx_r_$1/found"
+      exit $BAD
+    fi
+  }
+  own_call='return(read_load_own(&ask, number, fp, fd, o));'
+  reach_variant reach_proper 'return(0);' '' '' "$own_call" ''
+  reach_variant reach_name_in_judge 'return(read_target_open_fd(path, 0, 0));' '' '' "$own_call" 'r22w we_read.c read_judge_own 1'
+  reach_variant reach_helper_opens_name 'return(0);' 'static int read_serve_check(const char *name) { return(read_target_open_fd(name, 0, 0)); }' 'read_serve_check("x");' "$own_call" 'r22w we_read.c read_serve_check 2'
+  reach_variant reach_helper_holds_name 'return(0);' 'static int read_note_name(const char *name) { return(0); }' 'read_note_name("x");' "$own_call" 'r22w we_read.c read_note_name 1'
+  reach_variant reach_path_elsewhere 'return(0);' '' '' 'return(read_probe_name(path));' 'r22w we_read.c wpe_read_load_open 1'
+  # a macro that wraps the one open for a name, and a name kept in a variable
+  # that outlives the call: neither is a call the walk above can follow
+  reach_variant reach_macro_quiet 'return(0);' '#define READ_OPEN_QUIET() read_target_open_fd(READ_NULL_DEVICE, 0, 0)' '' "$own_call" ''
+  reach_variant reach_macro_wraps_name 'return(0);' '#define READ_OPEN_NAMED(p) read_target_open_fd(p, 0, 0)' '' "$own_call" 'r22w we_read.c (preprocessor) 1'
+  reach_variant reach_macro_bare_alias 'return(0);' '#define READ_OPEN_ALIAS read_target_open_fd' '' "$own_call" 'r22w we_read.c (preprocessor) 1'
+  reach_variant reach_name_kept_global 'return(0);' 'static const char *read_kept_name;' '' 'read_kept_name = path; return(read_load_own(&ask, number, fp, fd, o));' 'r22w we_read.c wpe_read_load_open 1'
+  reach_variant reach_name_into_macro 'return(0);' '#define READ_KEEP(p) (read_kept = (p))' '' 'READ_KEEP(path); return(read_load_own(&ask, number, fp, fd, o));' 'r22w we_read.c wpe_read_load_open 1'
   # clause k: an opener planted in an object is named, however the system
   # spells it; an object listed and not on disk is a problem of its own
   printf 'DIR *f(const char *p) { return opendir(p); }\nint g(void) { return gzopen != 0; }\n' > "$WORK/planted.c"
@@ -988,6 +1137,8 @@ awk -F'|' -v kscan=$kscan -v nbobjs=" $(tr '\n' ' ' < "$WORK/notbuilt_objs")" '
         print "offender: " $1 " " $2 ": a face of the load is called from the wrong function: wpe_read_load_open only from e_edit_source_open, e_pipe_load_begin only from e_edit_open, wpe_read_note_own_fifo and mkfifo only from e_d_fifos_make.  A FIFO the owner was not told about, or a second asker of a pipe, is how a read waited or took another program'"'"'s bytes.  No allow line"
       else if (rule == "r22u")
         print "offender: " $1 " " $2 ": the flags of the owner'"'"'s one open lost their guard: the openat of read_target_open_fd must pass the variable flags, assigned once from READ_FLAGS_BASE (which keeps O_NONBLOCK and O_NOCTTY), changed only with |=, and ~O_NONBLOCK belongs to read_clear_nonblock alone.  Without them a FIFO opened for reading waits for a writer.  No allow line"
+      else if (rule == "r22w")
+        print "offender: " $1 " " $2 ": a name reached the load of a descriptor.  read_load_own and every function it reaches in we_read.c hold no name (no char pointer parameter) and ask read_target_open_fd for READ_NULL_DEVICE only, in a macro as well; wpe_read_load_open uses its name only as an argument of read_spelling_number and read_load_named, never passed on, assigned or kept in a variable.  A descriptor in hand is never refused for a name the system does not serve.  No allow line"
       else if (rule == "r22i")
         print "offender: " $1 " " $2 ": a sentence word is spelt in we_read.c (Cannot, not found, it is, larger).  The words of a refusal are we_path.c'"'"'s: map the outcome onto them.  No allow line"
       else if (rule == "r22j")

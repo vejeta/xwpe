@@ -35,6 +35,11 @@
 #define READ_HUGE_NUMBER            1000000  /* a spelled number no descriptor can have */
 #define READ_NUMBER_DIGITS_MAX      9
 
+/* The test hook of the load face, read from the variable the owners share. */
+#define READ_TEST_FAIL_ENV               "XWPE_TEST_FAIL"
+#define READ_TEST_FAIL_PIPE_ENDS_UNTOLD  "read-pipe-ends-untold"
+#define READ_TEST_FAIL_PROBE_PIPE        "read-probe-pipe-fails"
+
 /**
  * ReadStarted - What the editor knows of one descriptor number it was started with.
  * @was_open: the number was open when the editor started.
@@ -52,6 +57,7 @@ static ReadStarted read_started[WPE_READ_STARTED_MAX];
 static int         read_kept_fd = -1;      /* the data of descriptor 0, moved off it by the terminal backend */
 static int         read_probe_known;       /* read_probe_ident is the device of an unnamed pipe here */
 static WpeSeenIdent read_probe_ident;
+static int         read_ends_told;         /* a pipe's writing end says O_WRONLY on this system */
 static char      **read_own_fifos;         /* the FIFOs the editor made, by path */
 static size_t      read_own_count;
 
@@ -121,18 +127,51 @@ static int read_bound_refuses(const WpeReadAsk *ask, const struct stat *st)
 }
 
 /**
- * read_probe_pipe_device - Learn which device an unnamed pipe carries here.
+ * read_access_mode - The access mode a system reports for a descriptor.
+ * @fd: the descriptor; @is_pipe: it is one end of a pipe.
+ *
+ * The one place the owner reads the mode of a pipe end, for the probe and for
+ * the judgement of a start descriptor alike.  XWPE_TEST_FAIL carrying
+ * "read-pipe-ends-untold" makes every pipe end say O_RDWR, as FreeBSD and
+ * OpenBSD do, so a Linux run plays them.  A test hook only.
+ * Return: O_RDONLY, O_WRONLY or O_RDWR, or -1 with errno set.
+ */
+static int read_access_mode(int fd, int is_pipe)
+{
+ const char *hook;
+ int flags = fcntl(fd, F_GETFL);
+
+ if (flags < 0)
+  return -1;
+ hook = getenv(READ_TEST_FAIL_ENV);
+ if (is_pipe && hook != NULL && strstr(hook, READ_TEST_FAIL_PIPE_ENDS_UNTOLD) != NULL)
+  return O_RDWR;
+ return flags & O_ACCMODE;
+}
+
+/**
+ * read_probe_pipe - Learn two facts of this system's pipes from one probe.
  *
  * Lets the load tell a pipe that a program made (no name anywhere) from a FIFO
  * on a file system: the first has the device of this probe, the second the
- * file system's own.  The probe is made and closed at once.
+ * file system's own.  It also learns whether this system says which end of a
+ * pipe is the writing one (Linux and NetBSD do; FreeBSD and OpenBSD report
+ * both ends as two-way), so `xwpe /dev/fd/1 | cat` keeps its output
+ * everywhere.  The probe is made and closed at once.  When it cannot be made
+ * the ends are taken as untold, the safe side: no output can be lost.
+ * XWPE_TEST_FAIL carrying "read-probe-pipe-fails" makes the probe fail, so a
+ * test plays a system that has run out of descriptors.  A test hook only.
  */
-static void read_probe_pipe_device(void)
+static void read_probe_pipe(void)
 {
  int ends[2];
  struct stat st;
+ const char *hook = getenv(READ_TEST_FAIL_ENV);
 
  read_probe_known = 0;
+ read_ends_told = 0;
+ if (hook != NULL && strstr(hook, READ_TEST_FAIL_PROBE_PIPE) != NULL)
+  return;
  if (pipe(ends) != 0)
   return;
  if (fstat(ends[0], &st) == 0)
@@ -140,8 +179,20 @@ static void read_probe_pipe_device(void)
   wpe_seen_ident_of_device(&st, &read_probe_ident);
   read_probe_known = 1;
  }
+ read_ends_told = read_access_mode(ends[1], 1) == O_WRONLY;
  close(ends[0]);
  close(ends[1]);
+}
+
+/**
+ * read_pipe_ends_told - Does this system say which end of a pipe writes?
+ * Return: 1 when the access mode of a pipe's writing end is O_WRONLY.
+ */
+static int read_pipe_ends_told(void)
+{
+ if (!read_probe_known)
+  read_probe_pipe();
+ return read_ends_told;
 }
 
 /**
@@ -166,7 +217,7 @@ static void read_forget_own_fifos(void)
 static int read_pipe_is_unnamed(const struct stat *st)
 {
  if (!read_probe_known)
-  read_probe_pipe_device();
+  read_probe_pipe();
  if (!read_probe_known)
   return 1;
  return wpe_seen_ident_on_device(st, &read_probe_ident);
@@ -1099,7 +1150,7 @@ void wpe_read_note_start(void)
   if (fstat(n, &st) == 0)
    read_note_started_one(&read_started[n], &st);
  }
- read_probe_pipe_device();
+ read_probe_pipe();
 }
 
 /**
@@ -1223,6 +1274,14 @@ static int read_number_is_taken(int n)
  * The guard goes by the number: the editor closes a number it was started with
  * only in read_adopt, which marks it taken.  Where the object had an identity
  * at the start it is also compared now, as a second check.
+ *
+ * Premise no tool enforces: on NetBSD and OpenBSD, where a pipe has no
+ * identity, this number rule is the only guard against a number that another
+ * pipe took.  It holds only while no other code closes or replaces a start
+ * number.  Nothing scans for such a close or dup2 today; the premise is kept
+ * by review.  Revisit when any code other than read_adopt closes or replaces
+ * a start number (the terminal backend moving descriptor 0 is the expected
+ * first): then add a scan for it beside the read owner's clauses.
  * Return: 1 when it is.
  */
 static int read_started_with(int n, const struct stat *st)
@@ -1285,19 +1344,41 @@ static int read_start_refuses(int n, int src, WpeReadOutcome *o)
 }
 
 /**
+ * read_is_output - Is this descriptor one the editor writes its screen or its
+ * messages to, or one that only takes bytes?
+ * @n: the number a name spelled; @src: the descriptor holding it now; @st: its stat.
+ *
+ * Lets `xwpe /dev/fd/1 | cat` and `xwpe /dev/fd/2 2>&1 | cat` keep their
+ * output on every system.  An access mode of O_WRONLY is an output whatever
+ * the object and the number.  Where the system does not tell the writing end
+ * of a pipe (FreeBSD, OpenBSD: both ends say two-way), a pipe at number 1 or 2
+ * is also an output, because /dev/null would replace a standard output that
+ * is a pipe.  A pipe's read end at 3 and above, or at 0, is data.
+ * Return: 1 when it is an output.
+ */
+static int read_is_output(int n, int src, const struct stat *st)
+{
+ int mode = read_access_mode(src, S_ISFIFO(st->st_mode));
+
+ if (mode < 0 || mode == O_WRONLY)
+  return 1;
+ if (!S_ISFIFO(st->st_mode) || read_pipe_ends_told())
+  return 0;
+ return n == STDOUT_FILENO || n == STDERR_FILENO;
+}
+
+/**
  * read_judge_own - Judge a descriptor the editor was started with.
- * @src: the descriptor; @o: the outcome.
+ * @n: the number a name spelled; @src: the descriptor; @o: the outcome.
  *
  * A terminal, a device, a socket and a folder are refused with their kind, and
- * a descriptor open for writing only is refused as a bad descriptor, so
- * `xwpe /dev/fd/1 | cat` does not lose its output.  A pipe and a regular file
- * go on.
+ * an output is refused as a bad descriptor, so `xwpe /dev/fd/1 | cat` does not
+ * lose its output.  A pipe and a regular file go on.
  * Return: 0, or -1 with the outcome set.
  */
-static int read_judge_own(int src, WpeReadOutcome *o)
+static int read_judge_own(int n, int src, WpeReadOutcome *o)
 {
  struct stat st;
- int flags;
 
  if (fstat(src, &st) != 0)
  {
@@ -1309,36 +1390,12 @@ static int read_judge_own(int src, WpeReadOutcome *o)
   read_note_not_a_file(o, st.st_mode, read_stat_is_tty(src, &st), 0);
   return -1;
  }
- flags = fcntl(src, F_GETFL);
- if (flags < 0 || (flags & O_ACCMODE) == O_WRONLY)
+ if (read_is_output(n, src, &st))
  {
   read_note_system(o, EBADF);
   return -1;
  }
  read_note_stat(o, &st);
- return 0;
-}
-
-/**
- * read_system_serves - Does the system serve this descriptor name?
- * @path: the spelling; @ask: the ask; @o: the outcome.
- *
- * For a number of 3 and above only, and only once the number passed as one the
- * editor was started with: FreeBSD has no /dev/fd/3 and NetBSD refuses to open
- * it, so there the name is refused with the open's own reason, as cat does.
- * The one open is closed at once and nothing more is tried.
- * Return: 0, or -1 with the outcome set.
- */
-static int read_system_serves(const char *path, const WpeReadAsk *ask, WpeReadOutcome *o)
-{
- int probe = read_target_open_fd(path, ask, 0);
-
- if (probe < 0)
- {
-  read_note_system(o, errno);
-  return -1;
- }
- close(probe);
  return 0;
 }
 
@@ -1463,23 +1520,24 @@ static int read_adopt(int n, int src, const WpeReadAsk *ask, FILE **fp, int *fd,
 
 /**
  * read_load_own - Load the descriptor a name spells.
- * @path: the spelling; @ask: the ask; @n: the number it spells; @fp, @fd: receive
- * the stream or the descriptor; @o: the outcome.
+ * @ask: the ask; @n: the number a name spelled; @fp, @fd: receive the stream or
+ * the descriptor; @o: the outcome.
  *
- * The object is asked of descriptor @n by fstat, never of the name, because a
- * system's /dev/stdin may be a character device that is not the pipe behind it.
+ * What the user gets: the three spellings mean the descriptor the editor was
+ * started with, whether or not this system serves /dev/fd (FreeBSD without
+ * fdescfs does not).  The object is asked of descriptor @n by fstat, never of
+ * a name, because a system's /dev/stdin may be a character device that is not
+ * the pipe behind it.  No name reaches this function or anything it calls.
  * Return: 0, or -1 with the outcome set.
  */
-static int read_load_own(const char *path, const WpeReadAsk *ask, int n, FILE **fp,
-                         int *fd, WpeReadOutcome *o)
+static int read_load_own(const WpeReadAsk *ask, int n, FILE **fp, int *fd,
+                         WpeReadOutcome *o)
 {
  int src = read_source_number(n);
 
  if (read_start_refuses(n, src, o) != 0)
   return -1;
- if (read_judge_own(src, o) != 0)
-  return -1;
- if (n >= READ_LOW_DESCRIPTORS && read_system_serves(path, ask, o) != 0)
+ if (read_judge_own(n, src, o) != 0)
   return -1;
  return read_adopt(n, src, ask, fp, fd, o);
 }
@@ -1546,6 +1604,6 @@ int wpe_read_load_open(const char *path, const char *what, FILE **fp, int *fd,
  *fp = NULL;
  *fd = -1;
  if (number != READ_NO_NUMBER)
-  return read_load_own(path, &ask, number, fp, fd, o);
+  return read_load_own(&ask, number, fp, fd, o);
  return read_load_named(&ask, path, fp, fd, o);
 }
