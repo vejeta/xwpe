@@ -22,6 +22,7 @@ from edit_model.oracle import (DOWN, END, ENTER, F2, RIGHT, SHIFT_RIGHT, UP,  # 
                                EditSession, alt, ctrl)
 from wpe_driver import ALT, WpeSession  # noqa: E402
 import procinfo  # noqa: E402
+import gui_owner  # noqa: E402
 
 # \w \b \< \> are GNU regex escapes: the system's regular expression engine
 # either has them (glibc, macOS with REG_ENHANCED) or does not (FreeBSD,
@@ -443,16 +444,23 @@ def test_grep_of_a_text_that_is_no_expression_says_why(tmp_path):
 
 # ---- speed ----
 
+# Change All over this many rows of 80 bytes, and the seconds it may take on
+# an idle machine (the owner stretches them by XWPE_TEST_WAIT_SCALE).
+CHANGE_ALL_ROWS = 100000
+CHANGE_ALL_LIMIT_S = 60
+
+
 # @scenario SC-edit-model-56
 def test_change_all_over_a_hundred_thousand_rows_ends_soon(tmp_path):
     """The search is a few percent of the command: Change All "foo" by "bar"
     over 100000 rows of 80 bytes takes seconds, not minutes."""
-    rows = ["x" * 36 + " foo " + "y" * 39 for _ in range(100000)]
+    rows = ["x" * 36 + " foo " + "y" * 39 for _ in range(CHANGE_ALL_ROWS)]
     seed = "\n".join(rows) + "\n"
     with EditSession(str(tmp_path), seed) as s:
         start = time.monotonic()
         s.send([alt("s"), "r", "f", "o", "o", ALT_N, "b", "a", "r", ALT_P, ALT_A], timeout=120)
         elapsed = time.monotonic() - start
         s.send([ENTER, F2], timeout=120)
-        assert s.disk().count(b"bar") == 100000
-        assert elapsed < 60, "Change All took %.1f s" % elapsed
+        assert s.disk().count(b"bar") == CHANGE_ALL_ROWS
+        assert elapsed < gui_owner.scaled(CHANGE_ALL_LIMIT_S), \
+            "Change All took %.1f s" % elapsed

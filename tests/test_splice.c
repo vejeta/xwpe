@@ -20,6 +20,7 @@
 #define WIDTH          80
 #define NUMUNDO        10
 #define MANY_APPENDS   10000
+#define STEP_PIECES    20000   /* the records one action pushes over a long file */
 #define MAX_ROWS       16
 #define STATE_PLAIN    0
 #define STATE_COMMENT  5
@@ -1045,6 +1046,55 @@ static void case_the_undo_bound(void)
  for (i = 0; i < NUMUNDO + 3; i++)
   e_buffer_delete_lines(&buf, 0, 1, E_BUFFER_STEP_NEW);
  chk("23 actions Ctrl-U can take back", list_len(buf.ud), NUMUNDO + 1);
+ fixture_free();
+}
+
+/* One record of the action a user is in, as a Change All pushes two per row
+   it changes: the owner's own record, empty, since the bound reads the flags
+   and the links and nothing else. */
+static void step_piece_push(void)
+{
+ Undo *rec = e_buffer_record_new('r');
+
+ if (rec == NULL || e_buffer_record_push(&buf, rec) == NULL)
+  exit(2);
+}
+
+/* The bound counts actions, never their pieces, so it never walks the action
+   that is open.  A Change All over 100 000 rows pushes 2 records per row
+   inside one action, and a bound that walked the list on every record walked
+   5e9 links: 15 s here and 101 s on CI for a change that takes a second.
+   What the user would see go wrong: Change All over a long file hangs. */
+static void case_the_undo_bound_never_walks_the_open_step(void)
+{
+ long walked_first, walked_second;
+ int i;
+
+ fixture(30, E_BUFFER_HISTORY_FULL);
+ for (i = 0; i < NUMUNDO + 3; i++)
+  e_buffer_delete_lines(&buf, 0, 1, E_BUFFER_STEP_NEW);
+ chk("72 the list is at its bound", list_len(buf.ud), NUMUNDO + 1);
+ e_buffer_test_trim_walked(1);
+ e_buffer_step_begin(&buf);
+ for (i = 0; i < STEP_PIECES; i++)
+  step_piece_push();
+ walked_first = e_buffer_test_trim_walked(0);
+ chk("72 the pieces of an open step cost no walk", walked_first <= NUMUNDO + 1, 1);
+ chk("72 the step and the bound's older actions stay", list_len(buf.ud),
+     STEP_PIECES + NUMUNDO);
+ e_buffer_test_trim_walked(1);
+ for (i = 0; i < STEP_PIECES; i++)
+  step_piece_push();
+ walked_second = e_buffer_test_trim_walked(0);
+ printf("NOTE 72: the bound walked %ld then %ld record(s) for %d pieces of one "
+        "step and %d more\n", walked_first, walked_second, STEP_PIECES,
+        STEP_PIECES);
+ chk("72 twice the pieces walk nothing more", walked_second == 0, 1);
+ chk("72 ... and the list grew by them", list_len(buf.ud), 2 * STEP_PIECES + NUMUNDO);
+ e_buffer_step_end(&buf);
+ for (i = 0; i < NUMUNDO + 3; i++)
+  e_buffer_delete_lines(&buf, 0, 1, E_BUFFER_STEP_NEW);
+ chk("72 the closed step counts as one action", list_len(buf.ud), NUMUNDO + 1);
  fixture_free();
 }
 
@@ -3461,6 +3511,7 @@ int main(void)
  case_a_refused_undo_keeps_a_pocketed_breakpoint();
  case_a_view_row_may_exceed_the_width();
  case_the_undo_bound();
+ case_the_undo_bound_never_walks_the_open_step();
  case_append_text();
  case_append_rows();
  case_many_appends();

@@ -264,6 +264,7 @@ typedef struct BFF {
  int covered;          /* cover depth: splices inside record nothing */
  int step_depth;       /* step depth: records inside are one Ctrl-U */
  int step_pushed;      /* records pushed in the open step */
+ int undo_steps;       /* actions on ud: the bound cuts when one more comes */
  POINT step_blk[WPE_BLOCK_ENDS]; /* the block when the open step began */
  int replaying;        /* the list a replay's inverses go to (E_BUFFER_REPLAY_*) */
  Undo *pocket;         /* the outermost cover's record: rows a covered deletion removes */

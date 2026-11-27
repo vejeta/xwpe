@@ -374,6 +374,9 @@ void   wpe_buffer_trace(const char *fmt, ...);
 
 int    e_str_len(const unsigned char *s);
 void   e_buffer_test_fail_allocs(int n);
+/* Tests only: how many records the bound on Ctrl-U walked (the pieces of
+   the action a user is in must cost it nothing). */
+long   e_buffer_test_trim_walked(int reset);
 
 /* Tests only: memory refused inside one action of the running editor.  A
    point is armed once at startup ($XWPE_TEST_FAULT, "<name>:<n>"); the first

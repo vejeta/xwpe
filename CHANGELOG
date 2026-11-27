@@ -600,6 +600,16 @@ Changes
 
 1.7.0 (AI assistant -- experimental, opt-in)
 
+* Change All over a long file no longer takes minutes.  Replacing "foo" by
+  "bar" over 100 000 rows took 15 s on this machine and 101 s in CI, where
+  the search and the swap together are about a second.  Change All records
+  two pieces per row it changes inside one action, and every record it wrote
+  walked the whole undo list again to keep your Num. Undo bound, so the
+  command walked some 5e9 links of its own making.  The list is now cut once
+  per action instead of once per record, and the same replace takes 1.6 s.
+  Ctrl-U and Ctrl-R still take back and return the same actions, an action is
+  still never cut in the middle, and Num. Undo still counts actions, never
+  their pieces.  Rows: tests/test_splice.c and tests/test_find_regex_owner.py.
 * Keys you type while the assistant finishes a run no longer answer its
   question.  Typing the next request ("run the tests") as the run ended put
   an `r` into the changeset review, and `r` reverts every change of the run;

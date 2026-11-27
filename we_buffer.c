@@ -1877,22 +1877,49 @@ static void buffer_list_free(Undo *ud)
  }
 }
 
-/* Keep the user's last `steps` actions on the list, freeing older ones.  A
-   step is one record without E_UNDO_MORE and the MORE records above it. */
-static void buffer_list_trim(Undo *ud, int steps)
+/* tests only: how many records the bound on Ctrl-U walked since the last
+   reset */
+static long buffer_trim_walked;
+
+/**
+ * e_buffer_test_trim_walked - How many records the bound on Ctrl-U walked.
+ * @reset: non-zero to start the count again.
+ *
+ * Only the C test calls it: it proves that the pieces of the action a user
+ * is in cost the bound nothing, so a Change All over a long file stays as
+ * fast as the change itself instead of walking its own records per piece.
+ * Return: the records walked since the last call that reset the count.
+ */
+long e_buffer_test_trim_walked(int reset)
 {
+ long walked = buffer_trim_walked;
+
+ if (reset)
+  buffer_trim_walked = 0;
+ return(walked);
+}
+
+/* Keep the user's last `steps` actions on the buffer's list, freeing older
+   ones.  A step is one record without E_UNDO_MORE and the MORE records above
+   it.  Only the push of a step's first record calls it, so the walk ends in
+   the actions the user keeps and never crosses the action that is open. */
+static void buffer_list_trim(BUFFER *b, int steps)
+{
+ Undo *ud;
  int seen = 0;
 
  if (steps < 1)
   steps = 1;
- for (; ud != NULL; ud = ud->next)
+ for (ud = b->ud; ud != NULL; ud = ud->next)
  {
+  buffer_trim_walked++;
   if (ud->flags & E_UNDO_MORE)
    continue;
   if (++seen == steps)
   {
    buffer_list_free(ud->next);
    ud->next = NULL;
+   b->undo_steps = steps;
    return;
   }
  }
@@ -1904,6 +1931,23 @@ static void buffer_list_trim(Undo *ud, int steps)
 static int buffer_undo_steps_kept(BUFFER *b)
 {
  return(b->cn->numundo + 1);
+}
+
+/* Keep the user's bound on Ctrl-U after a record was linked on the undo
+   list.  Only the first record of an action is one more action to take back,
+   and only then can the list have grown past the bound; the records that
+   follow inside the same action (a Change All pushes two per row it changes)
+   add no action, so they never walk the list they were just linked on. */
+static void buffer_undo_bound_keep(BUFFER *b, const Undo *rec)
+{
+ int kept;
+
+ if (b->cn == NULL || (rec->flags & E_UNDO_MORE))
+  return;
+ kept = buffer_undo_steps_kept(b);
+ b->undo_steps++;
+ if (b->undo_steps > kept)
+  buffer_list_trim(b, kept);
 }
 
 /* Link a record that must be kept: on the list the replay names, MORE
@@ -1930,8 +1974,7 @@ static void buffer_record_link(BUFFER *b, Undo *rec)
  }
  rec->next = b->ud;
  b->ud = rec;
- if (b->cn != NULL)
-  buffer_list_trim(b->ud, buffer_undo_steps_kept(b));
+ buffer_undo_bound_keep(b, rec);
 }
 
 /* Which list a record was pushed for, as the trace says it: a fresh change
@@ -6269,6 +6312,16 @@ static void buffer_replay_view_pass(BUFFER *b, int replaying, const POINT *at)
  e_buffer_block_between(b, E_BUFFER_POS_CURSOR, E_BUFFER_POS_CURSOR);
 }
 
+/* The action a Ctrl-U just took back left the undo list, and the count the
+   bound keeps goes with it: the next action the user makes cuts the list by
+   what it holds, never by a count that still names an action that is gone. */
+static void buffer_undo_step_left(BUFFER *b, int replaying)
+{
+ if (replaying != E_BUFFER_REPLAY_UNDO || b->undo_steps == 0)
+  return;
+ b->undo_steps--;
+}
+
 /* One step back (Undo) or forward (Redo), whole or not at all.  Its
    records are taken off their list only once the step was made: a step
    refused for want of memory leaves them, the user's lines, marks,
@@ -6292,6 +6345,7 @@ static int buffer_replay(BUFFER *b, SCHIRM *s, Undo **list, int replaying)
  if (r == E_BUFFER_OK)
  {
   buffer_records_drop(list, taken);
+  buffer_undo_step_left(b, replaying);
   buffer_marks_inside(b);
   buffer_block_close(b);     /* the step set the block's ends: a block Ctrl-K B left open is ended */
   if (view)
@@ -6334,6 +6388,7 @@ void e_buffer_history_drop(BUFFER *b)
  buffer_list_free(b->rd);
  b->ud = NULL;
  b->rd = NULL;
+ b->undo_steps = 0;
 }
 
 /**
