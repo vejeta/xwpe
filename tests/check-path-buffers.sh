@@ -106,6 +106,18 @@
 #     listed as a QUOTE line.  Not seen: an array of several dimensions, one declared over
 #     several statements, and a path handed on through a pointer variable.
 #
+# How it is made fast: one awk pass per source file (scan_file) blanks the
+# comments, applies every rule that needs one file alone, and writes that
+# file's "facts" to the work folder: its defines, the copies and the unbounded
+# scans it counts per function, what rule 11 knows of each function and the
+# names that function calls, the arrays rule 12 sees handed to a path, and the
+# findings it can already make.  One pass over the tree before it (macro_facts)
+# collects the macros, since rule 11's macro classes and rule 14's wrappers
+# have to be known before any file is judged.  The rules that look at the whole
+# tree (1, 7, 9, 10's stale lines, 11 and 12) then read the facts of every
+# file in one pass (aggregate), never the sources.  A canary plants a tree of
+# two or three small files and scans no more than those.
+#
 # Exit: 0 clean, 1 offenders or a blind scanner, 2 the script could not run
 # (the compiler does not run).
 
@@ -154,13 +166,18 @@ function word_in(code, name) {
 # A call of a function that asks the system about a path, or a mention of
 # one that is not a call (a pointer to it, called through another name).
 function has_path_call(code,   c2) {
-  c2 = code; gsub(/struct[ \t]+stat/, "", c2)
+  # every name below holds one of these; a line without one cannot match
+  if (index(code, "open") == 0 && index(code, "stat") == 0 && index(code, "access") == 0 &&
+      index(code, "chdir") == 0 && index(code, "realpath") == 0 && index(code, "wpe_read_") == 0) return 0
+  c2 = code
+  if (index(c2, "struct")) gsub(/struct[ \t]+stat/, "", c2)
   if (c2 ~ /(^|[^A-Za-z0-9_.>])(access|stat|lstat|fopen|opendir|realpath|chdir)([^A-Za-z0-9_]|$)/) return 1
   return c2 ~ /(^|[^A-Za-z0-9_.>])(open|wpe_read_(open|stream_open|text|folder|name_ok))[ \t]*[(]/
 }
 # Does the code say a table entry whose words guess a cause?  e_msg[ERR_X],
 # and the pointer form *(e_msg + ERR_X).
 function table_entry_said(code,   rest, m, tn, nm) {
+  if (index(code, "msg") == 0) return 0
   rest = code
   while (match(rest, /(e_msg|e_p_msg|e_d_msg)[ \t]*(\[[ \t]*|[+][ \t]*)ERR_[A-Za-z0-9_]+/)) {
     m = substr(rest, RSTART, RLENGTH); rest = substr(rest, RSTART + RLENGTH)
@@ -172,12 +189,39 @@ function table_entry_said(code,   rest, m, tn, nm) {
 }
 '
 
-# macros_of FILE - "NAME|body" for each #define of the (comment stripped)
-# file, a body continued over lines joined with blanks.
-macros_of() {
-  awk '
+# macro_facts DIR TW MC EM - one pass over the top level sources of DIR (the
+# .c files first, then the .h, as the shell lists them): the comments are
+# blanked and every #define is read, a body continued over lines joined with
+# blanks.  Then the classes rule 11 needs go to MC, one "kind|name" a line, and
+# the macros rule 14 reads through go to EM, one "obj<TAB>name<TAB>body" or
+# "wrap<TAB>name" a line.  TW is the file of message table entries whose words
+# guess a cause; a macro is of a class when its body is, and a macro that names
+# a macro of a class is of that class too.
+macro_facts() {
+  awk -v tw="$2" -v mcout="$3" -v emout="$4" "$BLANK_C$WORDS_LIB"'
+    # add(kind, name) - name is of the class kind, once.
+    function add(kind, name) {
+      if (!((kind "|" name) in cls)) { cls[kind "|" name] = 1; grew = 1 }
+    }
+    # one_macro(name, body) - class this #define for rule 11 and record what
+    # rule 14 reads through it.
+    function one_macro(name, body,   code, b) {
+      code = body; gsub(/"([^"\\]|\\.)*"/, "\"\"", code)
+      macro[name] = code
+      if (table_entry_said(code)) add("tab", name)
+      if (has_path_call(code)) add("call", name)
+      if (body ~ /"[^"]*([Nn]ot found|Can[\\\047]*t open|[Cc]annot open)[^"]*"/) add("lit", name)
+      if (code ~ /(^|[^A-Za-z0-9_])(errno|strerror)([^A-Za-z0-9_]|$)/) add("named", name)
+      b = body; gsub(/^[ \t]+|[ \t]+$/, "", b)
+      # an object-like macro (no parameter list): what it stands for, to be
+      # read through however many macros it takes to reach a literal
+      if (body ~ /^[ \t]/ && b != "") print "obj\t" name "\t" b > emout
+      else if (body ~ /(^|[^A-Za-z0-9_.>])e_edit[ \t]*[(]/) print "wrap\t" name > emout
+    }
+    BEGIN { load_set(tw, tabw); printf "" > mcout; printf "" > emout }
+    FNR == 1 { blank_incom = 0; cont = 0; body = "" }
     {
-      line = $0
+      line = blank_c($0, 1)
       if (cont) body = body " " line
       else if (line ~ /^[ \t]*#[ \t]*define[ \t]+[A-Za-z_]/) {
         s = line; sub(/^[ \t]*#[ \t]*define[ \t]+/, "", s)
@@ -185,8 +229,21 @@ macros_of() {
         body = substr(s, length(name) + 1)
       } else next
       if (body ~ /\\[ \t]*$/) { sub(/[ \t]*\\[ \t]*$/, "", body); cont = 1 }
-      else { cont = 0; print name "|" body }
-    }' "$1"
+      else { cont = 0; one_macro(name, body) }
+    }
+    END {
+      for (round = 0; round < 8; round++) {
+        grew = 0
+        for (c in cls) {
+          kind = c; sub(/[|].*/, "", kind); cn = substr(c, length(kind) + 2)
+          for (m in macro)
+            if (m != cn && word_in(macro[m], cn)) pend[kind "|" m] = 1
+        }
+        for (p in pend) { if (!(p in cls)) { cls[p] = 1; grew = 1 }; delete pend[p] }
+        if (!grew) break
+      }
+      for (c in cls) print c > mcout
+    }' "$1"/*.c "$1"/*.h
 }
 
 . "$(dirname "$0")/workdir.sh"
@@ -200,25 +257,26 @@ strip_comments() {
     { print blank_c($0, 1) }' "$1"
 }
 
-# table_words DIR OUT - the message table entries of the sources in DIR whose
+# table_words DIR - the message table entries of the sources in DIR whose
 # words guess a cause (not found, cannot open, access, find or read), as
-# "table|NAME" lines in OUT.  A problem of the reading itself (a file or a
-# table that is not there, an entry count that differs from the number of
-# defines) is printed as an R11c line, so a scan that cannot see the tables
-# fails instead of passing blind.  The result is kept per DIR: a canary tree
-# has no tables, so it asks for the real ones.
+# "table|NAME" lines in the file TW names.  A problem of the reading itself (a
+# file or a table that is not there, an entry count that differs from the
+# number of defines) goes as an R11c line into the file TW_PROBLEMS names, so a
+# scan that cannot see the tables fails instead of passing blind.  The result
+# is kept per DIR and read again for the same DIR: a canary tree has no tables,
+# so it asks for the real ones, and every canary asks for the same.
 table_words() {
-  tw_dir=$1; tw_out=$2
-  tw_cache=$WORK/tablewords.$(printf '%s' "$tw_dir" | cksum | cut -d' ' -f1)
-  if [ -f "$tw_cache" ]; then
-    cp "$tw_cache" "$tw_out"
-    cat "$tw_cache.problems"
-    return 0
+  tw_dir=$1
+  if [ "$tw_dir" != "$TW_DIR" ]; then
+    TW_DIR=$tw_dir
+    TW=$WORK/tablewords.$(printf '%s' "$tw_dir" | cksum | cut -d' ' -f1)
+    TW_PROBLEMS=$TW.problems
   fi
-  : > "$tw_out"; : > "$tw_cache.problems"
+  [ -f "$TW" ] && return 0
+  : > "$TW_PROBLEMS"
   tw_work=$(mktemp -d "$WORK/tw.XXXXXX")
   if [ ! -f "$tw_dir/messages.h" ]; then
-    echo "R11c: messages.h is missing in $tw_dir: the message tables cannot be read" >> "$tw_cache.problems"
+    echo "R11c: messages.h is missing in $tw_dir: the message tables cannot be read" >> "$TW_PROBLEMS"
   else
     # table|NAME|index, from the raw text: the sections are comments.
     awk '
@@ -231,7 +289,7 @@ table_words() {
     for spec in $TABLE_FILES; do
       tab=${spec%%:*}; file=${spec#*:}
       if [ ! -f "$tw_dir/$file" ]; then
-        echo "R11c: $file is missing in $tw_dir: the table $tab cannot be read" >> "$tw_cache.problems"
+        echo "R11c: $file is missing in $tw_dir: the table $tab cannot be read" >> "$TW_PROBLEMS"
         continue
       fi
       strip_comments "$tw_dir/$file" | awk -v tab="$tab" '
@@ -280,63 +338,20 @@ table_words() {
         if (!(k in name)) { print "R11c: the table " $2 " has a guessing entry (index " $3 ") that messages.h gives no name"; next }
         if (index(skip, " " name[k] " ") == 0) print "WORD|" $2 "|" name[k]
       }' "$tw_work/defs" "$tw_work/entries" > "$tw_work/joined"
-    grep '^R11c' "$tw_work/joined" >> "$tw_cache.problems"
-    awk -F'|' '$1 == "WORD" { print $2 "|" $3 }' "$tw_work/joined" > "$tw_cache"
-    if [ ! -s "$tw_cache" ]; then
-      echo "R11c: no message table entry guesses a cause in $tw_dir: the scan is blind" >> "$tw_cache.problems"
+    grep '^R11c' "$tw_work/joined" >> "$TW_PROBLEMS"
+    awk -F'|' '$1 == "WORD" { print $2 "|" $3 }' "$tw_work/joined" > "$TW"
+    if [ ! -s "$TW" ]; then
+      echo "R11c: no message table entry guesses a cause in $tw_dir: the scan is blind" >> "$TW_PROBLEMS"
     fi
   fi
-  [ -f "$tw_cache" ] || : > "$tw_cache"
+  [ -f "$TW" ] || : > "$TW"
   rm -rf "$tw_work"
-  cp "$tw_cache" "$tw_out"
-  cat "$tw_cache.problems"
 }
 
-# statements FILE REL - "rel|line|statement" for each statement of the
-# (comment stripped) file: the text from the first token after a ';', '{' or
-# '}' to the next one, a statement of several lines joined with blanks, the
-# line number that of its first token.  A preprocessor line is its own
-# statement.
-statements() {
-  awk -v rel="$2" '
-    function emit() {
-      if (stmt ~ /[^ \t]/) { s = stmt; sub(/^[ \t]+/, "", s); print rel "|" first "|" s }
-      stmt = ""; first = 0
-    }
-    {
-      line = $0
-      if (line ~ /^[ \t]*#/) { emit(); s = line; sub(/^[ \t]+/, "", s); print rel "|" NR "|" s; next }
-      n = length(line)
-      for (i = 1; i <= n; i++) {
-        c = substr(line, i, 1)
-        if (c == ";" || c == "{" || c == "}") { stmt = stmt c; emit(); continue }
-        if (stmt == "" && c !~ /[ \t]/) first = NR
-        if (stmt != "" || c !~ /[ \t]/) stmt = stmt c
-      }
-      if (stmt != "") stmt = stmt " "
-    }
-    END { emit() }' "$1"
-}
-
-# defines_of FILE REL - "rel|line|name|value" for each #define of the file.
-defines_of() {
-  awk -v rel="$2" '
-    /^[ \t]*#[ \t]*define[ \t]+[A-Za-z_]/ {
-      s = $0; sub(/^[ \t]*#[ \t]*define[ \t]+/, "", s)
-      name = s; sub(/[^A-Za-z0-9_].*$/, "", name)
-      value = substr(s, length(name) + 1); sub(/^[ \t]+/, "", value)
-      print rel "|" NR "|" name "|" value
-    }' "$1"
-}
-
-# The awk functions the statement rules share.  A statement line is
-# "rel|line|text" and the text may itself hold '|' (a "||"), so it is cut at
-# the first two bars, never split on all of them.
+# The awk functions the rules that read one statement share: the arguments of
+# a call, the heads that only say whether the statement runs, and the blanks
+# inside a declaration's brackets.
 AWK_LIB='
-function cut_stmt(rec,    p, rest, q) {
-  p = index(rec, "|"); REL = substr(rec, 1, p - 1); rest = substr(rec, p + 1)
-  q = index(rest, "|"); LN = substr(rest, 1, q - 1); S = substr(rest, q + 1)
-}
 # arg_split(s, from) - the top level arguments of the call whose "(" comes
 # just before position @from, in ARGS[1..n]; n, or 0 when the call is open.
 function arg_split(s, from,    i, n, len, depth, c, cur, instr, q) {
@@ -468,58 +483,86 @@ function feed(line,    i, n, c, q) {
 }
 '
 
-# scan_tree DIR OUT [ALLOW] - run the rules on the top level sources under
-# DIR; the findings go to OUT, one per line, each starting with its rule.
-# ALLOW is the file that lists what rules 7, 9 and 10 let stand; a canary's
-# tree has none, so anything the rule meets is an offender there.  The copy
-# calls found are left in SCAN_COPIES, "file|function|count" each.
-scan_tree() {
-  dir=$1; out=$2; allow=${3:-/dev/null}
-  t=$(mktemp -d "$WORK/scan.XXXXXX")
-  mkdir "$t/s"
-  : > "$out"; : > "$t/defines"; : > "$t/stmts"
-  for f in "$dir"/*.c "$dir"/*.h; do
-    [ -f "$f" ] || continue
-    rel=${f#"$dir"/}
-    strip_comments "$f" > "$t/s/$rel"
-    defines_of "$t/s/$rel" "$rel" >> "$t/defines"
-    statements "$t/s/$rel" "$rel" >> "$t/stmts"
-  done
+# scan_file FILE REL ALLOW MC EM TW - one awk pass over one source file: the
+# comments are blanked, every rule that one file alone decides is applied, and
+# the facts the tree rules need go to stdout, one record a line.  REL is the
+# file's name in the tree, ALLOW the file that says what rules 10, 12 and 13
+# let stand, MC the macro classes of rule 11, EM the macros rule 14 reads
+# through, TW the message table entries whose words guess a cause.  Records
+# are tab separated with the payload last, so a tab inside it is harmless:
+#   F     text                          a finding of a per-file rule
+#   DEF   rel|line|name|value           a #define (rules 1, 7 and 12's sizes)
+#   CPY   rel|function|count            strcpy, strcat, strncpy, sprintf (rule 9)
+#   SCN   rel|function|count            a word read with %s or %[ and no width (rule 9)
+#   SU    rel                           this file used a SENTENCE allow line (rule 10)
+#   FN    rel  function  flags  names   what rule 11 knows of one function and
+#                                       the names it calls.  flags: c asks the
+#                                       system about a path, l says a literal
+#                                       that guesses a cause, n names errno or
+#                                       strerror, t says a table entry that
+#                                       guesses, p says the project did not open
+#   AH    rel  line  callee  array  size  scope
+#                                       a declared char array handed to a call
+#                                       that takes a path (rule 12)
+#   FD    rel  function                 a function body the rule 12 walk saw
+#   QU    rel  function                 this file used a QUOTE allow line (rule 13)
+scan_file() {
+  awk -v rel="$2" -v owner="$OWNER_HEADER" -v allowfile="$3" \
+      -v mc="$4" -v em="$5" -v tw="$6" \
+      "$BLANK_C$AWK_LIB$AWK_SCAN_LIB$WORDS_LIB"'
+    # finding(text) - a finding of a rule one file alone decides.
+    function finding(text) { print "F\t" text }
 
-  # Rule 1.
-  for name in WPE_PATH_MAX WPE_NAME_MAX; do
-    count=$(awk -F'|' -v n="$name" '$3 == n' "$t/defines" | wc -l)
-    if [ "$count" -ne 1 ]; then
-      echo "R1: $name is defined $count times, not once" >> "$out"
-    fi
-    awk -F'|' -v n="$name" -v owner="$OWNER_HEADER" '
-      $3 == n && $1 != owner { print "R1: " n " is defined in " $1 ":" $2 ", not in " owner }
-      $3 == n && $1 == owner && $4 !~ /^[0-9]+([ \t].*)?$/ { print "R1: " n " in " owner " is not a number: " $4 }' \
-      "$t/defines" >> "$out"
-  done
-  [ -f "$dir/$OWNER_HEADER" ] ||
-    echo "R1: $OWNER_HEADER is missing (the scan is blind or the owner is gone)" >> "$out"
-
-  # Rule 2: a copy function with a field's text as its source.  A field's text
-  # is "->txt", or a name a statement of the same file set to one.
-  awk "$AWK_LIB"'
-    BEGIN {
-      fn = "(^|[^A-Za-z0-9_>.])(strcpy|strcat|strncpy|strncat|sprintf|memcpy|memmove|stpcpy)[ \t]*\\("
+    # feed_statements(line) - add one comment blanked line to the statement
+    # being read: the text from the first token after a ";", "{" or "}" to the
+    # next one, a statement of several lines joined with blanks, the line
+    # number that of its first token.  A preprocessor line is its own
+    # statement.
+    function feed_statements(line,   n, i, c, s) {
+      if (line ~ /^[ \t]*#/) {
+        stmt_emit()
+        s = line; sub(/^[ \t]+/, "", s)
+        one_statement(s, NR)
+        return
+      }
+      n = length(line)
+      for (i = 1; i <= n; i++) {
+        c = substr(line, i, 1)
+        if (c == ";" || c == "{" || c == "}") { stmt = stmt c; stmt_emit(); continue }
+        if (stmt == "" && c !~ /[ \t]/) first = NR
+        if (stmt != "" || c !~ /[ \t]/) stmt = stmt c
+      }
+      if (stmt != "") stmt = stmt " "
     }
-    {
-      if (index($0, "->txt") == 0 && index($0, "str") == 0 && index($0, "mem") == 0 && index($0, "sprintf") == 0 && index($0, "stpcpy") == 0)
-        next
-      cut_stmt($0)
-      s = S
-      gsub(/[ \t]*->[ \t]*/, "->", s)   # "w -> txt" is the same field
-      if (REL != lastrel) { naliases = 0; lastrel = REL }
+    # stmt_emit() - the statement being read is whole: every rule reads it.
+    function stmt_emit(   s) {
+      if (stmt ~ /[^ \t]/) { s = stmt; sub(/^[ \t]+/, "", s); one_statement(s, first) }
+      stmt = ""; first = 0
+    }
+    # one_statement(s, ln) - the rules that read one statement.
+    function one_statement(s, ln) {
+      rule2_stmt(s, ln)
+      rule3_stmt(s, ln)
+      rule4_stmt(s, ln)
+      if (!is_owner) rule10_stmt(s, ln)
+      rule12_stmt(s, ln)
+    }
+
+    # rule2_stmt(s, ln) - a copy function with a field'"'"'s text as its source.
+    # A field'"'"'s text is "->txt", or a name a statement of the same file set to
+    # one.
+    function rule2_stmt(s, ln,   t, rest, start, n, k, a, hit, eq, lhs) {
+      if (!rel_names_r2 && index(s, "->txt") == 0 && index(s, "str") == 0 &&
+          index(s, "mem") == 0 && index(s, "sprintf") == 0 && index(s, "stpcpy") == 0) return
+      t = s
+      gsub(/[ \t]*->[ \t]*/, "->", t)   # "w -> txt" is the same field
       # a name set from a field: "char *p = o->wstr[0]->txt;" or "p = w->txt;"
-      if (s ~ /^[^;(]*[A-Za-z_][A-Za-z0-9_]*[ \t]*=[^=].*->txt[^;]*;$/ && s !~ /^(if|while|for|return)[ \t(]/) {
-        eq = index(s, "="); lhs = substr(s, 1, eq - 1); sub(/[ \t]+$/, "", lhs)
+      if (t ~ /^[^;(]*[A-Za-z_][A-Za-z0-9_]*[ \t]*=[^=].*->txt[^;]*;$/ && t !~ /^(if|while|for|return)[ \t(]/) {
+        eq = index(t, "="); lhs = substr(t, 1, eq - 1); sub(/[ \t]+$/, "", lhs)
         if (match(lhs, /[A-Za-z_][A-Za-z0-9_]*$/)) alias[++naliases] = substr(lhs, RSTART)
       }
-      rest = s
-      while (match(rest, fn)) {
+      rest = t
+      while (match(rest, r2fn)) {
         start = RSTART + RLENGTH
         n = arg_split(rest, start)
         for (k = 2; k <= n; k++) {
@@ -527,622 +570,371 @@ scan_tree() {
           for (a = 1; !hit && a <= naliases; a++)
             hit = (ARGS[k] ~ ("(^|[^A-Za-z0-9_>.])" alias[a] "([^A-Za-z0-9_]|$)"))
           if (hit) {
-            print "R2: " REL ":" LN ": a copy function reads a field\047s text; use e_opt_field_take"
+            finding("R2: " rel ":" ln ": a copy function reads a field\047s text; use e_opt_field_take")
             break
           }
         }
         rest = substr(rest, start)
       }
-    }' "$t/stmts" >> "$out"
+    }
 
-  # Rule 3: the result of a refusing writer is dropped.
-  awk "$AWK_LIB"'
-    BEGIN { names = "(wpe_path_copy|wpe_path_join|wpe_path_cat|wpe_field_take|e_opt_field_take)" }
-    {
-      cut_stmt($0)
-      s = strip_heads(S)
-      alone = "^" names "[ \t]*\\("
-      voided = "^\\([ \t]*void[ \t]*\\)[ \t]*" names "[ \t]*\\("
-      # the body of a for: the header is cut at its semicolons, so the
-      # body follows the ")" that closes it, with no "(" before
-      forbody = "^[^(]*\\)[ \t]*" names "[ \t]*\\("
-      if (s ~ alone || s ~ forbody) print "R3: " REL ":" LN ": the result of a call that can refuse is not read"
-      else if (s ~ voided) print "R3: " REL ":" LN ": the result of a call that can refuse is cast away"
-    }' "$t/stmts" >> "$out"
+    # rule3_stmt(s, ln) - the result of a refusing writer is dropped.
+    function rule3_stmt(s, ln,   t) {
+      if (index(s, "wpe_path_") == 0 && index(s, "wpe_field_take") == 0 &&
+          index(s, "e_opt_field_take") == 0) return
+      t = strip_heads(s)
+      if (t ~ r3alone || t ~ r3forbody)
+        finding("R3: " rel ":" ln ": the result of a call that can refuse is not read")
+      else if (t ~ r3voided)
+        finding("R3: " rel ":" ln ": the result of a call that can refuse is cast away")
+    }
 
-  # Rule 4: a call of e_add_arguments gives its buffer's size.
-  awk "$AWK_LIB"'
-    {
-      cut_stmt($0)
-      s = S
-      if (s ~ /^(static[ \t]+)?int[ \t]+e_add_arguments/) next
+    # rule4_stmt(s, ln) - a call of e_add_arguments gives its buffer size.
+    function rule4_stmt(s, ln) {
+      if (index(s, "e_add_arguments") == 0) return
+      if (s ~ /^(static[ \t]+)?int[ \t]+e_add_arguments/) return
       if (s ~ /e_add_arguments[ \t]*\(/ && s !~ /e_add_arguments[ \t]*\([^,]*,[ \t]*(sizeof|size[ \t]*,)/)
-        print "R4: " REL ":" LN ": e_add_arguments is called without the size of its buffer"
-    }' "$t/stmts" >> "$out"
+        finding("R4: " rel ":" ln ": e_add_arguments is called without the size of its buffer")
+    }
 
-  # Rules 5 and 6, line by line.
-  for f in "$t"/s/*.c "$t"/s/*.h; do
-    [ -f "$f" ] || continue
-    rel=${f#"$t"/s/}
-    awk -v rel="$rel" "$AWK_LIB"'
-      BEGIN {
-        # the sizes a moved path buffer may be declared with
-        okname = "(WPE_PATH_SIZE|WPE_NAME_SIZE)"
-        nmoved = split("filen prj_path cwd_saved saved_cwd xdgfile legacy libpath dirtmp exe", moved, " ")
+    # rule10_stmt(s, ln) - the owner'"'"'s sentence and its number stay the
+    # owner'"'"'s, over a whole statement (a call split over lines is one).
+    # Whole words only: WPE_PATH_MAX_HOPS is another number.
+    function rule10_stmt(s, ln,   rest, start, n, k) {
+      if (index(s, "WPE_PATH_TOO_LONG_FMT") == 0 && index(s, "sprintf") == 0 &&
+          index(s, "snprintf") == 0) return
+      if (s ~ r10fmt)
+        finding("R10: " rel ":" ln ": WPE_PATH_TOO_LONG_FMT is named outside " owner ": say wpe_path_say_too_long or wpe_path_say_name_too_long")
+      rest = s
+      while (match(rest, r10fn)) {
+        start = RSTART + RLENGTH
+        n = arg_split(rest, start)
+        for (k = 1; k <= n; k++)
+          if (ARGS[k] ~ r10numbers) {
+            finding("R10: " rel ":" ln ": a path number is an argument of snprintf or sprintf: the sentence and its number are the owner\047s")
+            break
+          }
+        rest = substr(rest, start)
       }
-      {
-        if (index($0, "[") == 0 && index($0, "MALLOC") == 0 && index($0, "WPE_PATHMAX") == 0 &&
-            index($0, "strcpy") == 0 && index($0, "strncpy") == 0 && index($0, "E_X_SYSTEM") == 0)
-          next
-        l = tight($0)
+    }
+
+    # line_rules(line) - rules 5 and 6, and rules 8 and the line half of 10,
+    # over one comment blanked line.  A line that holds none of the words each
+    # group needs cannot match it, and is not read further.
+    function line_rules(line,   l, m, decl, nt, toks, k, i) {
+      if (index(line, "[") || index(line, "MALLOC") || index(line, "WPE_PATHMAX") ||
+          index(line, "strcpy") || index(line, "strncpy") || index(line, "E_X_SYSTEM")) {
+        l = tight(line)
         if (l ~ /(^|[^A-Za-z0-9_])filen\[128\]/)
-          print "R5: " rel ":" NR ": a file name picked in the manager is kept in 128 bytes"
+          finding("R5: " rel ":" NR ": a file name picked in the manager is kept in 128 bytes")
         if (l ~ /(^|[^A-Za-z0-9_])(search|replace)\[80\]/)
-          print "R5: " rel ":" NR ": a Find text is kept in 80 bytes under a field of 128"
+          finding("R5: " rel ":" NR ": a Find text is kept in 80 bytes under a field of 128")
         if (l ~ /\(strcpy\)[ \t]*\(/)
-          print "R5: " rel ":" NR ": a history entry is copied into a field without its capacity"
+          finding("R5: " rel ":" NR ": a history entry is copied into a field without its capacity")
         if (l ~ /(^|[^A-Za-z0-9_])library\[80\]/)
-          print "R5: " rel ":" NR ": the project library is kept in 80 bytes"
+          finding("R5: " rel ":" NR ": the project library is kept in 80 bytes")
         if (l ~ /e_run_src_(dirct|datnam)\[/ || l ~ /strncpy\(e_run_src/)
-          print "R5: " rel ":" NR ": the source Run keeps is held in a fixed array or cut"
+          finding("R5: " rel ":" NR ": the source Run keeps is held in a fixed array or cut")
         if (l ~ /MALLOC\(129\)/)
-          print "R5: " rel ":" NR ": a name offered for Move is kept in 129 bytes"
+          finding("R5: " rel ":" NR ": a name offered for Move is kept in 129 bytes")
         if (l ~ /(^|[^A-Za-z0-9_])WPE_PATHMAX([^A-Za-z0-9_]|$)/ || l ~ /E_X_SYSTEM_PATH_MAX/)
-          print "R5: " rel ":" NR ": a private path number is back"
+          finding("R5: " rel ":" NR ": a private path number is back")
         if (l ~ /strncpy\(dirtmp/)
-          print "R5: " rel ":" NR ": the Directory field is cut by strncpy"
+          finding("R5: " rel ":" NR ": the Directory field is cut by strncpy")
         for (m = 1; m <= nmoved; m++) {
           if (match(l, "(^|[^A-Za-z0-9_])char[^;(=]*[^A-Za-z0-9_]" moved[m] "\\[[^]]*\\]")) {
             decl = substr(l, RSTART, RLENGTH)
             if (decl !~ okname)
-              print "R6: " rel ":" NR ": " moved[m] " holds a path in a buffer the owner did not size"
+              finding("R6: " rel ":" NR ": " moved[m] " holds a path in a buffer the owner did not size")
           }
         }
-      }' "$f" >> "$out"
-  done
+      }
+      if (!is_owner && (index(line, "_MAX") || index(line, "_SIZE") || index(line, "strncpy") ||
+                        index(line, "path is") || index(line, "1024"))) {
+        l = tight(line)
+        if (l ~ /(^|[^A-Za-z0-9_])(PATH_MAX|_POSIX_PATH_MAX|NAME_MAX)([^A-Za-z0-9_]|$)/)
+          finding("R8: " rel ":" NR ": the system number of a path or a name is named outside " owner)
+        # the private numbers: one walk over the words of the line, not a
+        # regular expression of its own for each of them
+        nt = split(l, toks, /[^A-Za-z0-9_]+/)
+        for (k = 1; k <= nt; k++) if (toks[k] in private_number) private_hit[toks[k]] = NR
+        for (i = 1; i <= nid; i++)
+          if (private_hit[ids[i]] == NR)
+            finding("R10: " rel ":" NR ": a private path number is back: " ids[i])
+        if (l ~ /(^|[^A-Za-z0-9_])char[ \t]+path\[1024\]/)
+          finding("R10: " rel ":" NR ": a path from the model is held in 1024 bytes and cut: take it whole (strndup)")
+        if (l ~ /strncpy[ \t]*\([ \t]*(g_lsp_file|g_dap_progdir|g_dap_stop_file|e_d_file|ck_dir)[^A-Za-z0-9_]/)
+          finding("R10: " rel ":" NR ": a path is cut by strncpy into a buffer the owner sized")
+        if (l ~ /"[^"]*(path is longer than|path is too long)[^"]*"/) {
+          if (rel in sent) print "SU\t" rel
+          else finding("R10: " rel ":" NR ": a sentence about a path\047s length of its own: say wpe_path_say_too_long or wpe_path_say_name_too_long")
+        }
+      }
+    }
 
-  # Rule 7: no other path number.
-  awk -F'|' -v owner="$OWNER_HEADER" '
-    function owned(name, depth,    v, w) {
-      v = val[name]
-      if (v ~ /(^|[^A-Za-z0-9_])WPE_(PATH_MAX|PATH_SIZE|NAME_MAX|NAME_SIZE|PATH_FIELD_MAX|NAME_FIELD_MAX)([^A-Za-z0-9_]|$)/)
-        return 1
-      w = v; gsub(/[ \t()]/, "", w)
-      if (depth < 8 && w ~ /^[A-Za-z_][A-Za-z0-9_]*$/ && (w in val))
-        return owned(w, depth + 1)
+    # def_line(line) - the DEF fact of a #define line.
+    function def_line(line,   s, nm, v) {
+      if (line !~ /^[ \t]*#[ \t]*define[ \t]+[A-Za-z_]/) return
+      s = line; sub(/^[ \t]*#[ \t]*define[ \t]+/, "", s)
+      nm = s; sub(/[^A-Za-z0-9_].*$/, "", nm)
+      v = substr(s, length(nm) + 1); sub(/^[ \t]+/, "", v)
+      print "DEF\t" rel "|" NR "|" nm "|" v
+    }
+
+    # r9_copy_line(line) - the copies of one line of a .c file, counted
+    # against the function they are in.  A function starts at a line in column
+    # 0 that names an identifier followed by "(" and does not end with ";" (a
+    # prototype), as in check-start-plan.sh.
+    function r9_copy_line(line,   s, nm) {
+      if (line ~ /^[A-Za-z_]/ && line ~ /[(]/ && line !~ /;[ \t]*$/ && line !~ /^(typedef|struct[^(]*[{])/) {
+        nm = line; sub(/[ \t]*[(].*/, "", nm); sub(/.*[^A-Za-z0-9_]/, "", nm)
+        if (nm != "") fn_copy = nm
+      }
+      if (index(line, "str") == 0 && index(line, "sprintf") == 0) return
+      s = line
+      while (match(s, /(^|[^A-Za-z0-9_])(strcpy|strcat|strncpy|sprintf)[ \t]*[(]/)) {
+        cnt_copy[fn_copy]++; s = substr(s, RSTART + RLENGTH)
+      }
+    }
+    function r9_copy_end(   f) { for (f in cnt_copy) print "CPY\t" rel "|" f "|" cnt_copy[f] }
+
+    # r9_scan_line(line) - the scans of one line, counted the same way.  A
+    # call is read to the paren that closes it, however many lines it spans.
+    function r9_scan_line(line,   s, nm) {
+      if (!CALL_OPEN && line ~ /^[A-Za-z_]/ && line ~ /[(]/ && line !~ /;[ \t]*$/ && line !~ /^(typedef|struct[^(]*[{])/) {
+        nm = line; sub(/[ \t]*[(].*/, "", nm); sub(/.*[^A-Za-z0-9_]/, "", nm)
+        if (nm != "") fn_scan = nm
+      }
+      if (!CALL_OPEN && index(line, "scanf") == 0) return
+      s = line
+      while (1) {
+        if (CALL_OPEN) {
+          s = feed(s)
+          if (CALL_OPEN) break
+          cnt_scan[call_fn] += unbounded_in_call(CALL_BUF)
+        } else {
+          if (!match(s, /(^|[^A-Za-z0-9_])(scanf|fscanf|sscanf|vscanf|vfscanf|vsscanf)[ \t]*[(]/)) break
+          s = substr(s, RSTART + RLENGTH)
+          CALL_OPEN = 1; CALL_DEPTH = 1; CALL_BUF = ""; call_fn = fn_scan
+        }
+      }
+    }
+    function r9_scan_end(   f) { for (f in cnt_scan) if (cnt_scan[f] > 0) print "SCN\t" rel "|" f "|" cnt_scan[f] }
+
+    # bare_err_name(code) - a guessing ERR_ name on its own, as in
+    # "i = ERR_ACCFILE": the table entry is then reached through an index or an
+    # alias of the table.
+    function bare_err_name(code,   rest, nm) {
+      if (index(code, "ERR_") == 0) return 0
+      rest = code
+      while (match(rest, /ERR_[A-Za-z0-9_]+/)) {
+        nm = substr(rest, RSTART, RLENGTH); rest = substr(rest, RSTART + RLENGTH)
+        if (nm in errname) return 1
+      }
       return 0
     }
-    FILENAME == ARGV[1] { if ($1 == "NUMBER") ok[$2] = 1; next }
-    {
-      v = $0; sub(/^[^|]*\|[^|]*\|[^|]*\|?/, "", v)
-      if (!($3 in val)) val[$3] = v
-      defs[++n] = $1 "|" $2 "|" $3
-    }
-    END {
-      for (i = 1; i <= n; i++) {
-        split(defs[i], d, "|"); rel = d[1]; ln = d[2]; name = d[3]
-        if (rel == owner) continue
-        if (name == "PATH_MAX" || name == "NAME_MAX" || name == "_POSIX_PATH_MAX") {
-          print "R7: " rel ":" ln ": " name " is defined outside " owner; continue
-        }
-        if (name !~ /(PATH_MAX|PATHMAX|PATH_SIZE|DIR_MAX|FOLDER_MAX|NAME_MAX)$/) continue
-        if (name in ok) { used[name] = 1; continue }
-        if (!owned(name, 0))
-          print "R7: " rel ":" ln ": " name " is a path number of its own: derive it from WPE_PATH_SIZE, WPE_PATH_MAX or WPE_NAME_MAX, or list it as not a path"
+    # note_macro_classes(code) - a macro of a class is the same offence where
+    # it is used: every word of the code that is the name of a classed macro
+    # puts this function in that class.  A word of the code is a name the
+    # macro could be, so the words are all the test needs.
+    function note_macro_classes(code,   nt, toks, k, t, kk) {
+      if (ntab == 0) return
+      nt = split(code, toks, /[^A-Za-z0-9_]+/)
+      for (k = 1; k <= nt; k++) {
+        t = toks[k]
+        if (!(t in mtab)) continue
+        kk = mtab[t]
+        if (index(kk, "t")) r11tab = 1
+        if (index(kk, "c")) r11call = 1
+        if (index(kk, "l")) r11lit = 1
+        if (index(kk, "n")) r11named = 1
       }
-      for (k in ok) if (!(k in used))
-        print "R7: stale allow line: no define of " k " ends like a path number"
-    }' "$allow" "$t/defines" >> "$out"
+    }
+    # note_callees(code) - the names this function calls, once each.  Whether
+    # one of them says a guessing cause is a question for the whole tree, so
+    # the names are the fact.
+    function note_callees(code,   rest, nm) {
+      if (index(code, "(") == 0) return
+      rest = code
+      while (match(rest, /[A-Za-z_][A-Za-z0-9_]*[ \t]*[(]/)) {
+        nm = substr(rest, RSTART, RLENGTH); sub(/[ \t]*[(]$/, "", nm)
+        rest = substr(rest, RSTART + RLENGTH)
+        if (nm != fn11 && !(nm in callee)) { callee[nm] = 1; callees = callees " " nm }
+      }
+    }
+    # r11_line(line) - what rule 11 learns from one line of a .c file.  What a
+    # #define holds counts where the macro is used, not here, so a define and
+    # the lines it continues are not read as code.
+    function r11_line(out,   code, nm, k) {
+      if (indef) { indef = (out ~ /\\[ \t]*$/); return }
+      if (out ~ /^[ \t]*#[ \t]*define/) { indef = (out ~ /\\[ \t]*$/); return }
+      if (out ~ /^}/) { r11_emit(); fn11 = ""; return }
+      if (out ~ /^[A-Za-z_]/ && out ~ /[(]/ && out !~ /;[ \t]*$/ && out !~ /^(typedef|struct[^(]*[{])/) {
+        nm = out; sub(/[ \t]*[(].*/, "", nm); sub(/.*[^A-Za-z0-9_]/, "", nm)
+        if (nm != "") {
+          r11_emit(); fn11 = nm
+          r11call = 0; r11lit = 0; r11named = 0; r11proj = 0; r11tab = 0
+          r11mention = 0; r11errbare = 0; callees = ""
+          for (k in callee) delete callee[k]
+        }
+      }
+      if (fn11 == "") return
+      code = out; gsub(/"([^"\\]|\\.)*"/, "\"\"", code)
+      if (has_path_call(code)) r11call = 1
+      if (code ~ /(^|[^A-Za-z0-9_])(errno|strerror)([^A-Za-z0-9_]|$)/) r11named = 1
+      if (out ~ /"[^"]*([Nn]ot found|Can[\\\047]*t open|[Cc]annot open)[^"]*"/) r11lit = 1
+      if (out ~ /"[^"]*(Project file not found|Cannot open project)[^"]*"/) r11proj = 1
+      if (table_entry_said(code)) r11tab = 1
+      note_macro_classes(code)
+      if (code ~ /(^|[^A-Za-z0-9_])(e_msg|e_p_msg|e_d_msg)([^A-Za-z0-9_]|$)/) r11mention = 1
+      if (bare_err_name(code)) r11errbare = 1
+      note_callees(code)
+    }
+    # r11_emit() - the FN fact of the function just read.  A function that
+    # knows nothing and calls nothing can say nothing, so it is no fact.
+    function r11_emit(   flags) {
+      if (fn11 == "") return
+      if (r11mention && r11errbare) r11tab = 1
+      flags = ""
+      if (r11call) flags = flags "c"
+      if (r11lit) flags = flags "l"
+      if (r11named) flags = flags "n"
+      if (r11tab) flags = flags "t"
+      if (r11proj) flags = flags "p"
+      if (flags == "" && callees == "") return
+      sub(/^ /, "", callees)
+      print "FN\t" rel "\t" fn11 "\t" flags "\t" callees
+    }
 
-  # Rules 8 and 10, over every comment stripped source but the owner.
-  awk -F'|' -v owner="$OWNER_HEADER" "$AWK_LIB"'
-    BEGIN {
-      nid = split("WPE_BUILD_PATH_MAX E_EXECUTE_PATH_MAX E_D_COMPILE_PATH_MAX E_LSP_PATH_MAX E_DAP_FRAME_PATH_MAX HOST_PATH_MAX E_GDBMI_PATH_MAX E_SCALA_SETUP_DIR_MAX E_LSP_ROOT_MAX WPE_SYNTAX_PATH_MAX AI_TRANSCRIPT_PATH_MAX CONTAIN_TOKEN_MAX WLF_NAME_SIZE", ids, " ")
-    }
-    FILENAME == ARGV[1] { if ($1 == "SENTENCE") sent[$2] = 1; next }
-    {
-      rel = FILENAME; sub(/^.*\//, "", rel)
-      if (rel == owner) next
-      l = tight($0)
-      if (l ~ /(^|[^A-Za-z0-9_])(PATH_MAX|_POSIX_PATH_MAX|NAME_MAX)([^A-Za-z0-9_]|$)/)
-        print "R8: " rel ":" FNR ": the system number of a path or a name is named outside " owner
-      for (i = 1; i <= nid; i++)
-        if (l ~ ("(^|[^A-Za-z0-9_])" ids[i] "([^A-Za-z0-9_]|$)"))
-          print "R10: " rel ":" FNR ": a private path number is back: " ids[i]
-      if (l ~ /(^|[^A-Za-z0-9_])char[ \t]+path\[1024\]/)
-        print "R10: " rel ":" FNR ": a path from the model is held in 1024 bytes and cut: take it whole (strndup)"
-      if (l ~ /strncpy[ \t]*\([ \t]*(g_lsp_file|g_dap_progdir|g_dap_stop_file|e_d_file|ck_dir)[^A-Za-z0-9_]/)
-        print "R10: " rel ":" FNR ": a path is cut by strncpy into a buffer the owner sized"
-      if (l ~ /"[^"]*(path is longer than|path is too long)[^"]*"/) {
-        if (rel in sent) sentused[rel] = 1
-        else print "R10: " rel ":" FNR ": a sentence about a path\047s length of its own: say wpe_path_say_too_long or wpe_path_say_name_too_long"
-      }
-    }
-    END {
-      for (k in sent) if (!(k in sentused))
-        print "R10: stale allow line: " k " has no sentence about a path\047s length of its own"
-    }' "$allow" "$t"/s/*.c "$t"/s/*.h >> "$out"
-
-  # Rule 10, the sentence and its number, over whole statements (a call split
-  # over lines is one statement).  WPE_PATH_TOO_LONG_FMT is named only in the
-  # owner's header, and no snprintf or sprintf takes one of the path numbers
-  # as an argument: a site that prints a number says its own, and it is the
-  # editor's room, not the system's.  Whole words only: WPE_PATH_MAX_HOPS is
-  # another number.
-  awk -v owner="$OWNER_HEADER" "$AWK_LIB"'
-    BEGIN {
-      word = "(^|[^A-Za-z0-9_])"
-      endw = "([^A-Za-z0-9_]|$)"
-      numbers = word "(WPE_PATH_MAX|WPE_NAME_MAX|WPE_PLATFORM_PATH_MAX|WPE_PLATFORM_NAME_MAX)" endw
-      fmt = word "WPE_PATH_TOO_LONG_FMT" endw
-      fn = word "(snprintf|sprintf)[ \t]*\\("
-    }
-    {
-      cut_stmt($0)
-      if (REL == owner) next
-      if (S ~ fmt)
-        print "R10: " REL ":" LN ": WPE_PATH_TOO_LONG_FMT is named outside " owner ": say wpe_path_say_too_long or wpe_path_say_name_too_long"
-      rest = S
-      while (match(rest, fn)) {
-        start = RSTART + RLENGTH
-        n = arg_split(rest, start)
-        for (k = 1; k <= n; k++)
-          if (ARGS[k] ~ numbers) {
-            print "R10: " REL ":" LN ": a path number is an argument of snprintf or sprintf: the sentence and its number are the owner\047s"
-            break
-          }
-        rest = substr(rest, start)
-      }
-    }' "$t/stmts" >> "$out"
-
-  # Rule 9: copies counted per function, against the allow file.  A function
-  # starts at a line in column 0 that names an identifier followed by "(" and
-  # does not end with ";" (a prototype), as in check-start-plan.sh.
-  : > "$t/copies"
-  for f in "$t"/s/*.c; do
-    [ -f "$f" ] || continue
-    rel=${f#"$t"/s/}
-    awk -v rel="$rel" '
-      BEGIN { fn = "(file scope)" }
-      {
-        out = $0
-        if (out ~ /^[A-Za-z_]/ && out ~ /[(]/ && out !~ /;[ \t]*$/ && out !~ /^(typedef|struct[^(]*[{])/) {
-          name = out; sub(/[ \t]*[(].*/, "", name); sub(/.*[^A-Za-z0-9_]/, "", name)
-          if (name != "") fn = name
-        }
-        s = out
-        while (match(s, /(^|[^A-Za-z0-9_])(strcpy|strcat|strncpy|sprintf)[ \t]*[(]/)) {
-          cnt[fn]++; s = substr(s, RSTART + RLENGTH)
-        }
-      }
-      END { for (f in cnt) print rel "|" f "|" cnt[f] }' "$f" >> "$t/copies"
-  done
-  sort "$t/copies" > "$t/copies.sorted"
-  cp "$t/copies.sorted" "$WORK/last-copies"
-  awk -F'|' '
-    FILENAME == ARGV[1] {
-      if ($1 != "COPY") next
-      key = $2 "|" $3
-      if (NF < 6 || $4 !~ /^[0-9]+$/) { print "R9: malformed allow line: " $0; next }
-      if ($5 !~ /^(sized|text|checked)$/) {
-        print "R9: allow line for " $2 " " $3 " is of kind " $5 ", not sized, text or checked: a path goes through the owner"; next
-      }
-      al[key] = $4; kind[key] = $5; next
-    }
-    {
-      key = $1 "|" $2; got[key] = 1
-      if (!(key in al))
-        print "R9: " $1 ": " $2 " has " $3 " strcpy, strcat, strncpy or sprintf call(s) nobody has judged: move them onto the path owner, or list them with their kind"
-      else if ($3 + 0 > al[key] + 0)
-        print "R9: " $1 ": " $2 " has " $3 " call(s), the allow file says " al[key]
-      else if ($3 + 0 < al[key] + 0)
-        print "R9: " $1 ": " $2 " has " $3 " call(s), lower the allow line from " al[key]
-    }
-    END {
-      for (k in al) if (!(k in got)) print "R9: stale allow line, delete it: " k
-    }' "$allow" "$t/copies.sorted" >> "$out"
-
-  # Rule 9, the other way into a buffer: a scan that reads a word with %s or
-  # %[ and no width writes as many bytes as the input has.  Counted per
-  # function like the copies, against SCAN allow lines.
-  : > "$t/scans"
-  for f in "$t"/s/*.c "$t"/s/*.h; do
-    [ -f "$f" ] || continue
-    rel=${f#"$t"/s/}
-    awk -v rel="$rel" "$AWK_SCAN_LIB"'
-      BEGIN { fn = "(file scope)"; CALL_OPEN = 0 }
-      {
-        out = $0
-        if (!CALL_OPEN && out ~ /^[A-Za-z_]/ && out ~ /[(]/ && out !~ /;[ \t]*$/ && out !~ /^(typedef|struct[^(]*[{])/) {
-          name = out; sub(/[ \t]*[(].*/, "", name); sub(/.*[^A-Za-z0-9_]/, "", name)
-          if (name != "") fn = name
-        }
-        s = out
-        while (1) {
-          if (CALL_OPEN) {
-            s = feed(s)
-            if (CALL_OPEN) break
-            cnt[call_fn] += unbounded_in_call(CALL_BUF)
-          } else {
-            if (!match(s, /(^|[^A-Za-z0-9_])(scanf|fscanf|sscanf|vscanf|vfscanf|vsscanf)[ \t]*[(]/)) break
-            s = substr(s, RSTART + RLENGTH)
-            CALL_OPEN = 1; CALL_DEPTH = 1; CALL_BUF = ""; call_fn = fn
-          }
-        }
-      }
-      END { for (f in cnt) if (cnt[f] > 0) print rel "|" f "|" cnt[f] }' "$f" >> "$t/scans"
-  done
-  sort "$t/scans" > "$t/scans.sorted"
-  cp "$t/scans.sorted" "$WORK/last-scans"
-  awk -F'|' '
-    FILENAME == ARGV[1] {
-      if ($1 != "SCAN") next
-      key = $2 "|" $3
-      if (NF < 5 || $4 !~ /^[0-9]+$/ || $5 == "") { print "R9: malformed allow line: " $0; next }
-      al[key] = $4; next
-    }
-    {
-      key = $1 "|" $2; got[key] = 1
-      if (!(key in al))
-        print "R9: " $1 ": " $2 " reads " $3 " word(s) with %s or %[ and no width: bound the scan by its buffer (a width, or a line reader and wpe_field_take), or list it as a SCAN line with its reason"
-      else if ($3 + 0 > al[key] + 0)
-        print "R9: " $1 ": " $2 " reads " $3 " unbounded word(s), the allow file says " al[key]
-      else if ($3 + 0 < al[key] + 0)
-        print "R9: " $1 ": " $2 " reads " $3 " unbounded word(s), lower the allow line from " al[key]
-    }
-    END {
-      for (k in al) if (!(k in got)) print "R9: stale allow line, delete it: " k
-    }' "$allow" "$t/scans.sorted" >> "$out"
-
-  # Rule 11: the system's reason is said, not guessed.  Per function, over
-  # the comment stripped sources (strings kept): "P" when it holds a word of
-  # the project's "did not open" sentences, "G" when it asks the system about
-  # a path (access, stat, lstat, fopen, open, opendir, realpath, chdir),
-  # holds a string that says "not found" or "cannot open", and names neither
-  # errno nor strerror: a cause the editor guessed after the system answered.
-  # "T" when it asks the system about a path and says a message table entry
-  # whose words guess a cause (table_words): a table entry can never carry the
-  # reason, so errno named in the function does not excuse it.
-  table_words "${TABLES_FROM:-$dir}" "$t/tablewords" >> "$out"
-  # What a #define holds counts for the functions that use it: a macro that
-  # says a table entry, asks the system about a path, or holds a guessing
-  # string is the same offence at the place it is used.
-  : > "$t/macros"
-  for f in "$t"/s/*.c "$t"/s/*.h; do
-    [ -f "$f" ] && macros_of "$f" >> "$t/macros"
-  done
-  awk -v tw="$t/tablewords" "$WORDS_LIB"'
-    BEGIN { load_set(tw, tabw) }
-    function add(kind, name) {
-      if (!((kind "|" name) in cls)) { cls[kind "|" name] = 1; grew = 1 }
-    }
-    {
-      name = $0; sub(/[|].*/, "", name); body = substr($0, length(name) + 2)
-      code = body; gsub(/"([^"\\]|\\.)*"/, "\"\"", code)
-      macro[name] = code
-      if (table_entry_said(code)) add("tab", name)
-      if (has_path_call(code)) add("call", name)
-      if (body ~ /"[^"]*([Nn]ot found|Can[\\\047]*t open|[Cc]annot open)[^"]*"/) add("lit", name)
-      if (code ~ /(^|[^A-Za-z0-9_])(errno|strerror)([^A-Za-z0-9_]|$)/) add("named", name)
-    }
-    # a macro of a macro: a body that names a macro of a class is of that class
-    END {
-      for (round = 0; round < 8; round++) {
-        grew = 0
-        for (c in cls) {
-          kind = c; sub(/[|].*/, "", kind); cn = substr(c, length(kind) + 2)
-          for (m in macro)
-            if (m != cn && word_in(macro[m], cn)) pend[kind "|" m] = 1
-        }
-        for (p in pend) { if (!(p in cls)) { cls[p] = 1; grew = 1 }; delete pend[p] }
-        if (!grew) break
-      }
-      for (c in cls) print c
-    }' "$t/macros" > "$t/macroclass"
-  # The sayers: the functions that say a guessing table entry, wherever they
-  # are (a helper in another file that says it after the caller's stat), and
-  # the functions that call one, however many levels up, minus those an allow
-  # line has judged.  Each round scans every function with the sayers found
-  # by the round before, until no new sayer appears; the last round's rows
-  # are the words.  A function that asks the system about a path and calls a
-  # sayer is named.
-  : > "$t/sayers"; : > "$t/words"
-  rounds=0
-  while [ "$rounds" -lt 6 ]; do
-    rounds=$((rounds + 1))
-    : > "$t/words.round"
-    for f in "$t"/s/*.c; do
-      [ -f "$f" ] || continue
-      rel=${f#"$t"/s/}
-      awk -v rel="$rel" -v tw="$t/tablewords" -v mc="$t/macroclass" -v sy="$t/sayers" "$WORDS_LIB"'
-        BEGIN {
-          load_set(tw, tabw); load_set(mc, mclass); load_set(sy, sayer)
-          for (k in tabw) { en = k; sub(/^[^|]*[|]/, "", en); errname[en] = 1 }
-        }
-        function flush() {
-          if (fn == "") return
-          if (mention && errbare) tabhit = 1
-          if (tabhit || saycall) print "S|" rel "|" fn
-          if (proj) print "P|" rel "|" fn
-          if (call && lit && !named) print "G|" rel "|" fn
-          if (call && (tabhit || saycall)) print "T|" rel "|" fn
-        }
-        # a guessing ERR_ name on its own, as in "i = ERR_ACCFILE": the table
-        # entry is then reached through an index or an alias of the table
-        function bare_err_name(code,   rest, nm) {
-          rest = code
-          while (match(rest, /ERR_[A-Za-z0-9_]+/)) {
-            nm = substr(rest, RSTART, RLENGTH); rest = substr(rest, RSTART + RLENGTH)
-            if (nm in errname) return 1
-          }
-          return 0
-        }
-        function use_macros(code,   m) {
-          for (m in mclass) {
-            if (substr(m, 1, 4) == "tab|" && word_in(code, substr(m, 5))) tabhit = 1
-            else if (substr(m, 1, 5) == "call|" && word_in(code, substr(m, 6))) call = 1
-            else if (substr(m, 1, 4) == "lit|" && word_in(code, substr(m, 5))) lit = 1
-            else if (substr(m, 1, 6) == "named|" && word_in(code, substr(m, 7))) named = 1
-          }
-        }
-        function calls_a_sayer(code,   rest, nm) {
-          rest = code
-          while (match(rest, /[A-Za-z_][A-Za-z0-9_]*[ \t]*[(]/)) {
-            nm = substr(rest, RSTART, RLENGTH); sub(/[ \t]*[(]$/, "", nm)
-            rest = substr(rest, RSTART + RLENGTH)
-            if (nm != fn && (nm in sayer)) return 1
-          }
-          return 0
-        }
-        {
-          out = $0
-          if (indef) { indef = (out ~ /\\[ \t]*$/); next }
-          if (out ~ /^[ \t]*#[ \t]*define/) { indef = (out ~ /\\[ \t]*$/); next }
-          if (out ~ /^}/) { flush(); fn = ""; next }
-          if (out ~ /^[A-Za-z_]/ && out ~ /[(]/ && out !~ /;[ \t]*$/ && out !~ /^(typedef|struct[^(]*[{])/) {
-            name = out; sub(/[ \t]*[(].*/, "", name); sub(/.*[^A-Za-z0-9_]/, "", name)
-            if (name != "") { flush(); fn = name; call = 0; lit = 0; named = 0; proj = 0; tabhit = 0; saycall = 0; mention = 0; errbare = 0 }
-          }
-          if (fn == "") next
-          code = out; gsub(/"([^"\\]|\\.)*"/, "\"\"", code)
-          if (has_path_call(code)) call = 1
-          if (code ~ /(^|[^A-Za-z0-9_])(errno|strerror)([^A-Za-z0-9_]|$)/) named = 1
-          if (out ~ /"[^"]*([Nn]ot found|Can[\\\047]*t open|[Cc]annot open)[^"]*"/) lit = 1
-          if (out ~ /"[^"]*(Project file not found|Cannot open project)[^"]*"/) proj = 1
-          if (table_entry_said(code)) tabhit = 1
-          use_macros(code)
-          if (code ~ /(^|[^A-Za-z0-9_])(e_msg|e_p_msg|e_d_msg)([^A-Za-z0-9_]|$)/) mention = 1
-          if (bare_err_name(code)) errbare = 1
-          if (calls_a_sayer(code)) saycall = 1
-        }
-        END { flush() }' "$f" >> "$t/words.round"
-    done
-    # a sayer's rows stay in the words, so an allow line that judges one is
-    # not stale; only the callers it has are named
-    cp "$t/words.round" "$t/words"
-    awk -F'|' 'FILENAME == ARGV[1] { if ($1 == "GUESS") ok[$3] = 1; next }
-               $1 == "S" && !($3 in ok) { print $3 }' "$allow" "$t/words.round" | sort -u > "$t/sayers.new"
-    if cmp -s "$t/sayers" "$t/sayers.new"; then break; fi
-    cp "$t/sayers.new" "$t/sayers"
-  done
-  sort "$t/words" > "$t/words.sorted"
-  cp "$t/words.sorted" "$WORK/last-words"
-  awk -F'|' '
-    FILENAME == ARGV[1] {
-      if ($1 == "PROJECTWORDS") {
-        if (NF < 4) { print "R11a: malformed allow line: " $0; next }
-        pw[$2 "|" $3] = 1; next
-      }
-      if ($1 == "GUESS") {
-        if (NF < 5 || $4 == "") { print "R11b: malformed allow line: " $0; next }
-        gs[$2 "|" $3] = 1
-      }
-      next
-    }
-    {
-      key = $2 "|" $3
-      if ($1 == "P") {
-        pwseen[key] = 1
-        if (!(key in pw))
-          print "R11a: " $2 ": " $3 " says the project did not open in words of its own: the reporter e_prj_say_not_opened is the one place for them"
-      } else if ($1 == "S") {
-        gsseen[key] = 1     # a function that says a guessing entry: judged by its allow line, if any
-      } else if ($1 == "T") {
-        gsseen[key] = 1
-        if (!(key in gs))
-          print "R11c: " $2 ": " $3 " asks the system about a path and says it with a message table entry whose words guess a cause: say the system\047s reason (e_say_path_refused, e_say_read_refused)"
-      } else {
-        gsseen[key] = 1
-        if (!(key in gs))
-          print "R11b: " $2 ": " $3 " asks the system about a path and then says a cause it guessed (not found, cannot open) without the system\047s errno or strerror"
-      }
-    }
-    END {
-      for (k in pw) if (!(k in pwseen)) print "R11a: stale allow line, delete it: PROJECTWORDS " k
-      for (k in gs) if (!(k in gsseen)) print "R11b: stale allow line, delete it: GUESS " k
-    }' "$allow" "$t/words.sorted" >> "$out"
-
-  # Rule 14: a window the editor writes opens through e_window_view_open.  A
-  # call of e_edit (a word of its own: lsp_apply_workspace_edit does not match) whose
-  # second argument is a string literal other than the views the editor knows
-  # by name, or a macro ending in _NAME, is named.  The argument is read to
-  # the comma or the closing parenthesis of its own level, so a call that
-  # spans lines, or one whose argument is itself a call, is read whole.
-  # A macro that wraps e_edit is read as e_edit, a macro that is a string
-  # literal is read as that literal, and a mention of e_edit that is not a call
-  # (a pointer to it) is named, since the call through it cannot be read.
-  awk '
-    {
-      name = $0; sub(/[|].*/, "", name); body = substr($0, length(name) + 2)
-      b = body; gsub(/^[ \t]+|[ \t]+$/, "", b)
-      # an object-like macro (no parameter list): what it stands for, to be
-      # read through however many macros it takes to reach a literal
-      if (body ~ /^[ \t]/ && b != "") { print "obj\t" name "\t" b; next }
-      if (body ~ /(^|[^A-Za-z0-9_.>])e_edit[ \t]*[(]/) print "wrap\t" name
-    }' "$t/macros" > "$t/editmacros"
-  for f in "$t"/s/*.c; do
-    [ -f "$f" ] || continue
-    rel=${f#"$t"/s/}
-    awk -v rel="$rel" -v mf="$t/editmacros" '
-      BEGIN {
-        names[1] = "e_edit"; nn = 1
-        while ((getline line < mf) > 0) {
-          split(line, p, "\t")
-          if (p[1] == "obj") objlit[p[2]] = p[3]
-          else if (p[1] == "wrap") names[++nn] = p[2]
-        }
-      }
-      function second_arg(s, p,   depth, i, n, c, in_s, arg, seen, ch) {
-        depth = 0; in_s = 0; seen = 0; arg = ""
-        n = split(s, ch, "")
-        for (i = p; i <= n; i++) {
-          c = ch[i]
-          if (in_s) {
-            if (seen == 1) arg = arg c
-            if (c == "\\") { i++; if (seen == 1) arg = arg ch[i] }
-            else if (c == "\"") in_s = 0
-            continue
-          }
-          if (c == "\"") { in_s = 1; if (seen == 1) arg = arg c; continue }
-          if (c == "(" || c == "{" || c == "[") depth++
-          else if (c == ")" || c == "}" || c == "]") { if (depth == 0) break; depth-- }
-          else if (c == "," && depth == 0) { seen++; if (seen == 2) break; continue }
+    # second_arg(s, p) - the second top level argument of the call whose "("
+    # comes just before position @p of @s.
+    function second_arg(s, p,   depth, i, n, c, in_s, arg, seen, ch) {
+      depth = 0; in_s = 0; seen = 0; arg = ""
+      n = split(s, ch, "")
+      for (i = p; i <= n; i++) {
+        c = ch[i]
+        if (in_s) {
           if (seen == 1) arg = arg c
+          if (c == "\\") { i++; if (seen == 1) arg = arg ch[i] }
+          else if (c == "\"") in_s = 0
+          continue
         }
-        return arg
+        if (c == "\"") { in_s = 1; if (seen == 1) arg = arg c; continue }
+        if (c == "(" || c == "{" || c == "[") depth++
+        else if (c == ")" || c == "}" || c == "]") { if (depth == 0) break; depth-- }
+        else if (c == "," && depth == 0) { seen++; if (seen == 2) break; continue }
+        if (seen == 1) arg = arg c
       }
-      # Is the first "(" of the text closed by its last ")" and by no earlier one?
-      function wrapped_whole(a,   i, n, c, depth, ch) {
-        n = split(a, ch, ""); depth = 0
-        for (i = 1; i <= n; i++) {
-          c = ch[i]
-          if (c == "(") depth++
-          else if (c == ")") { depth--; if (depth == 0 && i < n) return 0 }
-        }
-        return depth == 0
+      return arg
+    }
+    # Is the first "(" of the text closed by its last ")" and by no earlier one?
+    function wrapped_whole(a,   i, n, c, depth, ch) {
+      n = split(a, ch, ""); depth = 0
+      for (i = 1; i <= n; i++) {
+        c = ch[i]
+        if (c == "(") depth++
+        else if (c == ")") { depth--; if (depth == 0 && i < n) return 0 }
       }
-      # The argument without the casts and parentheses around it.
-      function bare_arg(a,   prev) {
-        do {
-          prev = a
-          gsub(/^[ \t\n]+|[ \t\n]+$/, "", a)
-          if (a ~ /^[(][ \t]*(const[ \t]+)?[A-Za-z_][A-Za-z0-9_ \t]*[*]+[ \t]*[)]/) sub(/^[(][^)]*[)][ \t]*/, "", a)
-          else if (a ~ /^[(].*[)]$/ && wrapped_whole(a)) a = substr(a, 2, length(a) - 2)
-        } while (a != prev)
-        return a
+      return depth == 0
+    }
+    # The argument without the casts and parentheses around it.
+    function bare_arg(a,   prev) {
+      do {
+        prev = a
+        gsub(/^[ \t\n]+|[ \t\n]+$/, "", a)
+        if (a ~ /^[(][ \t]*(const[ \t]+)?[A-Za-z_][A-Za-z0-9_ \t]*[*]+[ \t]*[)]/) sub(/^[(][^)]*[)][ \t]*/, "", a)
+        else if (a ~ /^[(].*[)]$/ && wrapped_whole(a)) a = substr(a, 2, length(a) - 2)
+      } while (a != prev)
+      return a
+    }
+    # Does this argument name a window no file backs?  A literal other than
+    # the views the editor knows, a macro that leads to one (a macro of a
+    # macro, a cast or parentheses on the way), a name ending in _NAME, either
+    # branch of a ?: , or a member of a structure the file fills with one.
+    function names_a_window(a,   hops, q, i, t, n, depth, c, qpos, cpos, ch) {
+      a = bare_arg(a)
+      for (hops = 0; (a in objlit) && hops < 8; hops++) a = bare_arg(objlit[a])
+      # x ? "A" : "B": each branch is judged
+      n = split(a, ch, ""); depth = 0; qpos = 0; cpos = 0; q = 0
+      for (i = 1; i <= n; i++) {
+        c = ch[i]
+        if (c == "\"") { q = !q; continue }
+        if (q) continue
+        if (c == "(" || c == "[") depth++
+        else if (c == ")" || c == "]") depth--
+        else if (depth == 0 && c == "?" && !qpos) qpos = i
+        else if (depth == 0 && c == ":" && qpos && !cpos) cpos = i
       }
-      # Does this argument name a window no file backs?  A literal other than
-      # the views the editor knows, a macro that leads to one (a macro of a
-      # macro, a cast or parentheses on the way), a name ending in _NAME, either
-      # branch of a ?: , or a member of a structure the file fills with one.
-      function names_a_window(a,   hops, q, i, t, n, depth, c, qpos, cpos, ch) {
-        a = bare_arg(a)
-        for (hops = 0; (a in objlit) && hops < 8; hops++) a = bare_arg(objlit[a])
-        # x ? "A" : "B": each branch is judged
-        n = split(a, ch, ""); depth = 0; qpos = 0; cpos = 0; q = 0
-        for (i = 1; i <= n; i++) {
-          c = ch[i]
-          if (c == "\"") { q = !q; continue }
-          if (q) continue
-          if (c == "(" || c == "[") depth++
-          else if (c == ")" || c == "]") depth--
-          else if (depth == 0 && c == "?" && !qpos) qpos = i
-          else if (depth == 0 && c == ":" && qpos && !cpos) cpos = i
-        }
-        if (qpos && cpos)
-          return names_a_window(substr(a, qpos + 1, cpos - qpos - 1)) || names_a_window(substr(a, cpos + 1))
-        if (a ~ /^"/) return a != "\"\"" && a != "\"Help\"" && a != "\"Messages\"" && a != "\"Watches\"" && a != "\"Stack\""
-        if (a ~ /^[A-Z][A-Z0-9_]*_NAME$/) return 1
-        if (a ~ /^[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?(\.|->)[A-Za-z_]/) return member_holds_a_window_name(a)
-        return 0
+      if (qpos && cpos)
+        return names_a_window(substr(a, qpos + 1, cpos - qpos - 1)) || names_a_window(substr(a, cpos + 1))
+      if (a ~ /^"/) return a != "\"\"" && a != "\"Help\"" && a != "\"Messages\"" && a != "\"Watches\"" && a != "\"Stack\""
+      if (a ~ /^[A-Z][A-Z0-9_]*_NAME$/) return 1
+      if (a ~ /^[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?(\.|->)[A-Za-z_]/) return member_holds_a_window_name(a)
+      return 0
+    }
+    # a.f or a->f: does the file give a an initializer, or a.f an assignment,
+    # that holds a literal which names a window?
+    function member_holds_a_window_name(a,   base, rest, lit, seg, p) {
+      base = a; sub(/(\[|\.|->).*/, "", base)
+      rest = txt
+      while (match(rest, "(^|[^A-Za-z0-9_])" base "[^;{]*=[ \t\n]*[{]")) {
+        seg = substr(rest, RSTART + RLENGTH - 1)
+        p = index(seg, ";"); if (p) seg = substr(seg, 1, p)
+        if (a_literal_names_a_window(seg)) return 1
+        rest = substr(rest, RSTART + RLENGTH)
       }
-      # a.f or a->f: does the file give a an initializer, or a.f an assignment,
-      # that holds a literal which names a window?
-      function member_holds_a_window_name(a,   base, rest, lit, seg, p) {
-        base = a; sub(/(\[|\.|->).*/, "", base)
-        rest = txt
-        while (match(rest, "(^|[^A-Za-z0-9_])" base "[^;{]*=[ \t\n]*[{]")) {
-          seg = substr(rest, RSTART + RLENGTH - 1)
-          p = index(seg, ";"); if (p) seg = substr(seg, 1, p)
-          if (a_literal_names_a_window(seg)) return 1
-          rest = substr(rest, RSTART + RLENGTH)
-        }
-        rest = txt
-        while (match(rest, "(^|[^A-Za-z0-9_])" base "(\\.|->)[A-Za-z_][A-Za-z0-9_]*[ \t]*=[ \t]*\"")) {
-          seg = substr(rest, RSTART + RLENGTH - 1)
-          p = index(seg, ";"); if (p) seg = substr(seg, 1, p)
-          if (a_literal_names_a_window(seg)) return 1
-          rest = substr(rest, RSTART + RLENGTH)
-        }
-        return 0
+      rest = txt
+      while (match(rest, "(^|[^A-Za-z0-9_])" base "(\\.|->)[A-Za-z_][A-Za-z0-9_]*[ \t]*=[ \t]*\"")) {
+        seg = substr(rest, RSTART + RLENGTH - 1)
+        p = index(seg, ";"); if (p) seg = substr(seg, 1, p)
+        if (a_literal_names_a_window(seg)) return 1
+        rest = substr(rest, RSTART + RLENGTH)
       }
-      function a_literal_names_a_window(seg,   rest, lit) {
-        rest = seg
-        while (match(rest, /"([^"\\]|\\.)*"/)) {
-          lit = substr(rest, RSTART, RLENGTH); rest = substr(rest, RSTART + RLENGTH)
-          if (lit != "\"\"" && lit != "\"Help\"" && lit != "\"Messages\"" && lit != "\"Watches\"" && lit != "\"Stack\"") return 1
-        }
-        return 0
+      return 0
+    }
+    function a_literal_names_a_window(seg,   rest, lit) {
+      rest = seg
+      while (match(rest, /"([^"\\]|\\.)*"/)) {
+        lit = substr(rest, RSTART, RLENGTH); rest = substr(rest, RSTART + RLENGTH)
+        if (lit != "\"\"" && lit != "\"Help\"" && lit != "\"Messages\"" && lit != "\"Watches\"" && lit != "\"Stack\"") return 1
       }
-      { txt = txt $0 "\n" }
-      END {
-        for (k = 1; k <= nn; k++) {
-          nm = names[k]
-          rest = txt; base = 0
-          while (match(rest, "(^|[^A-Za-z0-9_])" nm "[ \t]*[(]")) {
-            st = RSTART + RLENGTH
-            arg = second_arg(rest, st)
-            pre = substr(txt, 1, base + st); ln = gsub(/\n/, "\n", pre) + 1
-            if (names_a_window(arg))
-              print "R14: " rel ":" ln ": " arg " names a window the editor writes: open it with e_window_view_open, which never reads the disk"
-            base += st - 1; rest = substr(rest, st)
-          }
-        }
-        plain = txt; gsub(/"([^"\\]|\\.)*"/, "\"\"", plain); gsub(/e_edit[ \t]+[(]/, "e_edit(", plain)
-        rest = plain; base = 0
-        while (match(rest, /(^|[^A-Za-z0-9_.>])e_edit([^A-Za-z0-9_(]|$)/)) {
+      return 0
+    }
+    # r14_end() - rule 14 over the whole text of one .c file: a window the
+    # editor writes opens through e_window_view_open.  A macro that wraps
+    # e_edit is read as e_edit, a macro that is a string literal is read as
+    # that literal, and a mention of e_edit that is not a call (a pointer to
+    # it) is named, since the call through it cannot be read.
+    function r14_end(   k, nm, rest, base, st, arg, pre, ln, plain) {
+      for (k = 1; k <= nn; k++) {
+        nm = names[k]
+        rest = txt; base = 0
+        while (match(rest, "(^|[^A-Za-z0-9_])" nm "[ \t]*[(]")) {
           st = RSTART + RLENGTH
-          pre = substr(plain, 1, base + st); ln = gsub(/\n/, "\n", pre) + 1
-          print "R14: " rel ":" ln ": e_edit is named without a call (a pointer to it): the name of the window it opens cannot be read, call e_edit or e_window_view_open directly"
+          arg = second_arg(rest, st)
+          pre = substr(txt, 1, base + st); ln = gsub(/\n/, "\n", pre) + 1
+          if (names_a_window(arg))
+            finding("R14: " rel ":" ln ": " arg " names a window the editor writes: open it with e_window_view_open, which never reads the disk")
           base += st - 1; rest = substr(rest, st)
         }
-      }' "$f" >> "$out"
-  done
-
-  # Rule 12: a buffer that receives or names a path is the owner's size.  A
-  # char array, of any scope, whose size is not WPE_PATH_SIZE, WPE_PATH_MAX or
-  # WPE_NAME_SIZE (directly, through defines, or plus other terms) is named
-  # when it is passed as a path to a libc call that takes one, to the owner's
-  # writers (as the destination), or to a function a PATHFN line of the allow
-  # file names.  The statements of one file are read in order with the brace
-  # depth, so an array is known from its declaration to the end of its
-  # function (a file scope array to the end of the file).
-  awk -F'|' "$AWK_LIB"'
-    function expand(e, depth,    out, rest, id, pre) {
-      out = ""; rest = e
-      while (match(rest, /[A-Za-z_][A-Za-z0-9_]*/)) {
-        id = substr(rest, RSTART, RLENGTH); pre = substr(rest, 1, RSTART - 1)
-        rest = substr(rest, RSTART + RLENGTH)
-        if (id ~ /^(WPE_PATH_SIZE|WPE_PATH_MAX|WPE_NAME_SIZE)$/ || !(id in val) || depth >= 8)
-          out = out pre id
-        else
-          out = out pre "(" expand(val[id], depth + 1) ")"
       }
-      return out rest
+      plain = txt; gsub(/"([^"\\]|\\.)*"/, "\"\"", plain); gsub(/e_edit[ \t]+[(]/, "e_edit(", plain)
+      rest = plain; base = 0
+      while (match(rest, /(^|[^A-Za-z0-9_.>])e_edit([^A-Za-z0-9_(]|$)/)) {
+        st = RSTART + RLENGTH
+        pre = substr(plain, 1, base + st); ln = gsub(/\n/, "\n", pre) + 1
+        finding("R14: " rel ":" ln ": e_edit is named without a call (a pointer to it): the name of the window it opens cannot be read, call e_edit or e_window_view_open directly")
+        base += st - 1; rest = substr(rest, st)
+      }
     }
-    # sized_by_owner(e) - is the size @e the owners number, alone or plus other terms?
-    function sized_by_owner(e,    x) {
-      x = expand(e, 0)
-      gsub(/"[^"]*"/, "", x)
-      if (x ~ /[*\/%-]|<<|>>/) return 0
-      return (x ~ /(^|[^A-Za-z0-9_])(WPE_PATH_SIZE|WPE_PATH_MAX|WPE_NAME_SIZE)([^A-Za-z0-9_]|$)/)
-    }
+
+    # declare(name, size, fn) - a char array this file declares.
     function declare(name, size, fn,    tbl) {
       gsub(/[ \t]+/, "", size)
       if (fn == "(file scope)") { fsize[name] = size; ffn[name] = fn; return }
       lsize[name] = size; lfn[name] = fn
     }
-    # declarations(stmt, fn) - the char arrays a declaration statement makes
+    # declarations(t, fn) - the char arrays a declaration statement makes
     function declarations(t, fn,    rest, pre, m, after, nm, closep, size, ptr, multi) {
       while (t ~ /^(static|const|register|extern|volatile|unsigned|signed)[ \t]+/) sub(/^[A-Za-z]+[ \t]+/, "", t)
       if (t !~ /^char([ \t*]|$)/) return
@@ -1165,101 +957,446 @@ scan_tree() {
       if (match(a, /^[A-Za-z_][A-Za-z0-9_]*[ \t]*\+/)) { nm = substr(a, 1, RLENGTH - 1); gsub(/[ \t]/, "", nm); return nm }
       return ""
     }
-    function check_call(rest, fname, ids,    start, n, k, nm, size, fn, key) {
-      while (match(rest, "(^|[^A-Za-z0-9_.>])" fname "[ \t]*\\(")) {
+    # check_args(s, from, fname, ids, ln) - the arguments of the call of
+    # @fname whose "(" comes just before @from: an array this file declared is
+    # a fact for the tree rule, which alone knows every define of the tree and
+    # so alone can say whether the owner sized it.
+    function check_args(s, from, fname, ids, ln,    n, k, nm, size, fn) {
+      n = arg_split(s, from)
+      for (k = 1; k <= n; k++) {
+        if (index(ids, " " (k - 1) " ") == 0) continue
+        nm = array_named(ARGS[k])
+        if (nm == "") continue
+        if (nm in lsize) { size = lsize[nm]; fn = lfn[nm] }
+        else if (nm in fsize) { size = fsize[nm]; fn = ffn[nm] }
+        else continue
+        print "AH\t" rel "\t" ln "\t" fname "\t" nm "\t" size "\t" fn
+      }
+    }
+    # sink_calls(s, ln) - every call of the statement @s whose name takes a
+    # path: one walk over the words of the statement, not one walk per name.
+    function sink_calls(s, ln,    rest, start, nm, before) {
+      rest = s
+      while (match(rest, /[A-Za-z_][A-Za-z0-9_]*[ \t]*[(]/)) {
         start = RSTART + RLENGTH
-        n = arg_split(rest, start)
-        for (k = 1; k <= n; k++) {
-          if (index(ids, " " (k - 1) " ") == 0) continue
-          nm = array_named(ARGS[k])
-          if (nm == "") continue
-          if (nm in lsize) { size = lsize[nm]; fn = lfn[nm] }
-          else if (nm in fsize) { size = fsize[nm]; fn = ffn[nm] }
-          else continue
-          if (sized_by_owner(size)) continue
-          key = REL "|" fn "|" nm
-          if (key in ex) { exused[key] = 1; continue }
-          print "R12: " REL ":" LN ": " nm "[" size "] is passed to " fname " as a path: size it WPE_PATH_SIZE, WPE_PATH_MAX or WPE_NAME_SIZE, or list it as an ARRAY line"
-        }
+        nm = substr(rest, RSTART, RLENGTH); sub(/[ \t]*[(]$/, "", nm)
+        before = (RSTART > 1) ? substr(rest, RSTART - 1, 1) : ""
+        if (before !~ /[A-Za-z0-9_.>]/ && (nm in sink)) check_args(rest, start, nm, sink[nm], ln)
         rest = substr(rest, start)
       }
     }
+    # rule12_stmt(s, ln) - the statements of one file are read in order with
+    # the brace depth, so an array is known from its declaration to the end of
+    # its function (a file scope array to the end of the file).  R13 is in the
+    # same walk.
+    function rule12_stmt(s, ln,    t, opens, closes, k) {
+      t = s; sub(/^[ \t]+/, "", t); sub(/[ \t]+$/, "", t)
+      if (t ~ /^#/) return
+      opens = (t ~ /\{$/); closes = (t ~ /\}$/)
+      if (r12depth == 0) {
+        if (opens && t !~ /=/ && t ~ /\(/) {
+          r12fn = t; sub(/[ \t]*\(.*/, "", r12fn); sub(/.*[^A-Za-z0-9_]/, "", r12fn)
+          print "FD\t" rel "\t" r12fn
+          for (k in lsize) delete lsize[k]
+          r12infn = 1
+        } else if (t == "{" && r12pending != "") {
+          r12fn = r12pending
+          print "FD\t" rel "\t" r12fn
+          for (k in lsize) delete lsize[k]
+          r12infn = 1
+        } else if (!opens) {
+          if (t ~ /\(/ && t !~ /=/ && t !~ /^typedef/) {
+            r12pending = t; sub(/[ \t]*\(.*/, "", r12pending); sub(/.*[^A-Za-z0-9_]/, "", r12pending)
+          }
+          declarations(t, "(file scope)")
+        }
+      } else if (r12infn) {
+        declarations(t, r12fn)
+        # The cutting quoter: a path quoted by it into a buffer too small is
+        # cut into the path of another file.  Only ws_quote_whole and the
+        # tools (which quote the words of the model, not a path) call it.
+        if (t ~ /(^|[^A-Za-z0-9_.>])wpe_ai_shell_quote[ \t]*\(/ && r12fn != "ws_quote_whole" && r12fn !~ /^ai_tool_/) {
+          if ((rel "|" r12fn) in qok) print "QU\t" rel "\t" r12fn
+          else finding("R13: " rel ":" ln ": " r12fn " calls wpe_ai_shell_quote, which cuts: quote a path with wpe_ai_shell_quote_whole, or list the function as a QUOTE line")
+        }
+        if (t ~ /\(/ && (length(lsize) > 0 || length(fsize) > 0)) sink_calls(t, ln)
+      }
+      if (opens) r12depth++
+      else if (closes) { r12depth--; if (r12depth <= 0) { r12depth = 0; r12infn = 0 } }
+    }
+
     BEGIN {
+      is_c = (rel ~ /\.c$/)
+      is_owner = (rel == owner)
+      rel_names_r2 = (index(rel, "->txt") || index(rel, "str") || index(rel, "mem") ||
+                      index(rel, "sprintf") || index(rel, "stpcpy"))
+      r2fn = "(^|[^A-Za-z0-9_>.])(strcpy|strcat|strncpy|strncat|sprintf|memcpy|memmove|stpcpy)[ \t]*\\("
+      r3names = "(wpe_path_copy|wpe_path_join|wpe_path_cat|wpe_field_take|e_opt_field_take)"
+      r3alone = "^" r3names "[ \t]*\\("
+      r3voided = "^\\([ \t]*void[ \t]*\\)[ \t]*" r3names "[ \t]*\\("
+      # the body of a for: the header is cut at its semicolons, so the body
+      # follows the ")" that closes it, with no "(" before
+      r3forbody = "^[^(]*\\)[ \t]*" r3names "[ \t]*\\("
+      r10word = "(^|[^A-Za-z0-9_])"
+      r10endw = "([^A-Za-z0-9_]|$)"
+      r10numbers = r10word "(WPE_PATH_MAX|WPE_NAME_MAX|WPE_PLATFORM_PATH_MAX|WPE_PLATFORM_NAME_MAX)" r10endw
+      r10fmt = r10word "WPE_PATH_TOO_LONG_FMT" r10endw
+      r10fn = r10word "(snprintf|sprintf)[ \t]*\\("
+      # the sizes a moved path buffer may be declared with
+      okname = "(WPE_PATH_SIZE|WPE_NAME_SIZE)"
+      nmoved = split("filen prj_path cwd_saved saved_cwd xdgfile legacy libpath dirtmp exe", moved, " ")
+      nid = split("WPE_BUILD_PATH_MAX E_EXECUTE_PATH_MAX E_D_COMPILE_PATH_MAX E_LSP_PATH_MAX E_DAP_FRAME_PATH_MAX HOST_PATH_MAX E_GDBMI_PATH_MAX E_SCALA_SETUP_DIR_MAX E_LSP_ROOT_MAX WPE_SYNTAX_PATH_MAX AI_TRANSCRIPT_PATH_MAX CONTAIN_TOKEN_MAX WLF_NAME_SIZE", ids, " ")
+      for (i = 1; i <= nid; i++) private_number[ids[i]] = 1
       # the libc calls that take a path, and which arguments (0 based) are one
       split("stat:0 lstat:0 open:0 openat:1 fopen:0 freopen:0 access:0 chdir:0 mkdir:0 rmdir:0 unlink:0 remove:0 rename:0,1 link:0,1 symlink:0,1 readlink:0,1 realpath:0,1 getcwd:0 opendir:0 mkstemp:0 mkostemp:0 mkdtemp:0 truncate:0 chmod:0 execv:0 execve:0 execvp:0 statvfs:0 fstatat:1 wpe_path_copy:0 wpe_path_join:0 wpe_path_cat:0 wpe_path_search_in:2 wpe_read_open:0 wpe_read_stream_open:0 wpe_read_text:0 wpe_read_folder:0 wpe_read_name_ok:0", sk, " ")
       for (i in sk) {
         split(sk[i], kv, ":"); gsub(/,/, " ", kv[2])
         sink[kv[1]] = " " kv[2] " "
       }
-    }
-    FILENAME == ARGV[1] {
-      if ($1 == "PATHFN") {
-        if (NF < 5 || $4 !~ /^[0-9]+$/ || $5 == "") { print "R12x: malformed allow line: " $0; next }
-        sink[$3] = sink[$3] " " $4 " "
-        pathfn[$2 "|" $3] = 1
-      } else if ($1 == "QUOTE") {
-        if (NF < 4 || $4 == "") { print "R12x: malformed allow line: " $0; next }
-        qok[$2 "|" $3] = 1
-      } else if ($1 == "ARRAY") {
-        if (NF < 5 || $5 == "") { print "R12x: malformed allow line: " $0; next }
-        ex[$2 "|" $3 "|" $4] = 1
+      fn_copy = "(file scope)"; fn_scan = "(file scope)"; CALL_OPEN = 0
+      naliases = 0; r12depth = 0; r12infn = 0; r12pending = ""
+      # the arrays rule 12 fills: named as arrays before any length() of them
+      split("", lsize); split("", fsize)
+      # the entries whose words guess a cause, and the name of each
+      load_set(tw, tabw)
+      for (k in tabw) { en = k; sub(/^[^|]*[|]/, "", en); errname[en] = 1 }
+      # the macro classes of rule 11, as the letters of one string a name
+      ntab = 0
+      while ((getline mline < mc) > 0) {
+        mk = mline; sub(/[|].*/, "", mk); mn = substr(mline, length(mk) + 2)
+        letter = (mk == "tab") ? "t" : (mk == "call") ? "c" : (mk == "lit") ? "l" : "n"
+        if (!(mn in mtab)) ntab++
+        mtab[mn] = mtab[mn] letter
       }
-      next
+      close(mc)
+      # what rule 14 reads a macro as: an object-like macro stands for its
+      # body, a macro that wraps e_edit is read as e_edit
+      names[1] = "e_edit"; nn = 1
+      while ((getline eline < em) > 0) {
+        split(eline, ep, "\t")
+        if (ep[1] == "obj") objlit[ep[2]] = ep[3]
+        else if (ep[1] == "wrap") names[++nn] = ep[2]
+      }
+      close(em)
+      # the allow file: what rules 10, 12 and 13 let stand.  A line that does
+      # not parse is the tree rule'"'"'s to name, once.
+      while ((getline aline < allowfile) > 0) {
+        na = split(aline, af, "|")
+        if (af[1] == "SENTENCE" && na >= 2) sent[af[2]] = 1
+        else if (af[1] == "PATHFN" && na >= 5 && af[4] ~ /^[0-9]+$/ && af[5] != "")
+          sink[af[3]] = sink[af[3]] " " af[4] " "
+        else if (af[1] == "QUOTE" && na >= 4 && af[4] != "") qok[af[2] "|" af[3]] = 1
+      }
+      close(allowfile)
     }
-    FILENAME == ARGV[2] {
-      v = $0; sub(/^[^|]*\|[^|]*\|[^|]*\|?/, "", v)
-      if (!($3 in val)) val[$3] = v
-      next
-    }
+    FNR == 1 { blank_incom = 0 }
     {
-      cut_stmt($0)
-      if (REL != lastrel) {
-        lastrel = REL; depth = 0; infn = 0; pending = ""
-        for (k in lsize) delete lsize[k]
-        for (k in fsize) delete fsize[k]
+      out = blank_c($0, 1)
+      line_rules(out)
+      def_line(out)
+      feed_statements(out)
+      r9_scan_line(out)
+      if (is_c) {
+        r9_copy_line(out)
+        r11_line(out)
+        txt = txt out "\n"
       }
-      s = S; sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s)
-      if (s ~ /^#/) next
-      opens = (s ~ /\{$/); closes = (s ~ /\}$/)
-      if (depth == 0) {
-        if (opens && s !~ /=/ && s ~ /\(/) {
-          fname = s; sub(/[ \t]*\(.*/, "", fname); sub(/.*[^A-Za-z0-9_]/, "", fname)
-          defs[REL "|" fname] = 1
-          for (k in lsize) delete lsize[k]
-          infn = 1
-        } else if (s == "{" && pending != "") {
-          fname = pending; defs[REL "|" fname] = 1
-          for (k in lsize) delete lsize[k]
-          infn = 1
-        } else if (!opens) {
-          if (s ~ /\(/ && s !~ /=/ && s !~ /^typedef/) {
-            pending = s; sub(/[ \t]*\(.*/, "", pending); sub(/.*[^A-Za-z0-9_]/, "", pending)
-          }
-          declarations(s, "(file scope)")
-        }
-      } else if (infn) {
-        declarations(s, fname)
-        # The cutting quoter: a path quoted by it into a buffer too small is
-        # cut into the path of another file.  Only ws_quote_whole and the
-        # tools (which quote the model'"'"'s words, not a path) call it.
-        if (s ~ /(^|[^A-Za-z0-9_.>])wpe_ai_shell_quote[ \t]*\(/ && fname != "ws_quote_whole" && fname !~ /^ai_tool_/) {
-          if ((REL "|" fname) in qok) qused[REL "|" fname] = 1
-          else print "R13: " REL ":" LN ": " fname " calls wpe_ai_shell_quote, which cuts: quote a path with wpe_ai_shell_quote_whole, or list the function as a QUOTE line"
-        }
-        if (s ~ /\(/ && (length(lsize) > 0 || length(fsize) > 0))
-          for (nm in sink) check_call(s, nm, sink[nm])
-      }
-      if (opens) depth++
-      else if (closes) { depth--; if (depth <= 0) { depth = 0; infn = 0 } }
     }
     END {
-      for (k in pathfn) {
-        split(k, p, "|")
-        if (!(k in defs)) print "R12x: stale allow line, delete it: PATHFN " p[1] " " p[2] " (no such function in the file)"
+      stmt_emit()
+      r9_scan_end()
+      if (is_c) { r9_copy_end(); r11_emit(); r14_end() }
+    }' "$1"
+}
+
+# The rules that look at the whole tree, over the facts of every file: one
+# definition, no other path number, the counts against the allow file, the
+# sayer rounds of rule 11, and the arrays rule 12 saw handed to a path.
+AGGREGATE='
+# owned(name, depth) - is the number @name stands for one of the owners?
+function owned(name, depth,    v, w) {
+  v = val[name]
+  if (v ~ /(^|[^A-Za-z0-9_])WPE_(PATH_MAX|PATH_SIZE|NAME_MAX|NAME_SIZE|PATH_FIELD_MAX|NAME_FIELD_MAX)([^A-Za-z0-9_]|$)/)
+    return 1
+  w = v; gsub(/[ \t()]/, "", w)
+  if (depth < 8 && w ~ /^[A-Za-z_][A-Za-z0-9_]*$/ && (w in val))
+    return owned(w, depth + 1)
+  return 0
+}
+function expand(e, depth,    out, rest, id, pre) {
+  out = ""; rest = e
+  while (match(rest, /[A-Za-z_][A-Za-z0-9_]*/)) {
+    id = substr(rest, RSTART, RLENGTH); pre = substr(rest, 1, RSTART - 1)
+    rest = substr(rest, RSTART + RLENGTH)
+    if (id ~ /^(WPE_PATH_SIZE|WPE_PATH_MAX|WPE_NAME_SIZE)$/ || !(id in val) || depth >= 8)
+      out = out pre id
+    else
+      out = out pre "(" expand(val[id], depth + 1) ")"
+  }
+  return out rest
+}
+# sized_by_owner(e) - is the size @e the owners number, alone or plus other terms?
+function sized_by_owner(e,    x) {
+  x = expand(e, 0)
+  gsub(/"[^"]*"/, "", x)
+  if (x ~ /[*\/%-]|<<|>>/) return 0
+  return (x ~ /(^|[^A-Za-z0-9_])(WPE_PATH_SIZE|WPE_PATH_MAX|WPE_NAME_SIZE)([^A-Za-z0-9_]|$)/)
+}
+# rule1() - WPE_PATH_MAX and WPE_NAME_MAX are each defined once, in the
+# owner'"'"'s header, as a number.
+function rule1(    j, n1, n2, f) {
+  for (j = 1; j <= ndef; j++) {
+    split(defrec[j], f, "|")
+    if (f[3] == "WPE_PATH_MAX") n1++
+    else if (f[3] == "WPE_NAME_MAX") n2++
+  }
+  if (n1 + 0 != 1) print "R1: WPE_PATH_MAX is defined " n1 + 0 " times, not once"
+  if (n2 + 0 != 1) print "R1: WPE_NAME_MAX is defined " n2 + 0 " times, not once"
+  for (j = 1; j <= ndef; j++) {
+    split(defrec[j], f, "|")
+    if (f[3] != "WPE_PATH_MAX" && f[3] != "WPE_NAME_MAX") continue
+    if (f[1] != owner) { print "R1: " f[3] " is defined in " f[1] ":" f[2] ", not in " owner; continue }
+    if (f[4] !~ /^[0-9]+([ \t].*)?$/) print "R1: " f[3] " in " owner " is not a number: " f[4]
+  }
+}
+# rule7() - no other path number.  The names that end like one and are not a
+# path are listed in the allow file with their reason, and a line that matches
+# no define is stale.
+function rule7(    j, f, rel7, ln7, nm7, k) {
+  for (j = 1; j <= ndef; j++) {
+    split(defrec[j], f, "|"); rel7 = f[1]; ln7 = f[2]; nm7 = f[3]
+    if (rel7 == owner) continue
+    if (nm7 == "PATH_MAX" || nm7 == "NAME_MAX" || nm7 == "_POSIX_PATH_MAX") {
+      print "R7: " rel7 ":" ln7 ": " nm7 " is defined outside " owner; continue
+    }
+    if (nm7 !~ /(PATH_MAX|PATHMAX|PATH_SIZE|DIR_MAX|FOLDER_MAX|NAME_MAX)$/) continue
+    if (nm7 in ok7) { used7[nm7] = 1; continue }
+    if (!owned(nm7, 0))
+      print "R7: " rel7 ":" ln7 ": " nm7 " is a path number of its own: derive it from WPE_PATH_SIZE, WPE_PATH_MAX or WPE_NAME_MAX, or list it as not a path"
+  }
+  for (k in ok7) if (!(k in used7))
+    print "R7: stale allow line: no define of " k " ends like a path number"
+}
+# rule9copies() - the copies counted per function, against the allow file.  A
+# count may only fall, and a line the scan does not meet is stale.
+function rule9copies(    j, f, key, k) {
+  for (j = 1; j <= ncpy; j++) {
+    split(cpy[j], f, "|")
+    key = f[1] "|" f[2]; got9[key] = 1
+    if (listpre != "") print cpy[j] > (listpre ".copies")
+    if (!(key in al9))
+      print "R9: " f[1] ": " f[2] " has " f[3] " strcpy, strcat, strncpy or sprintf call(s) nobody has judged: move them onto the path owner, or list them with their kind"
+    else if (f[3] + 0 > al9[key] + 0)
+      print "R9: " f[1] ": " f[2] " has " f[3] " call(s), the allow file says " al9[key]
+    else if (f[3] + 0 < al9[key] + 0)
+      print "R9: " f[1] ": " f[2] " has " f[3] " call(s), lower the allow line from " al9[key]
+  }
+  for (k in al9) if (!(k in got9)) print "R9: stale allow line, delete it: " k
+}
+# rule9scans() - the same for a scan that reads a word with %s or %[ and no
+# width, against the SCAN lines.
+function rule9scans(    j, f, key, k) {
+  for (j = 1; j <= nscn; j++) {
+    split(scn[j], f, "|")
+    key = f[1] "|" f[2]; got9s[key] = 1
+    if (listpre != "") print scn[j] > (listpre ".scans")
+    if (!(key in al9s))
+      print "R9: " f[1] ": " f[2] " reads " f[3] " word(s) with %s or %[ and no width: bound the scan by its buffer (a width, or a line reader and wpe_field_take), or list it as a SCAN line with its reason"
+    else if (f[3] + 0 > al9s[key] + 0)
+      print "R9: " f[1] ": " f[2] " reads " f[3] " unbounded word(s), the allow file says " al9s[key]
+    else if (f[3] + 0 < al9s[key] + 0)
+      print "R9: " f[1] ": " f[2] " reads " f[3] " unbounded word(s), lower the allow line from " al9s[key]
+  }
+  for (k in al9s) if (!(k in got9s)) print "R9: stale allow line, delete it: " k
+}
+# rule10stale() - a SENTENCE line no file used.
+function rule10stale(    k) {
+  for (k in sent) if (!(k in sentused))
+    print "R10: stale allow line: " k " has no sentence about a path\047s length of its own"
+}
+# rule11() - the sayers: the functions that say a guessing table entry,
+# wherever they are (a helper in another file that says it after the caller
+# stat), and the functions that call one, however many levels up, minus those
+# an allow line has judged.  Each round reads every function with the sayers
+# the round before found, until no new sayer appears; the last round'"'"'s rows
+# are the words.
+function rule11(    rounds, i, k, saycall, tabhit, key, changed, nnew, tmp) {
+  for (i = 1; i <= nfn; i++) {
+    fcall[i] = (index(fflags[i], "c") > 0)
+    flit[i] = (index(fflags[i], "l") > 0)
+    fnamed[i] = (index(fflags[i], "n") > 0)
+    ftab[i] = (index(fflags[i], "t") > 0)
+    fproj[i] = (index(fflags[i], "p") > 0)
+    ncal[i] = split(fcal[i], tmp, " ")
+    for (k = 1; k <= ncal[i]; k++) cal[i, k] = tmp[k]
+  }
+  nsayer = 0; rounds = 0
+  while (rounds < 6) {
+    rounds++
+    for (k in sayernew) delete sayernew[k]
+    nnew = 0
+    for (i = 1; i <= nfn; i++) {
+      saycall = 0
+      for (k = 1; k <= ncal[i]; k++) if (cal[i, k] in sayer) { saycall = 1; break }
+      tabhit = ftab[i] || saycall
+      rowS[i] = tabhit
+      rowP[i] = fproj[i]
+      rowG[i] = (fcall[i] && flit[i] && !fnamed[i])
+      rowT[i] = (fcall[i] && tabhit)
+      # a sayer'"'"'s rows stay in the words, so an allow line that judges one is
+      # not stale; only the callers it has are named
+      if (tabhit && !(ffn[i] in gsfn)) { sayernew[ffn[i]] = 1; nnew++ }
+    }
+    changed = (nnew != nsayer)
+    if (!changed) for (k in sayernew) if (!(k in sayer)) { changed = 1; break }
+    for (k in sayer) delete sayer[k]
+    for (k in sayernew) sayer[k] = 1
+    nsayer = nnew
+    if (!changed) break
+  }
+  for (i = 1; i <= nfn; i++) {
+    key = frel[i] "|" ffn[i]
+    if (rowG[i]) {
+      if (listpre != "") print "G|" key > (listpre ".words")
+      gsseen[key] = 1
+      if (!(key in gs))
+        print "R11b: " frel[i] ": " ffn[i] " asks the system about a path and then says a cause it guessed (not found, cannot open) without the system\047s errno or strerror"
+    }
+    if (rowP[i]) {
+      if (listpre != "") print "P|" key > (listpre ".words")
+      pwseen[key] = 1
+      if (!(key in pw))
+        print "R11a: " frel[i] ": " ffn[i] " says the project did not open in words of its own: the reporter e_prj_say_not_opened is the one place for them"
+    }
+    if (rowS[i]) {
+      if (listpre != "") print "S|" key > (listpre ".words")
+      gsseen[key] = 1
+    }
+    if (rowT[i]) {
+      if (listpre != "") print "T|" key > (listpre ".words")
+      gsseen[key] = 1
+      if (!(key in gs))
+        print "R11c: " frel[i] ": " ffn[i] " asks the system about a path and says it with a message table entry whose words guess a cause: say the system\047s reason (e_say_path_refused, e_say_read_refused)"
+    }
+  }
+  for (k in pw) if (!(k in pwseen)) print "R11a: stale allow line, delete it: PROJECTWORDS " k
+  for (k in gs) if (!(k in gsseen)) print "R11b: stale allow line, delete it: GUESS " k
+}
+# rule12() - the arrays the walk saw handed to a path, judged now that every
+# define of the tree is known, and the allow lines that no longer match.
+function rule12(    j, f, size, key, k, p) {
+  for (j = 1; j <= nah; j++) {
+    split(ahrec[j], f, "\t")
+    size = f[6]
+    if (sized_by_owner(size)) continue
+    key = f[2] "|" f[7] "|" f[5]
+    if (key in ex) { exused[key] = 1; continue }
+    print "R12: " f[2] ":" f[3] ": " f[5] "[" size "] is passed to " f[4] " as a path: size it WPE_PATH_SIZE, WPE_PATH_MAX or WPE_NAME_SIZE, or list it as an ARRAY line"
+  }
+  for (k in pathfn) {
+    split(k, p, "|")
+    if (!(k in defs)) print "R12x: stale allow line, delete it: PATHFN " p[1] " " p[2] " (no such function in the file)"
+  }
+  for (k in ex) if (!(k in exused)) print "R12x: stale allow line, delete it: ARRAY " k
+  for (k in qok) if (!(k in qused)) print "R12x: stale allow line, delete it: QUOTE " k
+}
+BEGIN {
+  FS = "\t"
+  if (listpre != "") {
+    printf "" > (listpre ".copies")
+    printf "" > (listpre ".scans")
+    printf "" > (listpre ".words")
+  }
+  # the allow file: what rules 7, 9, 10, 11 and 12 let stand
+  while ((getline aline < allowfile) > 0) {
+    na = split(aline, f, "|")
+    if (f[1] == "NUMBER") ok7[f[2]] = 1
+    else if (f[1] == "COPY") {
+      if (na < 6 || f[4] !~ /^[0-9]+$/) { print "R9: malformed allow line: " aline; continue }
+      if (f[5] !~ /^(sized|text|checked)$/) {
+        print "R9: allow line for " f[2] " " f[3] " is of kind " f[5] ", not sized, text or checked: a path goes through the owner"; continue
       }
-      for (k in ex) if (!(k in exused)) print "R12x: stale allow line, delete it: ARRAY " k
-      for (k in qok) if (!(k in qused)) print "R12x: stale allow line, delete it: QUOTE " k
-    }' "$allow" "$t/defines" "$t/stmts" >> "$out"
+      al9[f[2] "|" f[3]] = f[4]; kind9[f[2] "|" f[3]] = f[5]
+    } else if (f[1] == "SCAN") {
+      if (na < 5 || f[4] !~ /^[0-9]+$/ || f[5] == "") { print "R9: malformed allow line: " aline; continue }
+      al9s[f[2] "|" f[3]] = f[4]
+    } else if (f[1] == "PROJECTWORDS") {
+      if (na < 4) { print "R11a: malformed allow line: " aline; continue }
+      pw[f[2] "|" f[3]] = 1
+    } else if (f[1] == "GUESS") {
+      if (na < 5 || f[4] == "") { print "R11b: malformed allow line: " aline; continue }
+      gs[f[2] "|" f[3]] = 1; gsfn[f[3]] = 1
+    } else if (f[1] == "SENTENCE") {
+      sent[f[2]] = 1
+    } else if (f[1] == "PATHFN") {
+      if (na < 5 || f[4] !~ /^[0-9]+$/ || f[5] == "") { print "R12x: malformed allow line: " aline; continue }
+      pathfn[f[2] "|" f[3]] = 1
+    } else if (f[1] == "QUOTE") {
+      if (na < 4 || f[4] == "") { print "R12x: malformed allow line: " aline; continue }
+      qok[f[2] "|" f[3]] = 1
+    } else if (f[1] == "ARRAY") {
+      if (na < 5 || f[5] == "") { print "R12x: malformed allow line: " aline; continue }
+      ex[f[2] "|" f[3] "|" f[4]] = 1
+    }
+  }
+  close(allowfile)
+  # a problem of reading the message tables is a finding: a scan that cannot
+  # see the tables fails instead of passing blind
+  while ((getline pline < twproblems) > 0) print pline
+  close(twproblems)
+}
+{
+  if ($1 == "F") { print substr($0, 3); next }
+  if ($1 == "DEF") {
+    rec = substr($0, 5)
+    ndef++; defrec[ndef] = rec
+    split(rec, f, "|")
+    v = rec; sub(/^[^|]*\|[^|]*\|[^|]*\|?/, "", v)
+    if (!(f[3] in val)) val[f[3]] = v
+    next
+  }
+  if ($1 == "CPY") { ncpy++; cpy[ncpy] = substr($0, 5); next }
+  if ($1 == "SCN") { nscn++; scn[nscn] = substr($0, 5); next }
+  if ($1 == "SU") { sentused[$2] = 1; next }
+  if ($1 == "FN") { nfn++; frel[nfn] = $2; ffn[nfn] = $3; fflags[nfn] = $4; fcal[nfn] = $5; next }
+  if ($1 == "AH") { nah++; ahrec[nah] = $0; next }
+  if ($1 == "FD") { defs[$2 "|" $3] = 1; next }
+  if ($1 == "QU") { qused[$2 "|" $3] = 1; next }
+}
+END { rule1(); rule7(); rule9copies(); rule9scans(); rule10stale(); rule11(); rule12() }
+'
+
+# scan_tree DIR OUT [ALLOW] - run the rules on the top level sources under
+# DIR; the findings go to OUT, one per line, each starting with its rule.
+# ALLOW is the file that lists what rules 7, 9, 10, 12 and 13 let stand; a
+# canary's tree has none, so anything the rule meets is an offender there.
+# With --list the copy calls, the unbounded scans and the guessing functions
+# found are left in $WORK/last-copies, last-scans and last-words.
+scan_tree() {
+  dir=$1; out=$2; allow=${3:-/dev/null}
+  t=$(mktemp -d "$WORK/scan.XXXXXX")
+  mkdir "$t/f"
+  : > "$out"
+  # TABLES_FROM is where rule 11 reads the message tables; a canary points it
+  # at the real tree, and the answer is kept per folder.
+  table_words "${TABLES_FROM:-$dir}"
+  macro_facts "$dir" "$TW" "$t/macroclass" "$t/editmacros"
+  for f in "$dir"/*.c "$dir"/*.h; do
+    [ -f "$f" ] || continue
+    rel=${f#"$dir"/}
+    scan_file "$f" "$rel" "$allow" "$t/macroclass" "$t/editmacros" "$TW" > "$t/f/$rel"
+  done
+  [ -f "$dir/$OWNER_HEADER" ] ||
+    echo "R1: $OWNER_HEADER is missing (the scan is blind or the owner is gone)" >> "$out"
+  st_list=
+  if [ "$LIST" -eq 1 ]; then st_list=$t/list; fi
+  awk -v allowfile="$allow" -v owner="$OWNER_HEADER" -v twproblems="$TW_PROBLEMS" \
+      -v listpre="$st_list" "$AGGREGATE" "$t/f"/*.c "$t/f"/*.h >> "$out"
+  if [ "$LIST" -eq 1 ]; then
+    sort "$t/list.copies" > "$WORK/last-copies"
+    sort "$t/list.scans" > "$WORK/last-scans"
+    sort "$t/list.words" > "$WORK/last-words"
+  fi
 }
 
 # plant_tree CODE ALLOWLINES - a tree of its own (the owner's header and one
