@@ -1444,7 +1444,10 @@ TESTS += tests/check-test-real-tools.sh
 # XWPE_TEST_WAIT_SCALE and tests/wpe_driver.py turns a row's seconds into a
 # deadline (wait_screen, wait_until, wait_deadline).  tests/check-test-waits.sh
 # fails on a test file that reads the variable, runs a wait loop of its own, or
-# hands the owner a time it has already multiplied by the scale.
+# hands the owner a time it has already multiplied by the scale, on the text of
+# a program a row runs that sleeps or reads a clock of its own, and on a second
+# C reader of the variable: the product's is we_dap_sync.c and the tests' is
+# tests/test_watchdog.h.
 TESTS += tests/check-test-waits.sh
 
 # The host tools the rows need and where the Linux job gets each:
@@ -1770,6 +1773,7 @@ EXTRA_DIST = \
   tests/inner_job_cut.py \
   tests/test_job_cut.py \
   tests/harness/job_cut.py \
+  tests/harness/skew.py \
   tests/program_gate.py \
   tests/test-waits.allow \
   tests/harness/suite_plan.py \

@@ -6,9 +6,11 @@
 #   WE  one read of the END of a session (not alive(), poll() is not None,
 #       returncode is not None, exit_code()) where the row should wait with
 #       WpeSession.ended_within; a "still running" check is not counted
-#   WF  a sleep inside the text of a program or a stand-in script that a
-#       debugger or a row runs, where the row should wait at a
-#       tests/program_gate.py gate
+#   WF  a sleep or a clock inside the text of a program or a stand-in script
+#       that a debugger or a row runs, where the row should wait at a
+#       tests/program_gate.py gate: the program runs the same at every scale
+#       while the row's own wait stretches, so a program that times itself
+#       leaves a race no row can see
 # A count may only fall; a count above the measurement fails as stale.  The
 # check prints the current list with --list.
 tests/edit_model/oracle.py WS=11

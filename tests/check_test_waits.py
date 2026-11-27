@@ -24,6 +24,21 @@ Rule WC: no call of wait_screen passes a time that is already stretched (an
 argument that names WAIT_SCALE or calls scaled()): the owner stretches it,
 so the wait would last the scale twice.
 
+Rule WP: the C side has one reader of the scale in the product and one in
+the tests.  we_dap_sync.c stretches a wait for an adapter's answer and
+tests/test_watchdog.h every bound a C test arms; each is its owner's.  The
+quoted name anywhere else in a top-level *.c or *.h, or in a *.c or *.h below
+tests/, outside comments, is a second reader and fails: what it would stretch
+is a bound the product keeps to itself, and moving one is a design and not a
+patch.  Writing the name into a child's environment (setenv, unsetenv,
+putenv) is not a read, as in rule WA.
+
+Rules WS, WD, WE and WF are the swept ones: their sites are counted per file
+in tests/test-waits.allow and a count may only fall.  WF reads the text of a
+program or of a stand-in script a row runs, and that text may hold no sleep
+and read no clock: the program runs the same at every scale while the row's
+wait stretches, so a program that times itself is a race no row can see.
+
 The files of tests/eval/ are not scanned (another session's experiments);
 nor is this file, which holds the names.
 
@@ -49,8 +64,9 @@ RULE_CLOCK = "WS"
 RULE_DURATION = "WD"
 RULE_END = "WE"
 RULE_PROGRAM = "WF"
+RULE_PRODUCT = "WP"
 RULES = (RULE_READ, RULE_LOOP, RULE_DOUBLE, RULE_CLOCK, RULE_DURATION, RULE_END,
-         RULE_PROGRAM)
+         RULE_PROGRAM, RULE_PRODUCT)
 # Rule WS: a reference to one of these of the time module is a clock of the
 # row's own, whatever it is called (alias, from-import, getattr).
 CLOCK_NAMES = ("sleep", "time", "monotonic", "perf_counter", "time_ns",
@@ -64,7 +80,40 @@ PROGRAM_SLEEP = re.compile(
     r"|sleep_for|sleep)\s*\(|"
     r"\bfrom_secs\s*\(|"
     r"(?:^|;|&&|\|\||\||\bdo\b|\bthen\b|\bexec\b|\()[ \t]*sleep[ \t]+[\d$]", re.M)
-PROGRAM_GATE = os.path.join("tests", "program_gate.py")
+# Rule WF, the clocks: a program that times itself runs the same at every
+# scale while the row's own wait stretches, so the moment it waits for and the
+# moment the row looks are apart by the scale, and nothing shows it.  Each form
+# is a spelling of a clock and not the English word:
+#   Algol 68  `t0 := seconds`, `seconds - t0`, never the "seconds" of a message
+#   C         clock(), gettimeofday(), clock_gettime(), and time() only as
+#             time (NULL), time(0) or time(&t), never the "time (s)" of a
+#             failure text
+#   Java      currentTimeMillis(), nanoTime()
+#   Rust      Instant::now()
+#   Go        time.Now(), time.After(), time.Tick()
+#   Python    time.time(), time.monotonic() in a program's own text
+#   shell     date +%s, $SECONDS, timeout N, read -t
+PROGRAM_CLOCK = re.compile(
+    r":=\s*seconds\b|\bseconds\s*-|"
+    r"\bclock\s*\(|\bgettimeofday\s*\(|\bclock_gettime\s*\(|"
+    r"\btime\s*\(\s*(?:NULL|0\s*\)|&)|"
+    r"\bcurrentTimeMillis\b|\bnanoTime\b|\bInstant::now\b|"
+    r"\btime\.(?:Now|After|Tick|time|monotonic)\b|"
+    r"\bdate\s+\+%s|\$SECONDS\b|\btimeout[ \t]+\d|\bread\s+-t\b", re.M)
+# Rule WF reads the text of a program or of a stand-in that the editor runs.
+# These files hold none, each for its own reason:
+#   program_gate.py       the gate owner writes every line it replaces a
+#                         program's own sleep with
+#   check_ci_tools.py     the CI tool checker's canaries for its foreign-cut
+#                         rule, which is about the image's own cut program
+#   test_engine_guard.py  the tool farm's row that refuses that same program
+#   harness/skew.py       the skew run's planted rows, which no editor runs
+PROGRAM_TEXT_EXEMPT = (
+    os.path.join("tests", "program_gate.py"),
+    os.path.join("tests", "check_ci_tools.py"),
+    os.path.join("tests", "test_engine_guard.py"),
+    os.path.join("tests", "harness", "skew.py"),
+)
 # The files that own a clock, an end or a duration: the two drivers.  A test
 # file is never an owner; its own sites are counted in the allow file.
 CLOCK_OWNERS = (os.path.join("tests", "gui_owner.py"), os.path.join("tests", "wpe_driver.py"))
@@ -73,6 +122,18 @@ CLOCK_OWNERS = (os.path.join("tests", "gui_owner.py"), os.path.join("tests", "wp
 ALLOW_FILE = os.path.join("tests", "test-waits.allow")
 SCALE_VARIABLE = "XWPE_TEST_WAIT_SCALE"
 SCALE_NAME = "WAIT_SCALE"
+# Rule WP: the one file of the product that reads the scale (it stretches a
+# wait for an adapter's answer), the one header every C test arms its bounds
+# through, and that header's self-test, which starts its victim at a scale of
+# its own.  A quoted name in any other C file is a second reader.
+SCALE_READERS = ("we_dap_sync.c",
+                 os.path.join("tests", "test_watchdog.h"),
+                 os.path.join("tests", "test_watchdog.c"))
+SCALE_LITERAL = '"%s"' % SCALE_VARIABLE
+# Writing the name into a child's environment is not a read, as in rule WA.
+SCALE_WRITE_CALL = re.compile(r"\b(?:setenv|unsetenv|putenv)\s*\(\s*$")
+# A C comment is blanked and not cut out, so every line keeps its number.
+C_COMMENT = re.compile(r"/\*.*?\*/|//[^\n]*", re.S)
 # The functions that stretch a time by the scale, or return the scale itself.
 SCALING_CALLS = ("scaled", "wait_scale")
 WAIT_SCREEN = "wait_screen"
@@ -192,12 +253,53 @@ CANARIES = {
                              RULE_PROGRAM),
     "program_sleep_for.py": ('PROG = "std::this_thread::sleep_for(std::chrono::seconds(8));"\n',
                              RULE_PROGRAM),
+    # One canary per clock a program text may not read (PROGRAM_CLOCK).
+    "program_a68_seconds.py": ('PROG = "REAL t0 := seconds;\\n"\n'
+                               'LOOP = "WHILE seconds - t0 < 9.0 DO SKIP OD\\n"\n',
+                               RULE_PROGRAM),
+    "program_c_clock.py": ('PROG = "double c = (double)clock() / CLOCKS_PER_SEC;"\n',
+                           RULE_PROGRAM),
+    "program_c_time.py": ('PROG = "unsigned long t = time(NULL);"\n', RULE_PROGRAM),
+    "program_c_time_ref.py": ('PROG = "time(&t);"\n', RULE_PROGRAM),
+    "program_c_gettimeofday.py": ('PROG = "gettimeofday(&tv, 0);"\n', RULE_PROGRAM),
+    "program_c_clock_gettime.py": ('PROG = "clock_gettime(CLOCK_MONOTONIC, &ts);"\n',
+                                   RULE_PROGRAM),
+    "program_java_millis.py": ('PROG = "long t = System.currentTimeMillis();"\n',
+                               RULE_PROGRAM),
+    "program_java_nanos.py": ('PROG = "long t = System.nanoTime();"\n', RULE_PROGRAM),
+    "program_rust_instant.py": ('PROG = "let start = Instant::now();"\n', RULE_PROGRAM),
+    "program_go_now.py": ('PROG = "start := time.Now()"\n', RULE_PROGRAM),
+    "program_go_after.py": ('PROG = "<-time.After(2 * time.Second)"\n', RULE_PROGRAM),
+    "program_go_tick.py": ('PROG = "tick := time.Tick(100 * time.Millisecond)"\n',
+                           RULE_PROGRAM),
+    "program_python_time.py": ('PROG = "import time\\nprint(time.time())\\n"\n',
+                               RULE_PROGRAM),
+    "program_python_monotonic.py": ('PROG = "end = time.monotonic() + 5\\n"\n',
+                                    RULE_PROGRAM),
+    "program_shell_date.py": ('SCRIPT = "#!/bin/sh\\nstart=$(date +%s)\\n"\n',
+                              RULE_PROGRAM),
+    "program_shell_seconds.py": ('SCRIPT = "#!/bin/sh\\nSECONDS=0\\n"\n'
+                                 'WAIT = "while [ $SECONDS -lt 30 ]; do :; done\\n"\n',
+                                 RULE_PROGRAM),
+    "program_shell_timeout.py": ('SCRIPT = "#!/bin/sh\\ntimeout 30 ./prog\\n"\n',
+                                 RULE_PROGRAM),
+    "program_shell_read.py": ('SCRIPT = "#!/bin/sh\\nread -t 5 line\\n"\n',
+                              RULE_PROGRAM),
     "clean_still_running.py": ('def t(s):\n'
                                '    assert s.alive()\n'
                                '    assert s.proc.poll() is None\n'
                                '    assert s.proc.returncode is None\n', None),
     "clean_prose.py": ('MSG = "the row should sleep for a while, then go on"\n'
                        'OPT = "AIToolTimeoutNote : none"\n', None),
+    # The narrowed spellings: English prose and a duration's type name are not
+    # a clock a program reads.
+    "clean_prose_seconds.py": ('MSG = "the waiting line should count the seconds:"\n'
+                               'DIFF = "the seconds did not advance: %s -> %s"\n', None),
+    "clean_chrono_seconds.py": ('PROG = "auto span = std::chrono::seconds(8);"\n', None),
+    "clean_prose_time.py": ('MSG = "the menu is drawn whole after the stop time (missing)"\n'
+                            'UNIT = "time (s) since the start"\n'
+                            'NOTE = "the adapter answers after a timeout of 5 s"\n', None),
+    "clean_shell_no_clock.py": ('SCRIPT = "#!/bin/sh\\necho up\\nread line\\n"\n', None),
     "clean_api.py": ('from gui_owner import product_duration, product_option_line\n'
                      'v = product_duration("XWPE_AI_MOCK_DELAY_MS", 5000)\n'
                      'e = {"XWPE_UI_TRACE": "t", **product_env("XWPE_AI_MOCK_DELAY_MS", 5000)}\n'
@@ -217,6 +319,40 @@ CANARIES = {
                  'MOCK_MS = int(5000 * WAIT_SCALE)\n'
                  'PLAIN_S = 12\n'
                  'wait_screen(s, "x", PLAIN_S)\n', None),
+}
+
+# Rule WP: a reader of the scale that is not one of SCALE_READERS, and the
+# clean side of the rule (the two owners, a write into a child's environment,
+# a comment, a failure message).  Planted by the self-test in a scratch tree.
+SCALE_CANARIES = {
+    "we_x.c": ('#include <stdlib.h>\n'
+               'static double f(void)\n'
+               '{\n'
+               '\treturn atof(getenv("XWPE_TEST_WAIT_SCALE"));\n'
+               '}\n',
+               RULE_PRODUCT),
+    "we_x_env.h": ('#define OTHER_SCALE_ENV "XWPE_TEST_WAIT_SCALE"\n', RULE_PRODUCT),
+    os.path.join("tests", "test_x.c"):
+        ('const char *e = getenv("XWPE_TEST_WAIT_SCALE");\n', RULE_PRODUCT),
+    # The product's one reader, as the #define it reads through.
+    "we_dap_sync.c": ('#define SYNC_SCALE_ENV "XWPE_TEST_WAIT_SCALE"\n', None),
+    # The C tests' one reader, and its self-test, which is exempt by name.
+    os.path.join("tests", "test_watchdog.h"):
+        ('static inline double test_wait_scale(void)\n'
+         '{\n\tconst char *e = getenv("XWPE_TEST_WAIT_SCALE");\n\treturn 1.0;\n}\n',
+         None),
+    os.path.join("tests", "test_watchdog.c"):
+        ('\tconst char *e = getenv("XWPE_TEST_WAIT_SCALE");\n', None),
+    # A write into a child's environment is not a read.
+    os.path.join("tests", "test_y.c"):
+        ('setenv("XWPE_TEST_WAIT_SCALE", scale, 1);\n'
+         'unsetenv("XWPE_TEST_WAIT_SCALE");\n', None),
+    # A comment is blanked before the scan, and a failure message that carries
+    # the name is not the quoted name.
+    "we_y.c": ('/* getenv("XWPE_TEST_WAIT_SCALE") belongs to we_dap_sync.c */\n'
+               '// getenv("XWPE_TEST_WAIT_SCALE") in a line comment too\n'
+               'static const char m[] = "XWPE_TEST_WAIT_SCALE=3 did not finish";\n',
+               None),
 }
 
 
@@ -576,7 +712,8 @@ def _extra_offences(tree, rel, found, durations):
             if text in durations or _names_an_option_line(text, durations):
                 if not _is_duration_api_argument(node, parents):
                     found[RULE_DURATION].append(line)
-            if rel != PROGRAM_GATE and PROGRAM_SLEEP.search(text):
+            if rel not in PROGRAM_TEXT_EXEMPT and (
+                    PROGRAM_SLEEP.search(text) or PROGRAM_CLOCK.search(text)):
                 found[RULE_PROGRAM].append(line)
         if _builds_a_product_name(node, durations):
             found[RULE_DURATION].append(line)
@@ -615,6 +752,56 @@ def _python_files(root):
                 yield os.path.relpath(os.path.join(folder, name), root)
 
 
+def _c_files(root):
+    """Every top-level *.c and *.h and every one below @root/tests, as paths
+    relative to @root.  A worktree another session left behind (.delegation/)
+    holds copies of the same files and is not walked."""
+    for name in sorted(os.listdir(root)):
+        if name.endswith((".c", ".h")):
+            yield name
+    base = os.path.join(root, "tests")
+    for folder, names, files in os.walk(base):
+        names[:] = [n for n in names
+                    if n not in SKIPPED_FOLDERS and not n.startswith(".")]
+        for name in files:
+            if name.endswith((".c", ".h")):
+                yield os.path.relpath(os.path.join(folder, name), root)
+
+
+def _blank(match):
+    """What replaces a comment: as many newlines, so a line keeps its number."""
+    return "\n" * match.group(0).count("\n")
+
+
+def scale_reads(source):
+    """The lines of a C @source that read XWPE_TEST_WAIT_SCALE: the quoted name
+    outside comments, where the call holding it does not write the name into a
+    child's environment."""
+    text = C_COMMENT.sub(_blank, source)
+    lines = []
+    for number, line in enumerate(text.splitlines(), 1):
+        at = line.find(SCALE_LITERAL)
+        if at < 0 or SCALE_WRITE_CALL.search(line[:at]):
+            continue
+        lines.append(number)
+    return lines
+
+
+def c_offences(root):
+    """{(file, rule WP): [line, ...]} for the C files of the tree at @root: a
+    reader of the scale that is not one of SCALE_READERS."""
+    found = {}
+    for rel in sorted(_c_files(root)):
+        if rel in SCALE_READERS:
+            continue
+        with open(os.path.join(root, rel), encoding="utf-8",
+                  errors="replace") as fh:
+            lines = scale_reads(fh.read())
+        if lines:
+            found[(rel, RULE_PRODUCT)] = lines
+    return found
+
+
 def scan(root):
     """{(file, rule): [line, ...]} of the offences in the tree at @root."""
     found = {}
@@ -627,6 +814,7 @@ def scan(root):
         for rule, lines in hits.items():
             if lines:
                 found[(rel, rule)] = sorted(set(lines))
+    found.update(c_offences(root))
     return found
 
 
@@ -676,28 +864,46 @@ def over_the_allowance(found, allowed):
     return lines
 
 
+def _plant(root, rel, text):
+    """Write one canary at @rel of the scratch tree @root."""
+    path = os.path.join(root, rel)
+    folder = os.path.dirname(path)
+    if folder and not os.path.isdir(folder):
+        os.makedirs(folder)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+
+
+def _canaries():
+    """{path in the scratch tree: (text, the rule it is named for, or None for a
+    clean file)} of every canary: the Python ones below tests/, and the C ones
+    of rule WP at the place each stands for."""
+    planted = {os.path.join("tests", name): canary
+               for name, canary in CANARIES.items()}
+    planted.update(SCALE_CANARIES)
+    return planted
+
+
 def selftest():
     """Plant the canaries; True when each is named for its rule and the
-    clean file is not."""
+    clean files are not."""
     ok = True
+    planted = _canaries()
     with tempfile.TemporaryDirectory(prefix="waits.") as root:
         os.makedirs(os.path.join(root, "tests"))
-        for name, (text, _rule) in CANARIES.items():
-            with open(os.path.join(root, "tests", name), "w",
-                      encoding="utf-8") as fh:
-                fh.write(text)
+        for rel, (text, _rule) in planted.items():
+            _plant(root, rel, text)
         found = scan(root)
-        for name, (_text, rule) in CANARIES.items():
-            rel = os.path.join("tests", name)
+        for rel, (_text, rule) in sorted(planted.items()):
             hit = {r for (f, r) in found if f == rel}
             if rule is None and hit:
                 sys.stderr.write("check_test_waits: clean file %s was named: %s\n"
-                                 % (name, sorted(hit)))
+                                 % (rel, sorted(hit)))
                 ok = False
             # A deadline built on time.time() is also a clock of its own (WS).
             if rule is not None and (rule not in hit or hit - {rule} - {RULE_CLOCK}):
                 sys.stderr.write("check_test_waits: canary %s named %s, want %s\n"
-                                 % (name, sorted(hit), rule))
+                                 % (rel, sorted(hit), rule))
                 ok = False
     return ok
 
@@ -713,7 +919,7 @@ def main(argv):
     if not selftest():
         return 1
     if args.selftest:
-        print("check_test_waits: the canaries are named, the clean file is not")
+        print("check_test_waits: the canaries are named, the clean files are not")
         return 0
     root = os.path.abspath(args.srcdir)
     found = scan(root)
@@ -730,6 +936,11 @@ def main(argv):
         sys.stderr.write("check_test_waits: %d problem(s); use wpe_driver.wait_screen / "
                          "wait_until / wait_deadline and the owner's duration APIs\n"
                          % len(problems))
+        if any(rule == RULE_PRODUCT for (_rel, rule) in found if found[(_rel, rule)]):
+            sys.stderr.write("check_test_waits: rule %s has one reader in the product "
+                             "(we_dap_sync.c) and one in the C tests "
+                             "(tests/test_watchdog.h); a second one needs a design\n"
+                             % RULE_PRODUCT)
         return 1
     print("check_test_waits: one owner decides how long a wait lasts")
     return 0
