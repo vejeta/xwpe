@@ -268,6 +268,25 @@ int e_cancel_is_next(const FENSTER *top, const char *what)
 }
 
 /**
+ * e_cancel_rank - Where the claim named @what stands in the order Esc walks.
+ * @what: a claim's name as the table spells it.
+ *
+ * Messages shows the waiting lines in this order, so the bottom line is the
+ * one the next Esc ends.  The table stays the only order: this only reads it.
+ * Return: 0 for the first claim, 1 for the next, and so on; WPE_CANCEL_NO_RANK
+ * when the table has no such claim (a build without that module).
+ */
+int e_cancel_rank(const char *what)
+{
+ size_t i;
+
+ for (i = 0; i < E_CANCEL_CLAIM_COUNT; i++)
+  if (strcmp(wpe_cancel_claims[i].what, what) == 0)
+   return((int)i);
+ return(WPE_CANCEL_NO_RANK);
+}
+
+/**
  * e_cancel_trace - Say in the trace which claim took the key.
  * @claim: the claim; @key_name: the trace's word for the key; @state: what
  * the key did not do, or NULL for a cancel that was asked of the module.

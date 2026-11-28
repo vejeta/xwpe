@@ -360,8 +360,10 @@ own bar, where @samp{^F10 Run} continues the program.
 @cindex XWPE_DEBUG_START_TIMEOUT
 The first Run, Step or Go to cursor builds the program and starts the
 debugger (gdb, jdb, pdb or a68g).  The editor does not wait for it.
-Until the debugger answers with its prompt, the last row of Messages
-reads:
+Until the debugger answers with its prompt, Messages shows a waiting
+line at its foot.  When a build runs at the same time, the debugger's
+line is the one above the build's, because the build's line is the
+bottom one and is the one the next @key{Esc} ends.  The line reads:
 
 @example
 starting gdb ... 3s  (Esc cancels)
@@ -406,7 +408,8 @@ it.  If dlv cannot build the package, its error appears in Messages and
 the session ends.  Rust is compiled before the adapter starts, as a
 build is: Messages says @samp{Compiling for debug... (Esc cancels)},
 you keep your keys, and the session starts once the compiler has
-succeeded.  @key{Esc} or Debug > Quit ends the compiler, with the line
+succeeded.  That line is a waiting line: it goes when the compile ends,
+whichever way.  @key{Esc} or Debug > Quit ends the compiler, with the line
 @samp{compile for debug cancelled}, and no session starts after it; nor
 does one for a file closed meanwhile.  The Scala build
 server is started before its adapter; that step still holds the editor.

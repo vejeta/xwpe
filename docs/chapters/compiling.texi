@@ -97,8 +97,12 @@ them.
 A build does not hold the editor.  While the compiler, the linker or
 @command{make} runs, every line it prints lands in Messages as it comes,
 and the last row of Messages reads @samp{building ... 3s  (Esc cancels)},
-counting the seconds.  The editor keeps taking keys: you can move to
-another window, scroll, or read the output as it grows.
+counting the seconds.  The output always lands above that row.  When a
+debugger is starting at the same time, its waiting line stands above the
+build's: the bottom line is the one the next @kbd{Esc} ends, and each line
+counts its own seconds until its own wait is over.  The editor keeps
+taking keys: you can move to another window, scroll, or read the output as
+it grows.
 
 @kbd{Esc} cancels the build.  The compiler and everything it started
 are stopped, Messages ends with @samp{build cancelled}, and no later

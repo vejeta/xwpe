@@ -21,6 +21,7 @@
 #include "we_read.h"
 #include "we_startcmd.h"
 #include "we_startplan.h"
+#include "we_waitline.h"
 
 #ifdef DEBUGGER
 
@@ -1295,11 +1296,18 @@ static int e_d_pty_hung_up(int n, int err)
  * e_d_pty_append_to_messages - Write a piece the program printed at the end
  * of Messages.
  * @mf: the Messages window; @buf, @n: the piece.
+ *
+ * The piece lands above the waiting lines of a build or a starting debugger:
+ * they are taken out for its bytes and put back after, so a half line the
+ * program printed is never written into a waiting line, and a waiting line
+ * is never deleted with the program's output.
  */
 static void e_d_pty_append_to_messages(FENSTER *mf, const char *buf, int n)
 {
+ BUFFER *b = e_window_text(mf);
  int i;
 
+ wpe_wait_lift(b);
  e_d_pty_ensure_own_line(mf);
  for (i = 0; i < n; i++)
  {
@@ -1307,6 +1315,7 @@ static void e_d_pty_append_to_messages(FENSTER *mf, const char *buf, int n)
    e_d_async.pty_owns_last_line = 0;
   e_d_messages_append_char(mf, (unsigned char)buf[i]);
  }
+ wpe_wait_lay(b);
 }
 
 /**
@@ -9022,6 +9031,26 @@ static struct {
  char errf[WPE_PATH_SIZE];             /* where the compiler's errors go */
 } e_d_compile;
 
+/* The compile's waiting line at the foot of Messages; it goes when the
+   compile ends, so its "(Esc cancels)" is never left behind a finished one. */
+static WpeWait e_d_compile_wait = WPE_WAIT("the compile for debug");
+
+/**
+ * e_d_wait_line_show - Show a waiting line at the foot of Messages, opening
+ * the window first when it is closed.
+ * @w: the waiter; @text: what the line says; @f: a window of the desktop.
+ *
+ * What the user gets: the promise that Esc ends the wait is on screen at once,
+ * in Messages, and it goes when the wait ends.
+ */
+static void e_d_wait_line_show(WpeWait *w, const char *text, FENSTER *f)
+{
+ if (!e_build_messages(f->ed))
+  e_window_pane_open(f->ed, WPE_PANE_MESSAGES);
+ wpe_wait_begin(w);
+ wpe_wait_say(w, "%s", text);
+}
+
 /**
  * e_d_compile_too_long - Say which part of the compile for debug does not
  * fit, instead of compiling a cut path.
@@ -9272,6 +9301,7 @@ static void e_d_compile_on_ended(WpeChild *c, int status, int how, void *data)
  (void)c;
  (void)data;
  e_d_compile.running = 0;
+ wpe_wait_end(&e_d_compile_wait);
  e_d_compile.ok = (how == WPE_CHILD_ENDED && WIFEXITED(status) &&
                    WEXITSTATUS(status) == 0);
  e_d_compile.held = 1;
@@ -9349,7 +9379,7 @@ static int e_d_compile_begin(FENSTER *f)
   return(-1);
  }
  e_d_compile.running = 1;
- e_d_p_message(E_D_COMPILE_LINE, f, 1);
+ e_d_wait_line_show(&e_d_compile_wait, E_D_COMPILE_LINE, f);
  return(0);
 }
 
@@ -9397,6 +9427,7 @@ static void e_d_compile_drop(void)
  if (!e_d_compile.running)
   return;
  e_d_compile.running = 0;
+ wpe_wait_end(&e_d_compile_wait);
  wpe_child_end_detached(&e_d_compile.child, SIGTERM);
  e_d_compile_errors_remove();
 }
@@ -9455,11 +9486,17 @@ typedef struct
  int ok;                            /* how it ended, while held */
  char dir[WPE_PATH_SIZE];           /* the project, also its argument */
  e_scala_setup_done_fn done;
+ WpeWait wait;                      /* its waiting line, while it runs */
 } E_SCALA_SETUP;
 
+/* Both the language server's setup and the debugger's are ended by the one
+   Esc that names "scala-cli setup". */
+#define E_SCALA_SETUP_INIT { {0}, 0, 0, 0, {0}, NULL, WPE_WAIT("scala-cli setup") }
+
 /* One for the language server, one for the debugger: either may run while
-   the other is asked for. */
-static E_SCALA_SETUP e_scala_setup_lsp, e_scala_setup_dap;
+   the other is asked for.  Each owns one waiting line. */
+static E_SCALA_SETUP e_scala_setup_lsp = E_SCALA_SETUP_INIT;
+static E_SCALA_SETUP e_scala_setup_dap = E_SCALA_SETUP_INIT;
 
 /**
  * e_scala_setup_succeeded - Did the setup command end with exit status 0?
@@ -9497,6 +9534,7 @@ static void e_scala_setup_on_ended(WpeChild *c, int status, int how,
 
  (void)c;
  su->running = 0;
+ wpe_wait_end(&su->wait);
  su->ok = e_scala_setup_succeeded(status, how);
  su->held = 1;
  if (wpe_paint_idle())
@@ -9605,6 +9643,7 @@ static void e_scala_setup_drop(E_SCALA_SETUP *su)
  if (!su->running)
   return;
  su->running = 0;
+ wpe_wait_end(&su->wait);
  wpe_child_end_detached(&su->child, SIGTERM);
 }
 
@@ -11169,7 +11208,7 @@ static int e_d_scala_setup_first(FENSTER *f, const char *dir)
   e_error(E_D_SCALA_SETUP_FAILED_LINE, 0, f->fb);
   return(1);
  }
- e_d_p_message(E_SCALA_SETUP_LINE, f, 1);
+ e_d_wait_line_show(&e_scala_setup_dap.wait, E_SCALA_SETUP_LINE, f);
  return(1);
 }
 
@@ -11227,8 +11266,7 @@ static struct {
  int active;        /* a debugger was started and has not answered yet      */
  int ending;        /* E_D_START_WAITING, or why the debugger is being ended */
  int held;         /* it answered while a box was up                       */
- int wait_row;      /* the waiting line is Messages' last row               */
- int timeout;       /* the deadline, in seconds                             */
+ int timeout;      /* the deadline, in seconds                             */
  time_t start;
  int hb_timer;      /* the heartbeat timer, or WPE_TIMER_NONE               */
  int out_fd;        /* the debugger's output, while it is watched           */
@@ -11239,8 +11277,12 @@ static struct {
  const char *prompt_name;  /* the other prompt the banner stopped at, or NULL  */
  int prompt_len;    /* the bytes held when the heartbeat last saw one       */
  int prompt_ticks;  /* heartbeats those bytes stood unchanged               */
-} e_d_start = { 0, E_D_START_WAITING, 0, 0, E_D_START_TIMEOUT, 0,
+} e_d_start = { 0, E_D_START_WAITING, 0, E_D_START_TIMEOUT, 0,
                 WPE_TIMER_NONE, E_D_START_NO_FD, 0, E_D_START_NO_FD, 0, NULL };
+
+/* The start's waiting line at the foot of Messages; the owner of those lines
+   (we_waitline.c) keeps it, the start only says what it reads. */
+static WpeWait e_d_start_wait = WPE_WAIT("the debugger start");
 
 /* The command to run once the debugger has answered. */
 static e_d_resume_fn e_d_start_cmd = NULL;
@@ -11492,20 +11534,6 @@ static const char *e_d_start_label(void)
 }
 
 /**
- * e_d_start_wait_line_drop - Take the waiting line out of Messages.
- */
-static void e_d_start_wait_line_drop(void)
-{
- FENSTER *mf = e_build_messages(e_d_start.cn);
-
- if (!e_d_start.wait_row)
-  return;
- e_d_start.wait_row = 0;
- if (mf && e_window_text(mf)->mxlines > 0)
-  e_buffer_delete_lines(e_window_text(mf), e_window_text(mf)->mxlines - 1, 1, E_BUFFER_STEP_NEW);
-}
-
-/**
  * e_d_start_adapter_alive - Has the starting debug adapter answered?
  *
  * An adapter that answered initialize is alive; what it does next (dlv
@@ -11544,32 +11572,19 @@ static void e_d_start_wait_text(char *line, size_t n, long secs)
 }
 
 /**
- * e_d_start_wait_line_put - Write "starting <debugger> ... Ns (Esc cancels)"
- * at the foot of Messages.
+ * e_d_start_wait_line_say - Say "starting <debugger> ... Ns (Esc cancels)" at
+ * the foot of Messages, with the seconds so far.
  *
  * What the user sees while the debugger starts: that it starts, for how
- * long, and that Esc ends it, where a build shows its own waiting line.
+ * long, and that Esc ends it, where a build shows its own waiting line.  The
+ * line turns in place and never takes another activity's row.
  */
-static void e_d_start_wait_line_put(void)
+static void e_d_start_wait_line_say(void)
 {
- FENSTER *mf = e_build_messages(e_d_start.cn);
  char line[E_D_START_LINE_MAX];
 
- if (!mf || e_d_start.wait_row)
-  return;
  e_d_start_wait_text(line, sizeof line, (long)(time(NULL) - e_d_start.start));
- e_view_append(e_window_text(mf), line);
- e_d_start.wait_row = 1;
-}
-
-/**
- * e_d_start_wait_line_turn - Show the waiting line with the seconds so far.
- */
-static void e_d_start_wait_line_turn(void)
-{
- e_d_start_wait_line_drop();
- e_d_start_wait_line_put();
- e_messages_show_tail(e_d_start.cn);
+ wpe_wait_say(&e_d_start_wait, "%s", line);
 }
 
 /**
@@ -11642,7 +11657,7 @@ static int e_d_start_forget(void)
   return(0);
  e_d_start_unwatch_output();
  e_d_start_heartbeat_stop();
- e_d_start_wait_line_drop();
+ wpe_wait_end(&e_d_start_wait);
  e_d_start.active = 0;
  e_d_start.held = 0;
  e_d_start.ending = E_D_START_WAITING;
@@ -12275,7 +12290,6 @@ static void e_d_jdb_start_show_vm_words(int max_reads)
 {
  FENSTER *mf = e_build_messages(e_d_start.cn);
 
- e_d_start_wait_line_drop();
  e_d_pty_read_to_messages(mf, max_reads);
 }
 
@@ -12295,7 +12309,7 @@ static void e_d_jdb_start_on_program_output(int fd, void *data)
   e_d_start.pty_fd = E_D_START_NO_FD;
  }
  if (e_d_start.ending == E_D_START_WAITING)
-  e_d_start_wait_line_turn();
+  e_d_start_wait_line_say();
 }
 
 /**
@@ -12310,7 +12324,7 @@ static void e_d_jdb_start_launch_vm(int port)
   e_d_start_stop(E_D_START_VM_GONE);
   return;
  }
- e_d_start_wait_line_turn();          /* "jdb starting the Java VM ..." */
+ e_d_start_wait_line_say();           /* "jdb starting the Java VM ..." */
  if (e_d_pty_master < 0)
   return;
  e_d_start.pty_fd = e_d_pty_master;
@@ -12341,9 +12355,9 @@ static void e_d_jdb_start_say_line(const char *line)
  * whole.
  * @text: what jdb has said so far.
  *
- * A listen line without a valid port is shown and ends the start.  The
- * waiting line goes first, so jdb's line stays above the line that says
- * why the start ended.
+ * A listen line without a valid port is shown and ends the start.  jdb's
+ * line lands above the waiting line, and the line that says why the start
+ * ended lands above it too once the start has ended.
  */
 static void e_d_jdb_start_on_listen_line(const char *text)
 {
@@ -12358,7 +12372,6 @@ static void e_d_jdb_start_on_listen_line(const char *text)
   e_d_jdb_start_launch_vm(port);
   return;
  }
- e_d_start_wait_line_drop();
  e_d_jdb_start_say_line(at);
  e_d_start_stop(E_D_START_NO_PORT);
 }
@@ -12496,7 +12509,7 @@ static void e_d_start_on_tick(void *data)
  }
  e_d_start_check_deadline();
  if (e_d_start.ending == E_D_START_WAITING)
-  e_d_start_wait_line_turn();
+  e_d_start_wait_line_say();
 }
 
 /**
@@ -12546,7 +12559,7 @@ static void e_d_start_begin(FENSTER *f, int dap)
  e_d_start.opened_messages = 0;
  e_d_start.ending = E_D_START_WAITING;
  e_d_start.held = 0;
- e_d_start.wait_row = 0;
+ wpe_wait_begin(&e_d_start_wait);
  e_d_start.timeout = e_d_start_timeout();
  e_d_start.start = time(NULL);
  e_d_start.cn = f->ed;
@@ -12559,8 +12572,7 @@ static void e_d_start_begin(FENSTER *f, int dap)
 static void e_d_start_show(void)
 {
  e_d_start_heartbeat_start();
- e_d_start_wait_line_put();
- e_messages_show_tail(e_d_start.cn);
+ e_d_start_wait_line_say();
 }
 
 /**
@@ -12687,7 +12699,6 @@ static void e_d_dap_start_on_program_output(int fd, void *data)
  (void)data;
  if (!e_d_start.active || !g_dap)
   return;
- e_d_start_wait_line_drop();
  e_dap_drain_output(g_dap);
  if (e_dap_output_fd(g_dap) != fd)
  {
@@ -12695,7 +12706,7 @@ static void e_d_dap_start_on_program_output(int fd, void *data)
   e_d_start.pty_fd = E_D_START_NO_FD;
  }
  if (e_d_start.ending == E_D_START_WAITING)
-  e_d_start_wait_line_turn();
+  e_d_start_wait_line_say();
 }
 
 /**
@@ -31224,7 +31235,7 @@ static int e_lsp_setup_scala_build(FENSTER *f, const char *dir,
 {
  if (e_scala_setup_busy(&e_scala_setup_lsp, NULL))
  {
-  e_d_p_message(E_SCALA_SETUP_LINE, f, 0);
+  e_d_wait_line_show(&e_scala_setup_lsp.wait, E_SCALA_SETUP_LINE, f);
   return(-1);
  }
  e_scala_pin_jdk(f, "Metals");  /* keep Metals' Scala PC off a too-new JDK */
@@ -31234,7 +31245,7 @@ static int e_lsp_setup_scala_build(FENSTER *f, const char *dir,
   e_lsp_scala_setup_done(0, dir);   /* non-fatal: Metals imports the build */
   return(-1);
  }
- e_d_p_message(E_SCALA_SETUP_LINE, f, 1);
+ e_d_wait_line_show(&e_scala_setup_lsp.wait, E_SCALA_SETUP_LINE, f);
  e_lsp_raise_source(f);
  return(-1);
 }

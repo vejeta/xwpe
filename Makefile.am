@@ -72,6 +72,8 @@ we_SOURCES = \
   we_e_aus.c \
   we_edit.c \
   we_cancel.c \
+  we_waitline.c \
+  we_pmsg.c \
   we_buffer.c \
   we_closed.c \
   we_winkind.c \
@@ -307,6 +309,8 @@ noinst_HEADERS = \
   we_grid.h \
   we_testdump.h \
   we_buffer.h \
+  we_waitline.h \
+  we_pmsg.h \
   we_closed.h \
   we_lineend.h \
   we_write.h \
@@ -581,6 +585,21 @@ test_splice_CFLAGS = $(TEST_CFLAGS)
 # what the buffer made goes back into it as it was.
 test_lineend_SOURCES = tests/test_lineend.c we_buffer.c we_lineend.c we_winkind.c tests/stub_write_window.c
 test_lineend_CFLAGS = $(TEST_CFLAGS)
+
+# The owner of the waiting lines at the foot of Messages (we_waitline.c) on
+# the buffer's owner, the editor's side played by stubs: lines in the order
+# Esc ends them, output above the foot, a clear that keeps the lines, a row
+# the user rewrote left alone.
+check_PROGRAMS += test_waitline
+test_waitline_SOURCES = tests/test_waitline.c we_waitline.c we_buffer.c we_lineend.c we_winkind.c we_fmt.c tests/stub_write_window.c
+test_waitline_CFLAGS = $(TEST_CFLAGS)
+
+# The lines kept behind a box until it closes (we_pmsg.c), the editor's side
+# played by recorders: the order they come out in, the count of the ones
+# that did not fit, and a checklist drawn twice behind one box coming out once.
+check_PROGRAMS += test_pmsg
+test_pmsg_SOURCES = tests/test_pmsg.c we_pmsg.c
+test_pmsg_CFLAGS = $(TEST_CFLAGS)
 
 # The owner of writing the user's text (we_write.c), the editor's side
 # played by stubs: the one sentence a failed write says, the backup copy
@@ -1223,6 +1242,16 @@ TESTS += tests/check-session-end.sh
 # each counted, so a new promise is read before it is accepted).
 TESTS += tests/check-esc-owner.sh
 
+# One owner of the waiting lines at the foot of Messages (we_waitline.c): a
+# build, a starting debugger, a compile for debug and a scala-cli setup each
+# show one, and no other code may rewrite, delete or empty a row of Messages.
+# tests/check-waitline-owner.sh fails when a function that touches Messages
+# mutates its rows and tests/waitline-owner.allow does not classify it, when
+# Messages is emptied outside the owner, when an output primitive does not
+# bracket its append, when a handle is made or written by hand, when a
+# deleted function comes back or when a waiter names no claim.
+TESTS += test_waitline tests/check-waitline-owner.sh test_pmsg
+
 # One owner of how long a path the editor holds may be (we_path.h) and of a
 # dialog field's way out (we_fieldtake.h): tests/check-path-buffers.sh fails
 # on an unbounded copy of a field's text, a refusal nobody reads, a call of
@@ -1693,6 +1722,10 @@ EXTRA_DIST = \
   tests/session-end.allow \
   tests/check-esc-owner.sh \
   tests/esc-owner.allow \
+  tests/check-waitline-owner.sh \
+  tests/waitline-owner.allow \
+  tests/test_waitline.c \
+  tests/test_pmsg.c \
   tests/check-path-buffers.sh \
   tests/path-buffers.allow \
   tests/check-help-buffers.sh \

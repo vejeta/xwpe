@@ -59,5 +59,10 @@ int e_cancel_key(struct FNST *top, int c, int by_click);
 const WpeCancelClaim *e_cancel_next(const struct FNST *top, int c);
 /* Would Esc end the claim named @what first? */
 int e_cancel_is_next(const struct FNST *top, const char *what);
+/* Where the claim named @what stands in the table: 0 is the first one a key
+   walks, so a lower number is ended sooner.  WPE_CANCEL_NO_RANK for a name the
+   table does not have.  Read only: the table stays the one order. */
+#define WPE_CANCEL_NO_RANK (-1)
+int e_cancel_rank(const char *what);
 
 #endif /* WE_CANCEL_H */

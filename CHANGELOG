@@ -20,6 +20,29 @@ Cannot reproduce:
      past the limit stays alive).
 
 Bugs fixed in 1.6.x:
+* A build and a starting debugger no longer take each other's waiting line in
+  Messages.  Both wrote their line ("building ... 4s", "starting dlv ... 6s")
+  into the last row and deleted whatever the last row held, so with both
+  running you saw one of them, chosen by the timing of two timers, and an
+  empty Messages (a new build, an assistant run) or a closed Messages window
+  could leave a line behind or take another's.  The lines are now rows of their
+  own at the foot of Messages, one for each wait, each with its own seconds;
+  the bottom line is the one the next Esc ends, and output, a program's text
+  and the verdict of a build land above them and are never written into a
+  waiting line or deleted with it.  The lines of the compile for a debug
+  session and of the scala-cli setup are waiting lines too: they go when the
+  wait ends, where they stayed as history with a "(Esc cancels)" that was
+  no longer true.  The assistant's checklist is found by its words when it is
+  redrawn, so a step wide enough to wrap no longer leaves a copy behind, and
+  a checklist drawn twice while a dialog is open is shown once, in its latest
+  form, when the dialog closes (the lines kept behind a dialog are in
+  we_pmsg.c).  The count of rows a build printed no longer includes a waiting
+  line, so a build that prints a compiler error while a debugger's line ends
+  no longer says Success.  One
+  owner (we_waitline.c) lays, turns and removes them, and tests/check-waitline-owner.sh
+  fails when other code changes a row of Messages.  Rows:
+  tests/test_waitline_owner.py, tests/test_waitline.c and G18 of
+  tests/test_esc_owner.py, which no longer depends on the phase of two timers.
 * The assistant's web search no longer crashes the editor.  On a build made
   with the usual optimisation and fortify flags (the ones Debian uses), a web
   search ended the editor with "double free or corruption", and a chat that

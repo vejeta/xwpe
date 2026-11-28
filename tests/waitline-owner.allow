@@ -1,0 +1,21 @@
+# waitline-owner.allow -- who may change the rows of Messages besides the owner.
+#
+# kind|function|count|reason
+#
+# kind is primitive (an output writer: it takes the waiting lines out before
+# it appends and puts them back after), inner (a per-character step called
+# only inside a primitive's bracket), block (the assistant's checklist rows,
+# found by their wording), notice (the one row written into an empty Messages,
+# which has no foot), listing (a window that is not Messages but names a
+# Messages handle) or user (the user's own edit).  count is how many calls of
+# a row mutator the function holds; it may only fall.
+primitive|e_view_add_row|1|the empty row at the foot of an output view
+primitive|e_view_append|1|the output rows of a build or a program
+primitive|e_view_append_wrapped|1|the editor's own lines, wrapped
+primitive|e_run_drain_pty|0|the program's bytes, taken in one bracket
+primitive|e_d_pty_append_to_messages|0|the debugger's program bytes, one bracket a chunk
+inner|e_run_pty_apply_byte|6|one byte of the program, inside e_run_drain_pty's bracket
+inner|e_d_messages_insert_char|4|one character, inside e_d_pty_append_to_messages' bracket
+inner|e_d_messages_erase_char|2|one backspace, inside e_d_pty_append_to_messages' bracket
+block|ai_plan_erase_drawn|1|the assistant's checklist, found by its wording
+notice|e_p_show_messages|1|No Messages, written into an empty buffer that has no foot

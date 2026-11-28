@@ -942,15 +942,38 @@ def test_G17_build_and_hosted_turn(tmp_path):
     _release_fifo(build_release)
 
 
+def _row_index(rows, needle):
+    """The first screen row that holds @needle, -1 when none does."""
+    for i, row in enumerate(rows):
+        if needle in row:
+            return i
+    return -1
+
+
+def _waiting_lines_foot(w):
+    """(row of the adapter's line, row of the build's line) when both are on
+    the screen now, else None.  Read as the screen stands, so a line that is
+    there for one turn only is still seen."""
+    rows = w.display(drain=0)
+    dlv = _row_index(rows, "starting dlv")
+    build = _row_index(rows, "building ...")
+    if dlv < 0 or build < 0:
+        return None
+    return dlv, build
+
+
 # @scenario SC-esc-owner-18
 def test_G18_build_during_adapter_start(tmp_path):
     """Build during an adapter's start: both busy, one Esc each.
     Uses a DAP adapter (reverse-tcp dlv) that never answers. No compile step
     for Go, so e_d_swtch stays 0 during the handshake and a build can run
     at the same time.
-    The adapter starts first, then the build; the first Esc ends the build
-    (waited for by its process being gone) and the adapter's start goes on;
-    the second Esc ends that start.
+    The adapter starts first, then the build; both waiting lines are on the
+    screen at once, on adjacent rows at the foot of Messages, the build's at
+    the bottom (the one the next Esc ends).  The first Esc ends the build
+    (waited for by its process being gone) and the adapter's start goes on,
+    its line still there and "build cancelled" above it; the second Esc ends
+    that start.
     """
     trace = _trace_path(tmp_path)
     # Go program for dlv reverse-tcp DAP
@@ -977,9 +1000,16 @@ def test_G18_build_during_adapter_start(tmp_path):
         w.key(CTRL_G, "r", delay=1.5)
         # Wait for the "starting dlv ... Ns (Esc cancels)" line
         assert wait_screen(w, "starting dlv", tmo=15), "DAP adapter start waiting line not shown"
-        # NOW start the build (Alt-A) while the adapter is still waiting
+        # NOW start the build (Alt-A) while the adapter is still waiting; the
+        # fifo holds make, so the build runs until the first Esc
         w.key(ALT_A, delay=0.8)
-        assert wait_screen(w, "building ...", tmo=10), "build not started"
+        assert wait_screen(w, "BUILD_START", tmo=10), "build not started"
+        assert wait_until(w, lambda: _waiting_lines_foot(w) is not None, tmo=10,
+                          what="both waiting lines at the foot of Messages"), \
+            "the build's and the adapter's waiting lines are not on screen together"
+        dlv_row, build_row = _waiting_lines_foot(w)
+        assert build_row == dlv_row + 1, \
+            "the line Esc ends first (the build's) is not the bottom one"
         # The first Esc ends the build, not the adapter's start
         w.key(ESC, delay=0.8)
         # The build's process must be gone (no sleep: the process-gone wait)
@@ -997,6 +1027,12 @@ def test_G18_build_during_adapter_start(tmp_path):
         # The adapter's start goes on: its waiting line is still there
         assert wait_screen(w, "starting dlv", tmo=5), \
             "the adapter's start should still be waiting after the build ended"
+        assert wait_screen(w, "build cancelled", tmo=5), \
+            "the build's end is not said in Messages"
+        rows = w.display(drain=0)
+        assert (_row_index(rows, "build cancelled")
+                < _row_index(rows, "starting dlv")), \
+            "the build's end landed below the adapter's waiting line"
         # The second Esc ends the adapter's start
         w.key(ESC, delay=0.8)
         assert wait_screen(w, "dlv start cancelled", tmo=10), \

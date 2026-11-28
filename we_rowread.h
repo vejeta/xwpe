@@ -191,6 +191,21 @@ static inline void wpe_row_view(const BUFFER *b, int y, const char **s, int *len
 }
 
 /**
+ * wpe_row_is - Whether row @y of the text reads exactly as @text.
+ * For an owner that takes back a row it wrote only while nobody changed it
+ * (a waiting line at the foot of Messages): a row the user typed over is
+ * not the owner's to delete.  A row the text does not have reads as nothing.
+ */
+static inline int wpe_row_is(const BUFFER *b, int y, const char *text)
+{
+ size_t n = strlen(text);
+
+ if (!wpe_row_stored(b, y) || (size_t) wpe_row_len(b, y) != n)
+  return 0;
+ return memcmp(wpe_row_text(b, y, 0), text, n) == 0;
+}
+
+/**
  * wpe_row_ends_line - Whether row @y ends in a line break (not a soft row
  * the next one continues).  A row the text does not have ends nothing.
  */

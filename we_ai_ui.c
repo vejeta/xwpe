@@ -22,6 +22,8 @@
 #include "we_ai_host.h"
 #include "we_ai_step.h"
 #include "we_contain.h"
+#include "we_waitline.h"
+#include "we_pmsg.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -11821,10 +11823,6 @@ static int  g_ai_plan_n;
    own previous drawing out before it draws again (ai_plan_erase_drawn). */
 #define AI_PLAN_REPAINT_ALL 1
 #define AI_PLAN_APPEND      0
-/* The Messages row the drawn checklist's header sits on, -1 when none is
-   drawn, and how many rows that drawing took (the header and its steps). */
-static int g_ai_plan_row = -1;
-static int g_ai_plan_rows = 0;
 #define AI_PLAN_HEADER "=== Agent plan:"
 #define AI_PLAN_STEP_LEAD "  ["
 #define AI_PLAN_NO_STEPS "  (no steps given)"
@@ -11894,16 +11892,16 @@ static int g_ai_messages_run_fresh = 0;
  * the list Alt-T steps is the last run's anyway.  Emptied with the call the
  * compile uses, so the window reads the same after either; nothing is done
  * when the window is not open, since the first row written will open it.  The
- * checklist's bookkeeping is reset with it, so nothing is "erased" from a
- * window that holds nothing of the previous drawing.
+ * checklist is found by its own wording each time it is drawn, so an emptied
+ * window holds nothing of the previous drawing to erase.  The waiting lines of
+ * a build or a debugger that still waits stay: the window is emptied through
+ * the owner of those lines.
  */
 static void ai_messages_empty_for_run(FENSTER *f)
 {
  FENSTER *m = ai_messages_window(f);
- g_ai_plan_row = -1;
- g_ai_plan_rows = 0;
  if (!m) return;
- if (e_buffer_clear(e_window_text(m)) == E_BUFFER_NOMEM)
+ if (wpe_wait_messages_clear(e_window_text(m)) == E_BUFFER_NOMEM)
   wpe_buffer_say_nomem(e_window_text(m), "the run's rows");
  else
   e_line_make_hard_empty(e_window_text(m), 0);  /* the one row a compile leaves */
@@ -11945,6 +11943,20 @@ void wpe_ai_messages_run_output_begins(FENSTER *f)
 }
 
 /**
+ * ai_plan_held_line_is_ours - Is this line, kept behind a box, one the
+ * checklist drew?
+ * @line: a kept line.
+ * Return: 1 for the header, a step or the no-steps line: the same wording
+ * ai_plan_row_is_ours reads in a row of Messages.
+ */
+static int ai_plan_held_line_is_ours(const char *line)
+{
+ return !strncmp(line, AI_PLAN_HEADER, strlen(AI_PLAN_HEADER))
+     || !strncmp(line, AI_PLAN_STEP_LEAD, strlen(AI_PLAN_STEP_LEAD))
+     || !strncmp(line, AI_PLAN_NO_STEPS, strlen(AI_PLAN_NO_STEPS));
+}
+
+/**
  * ai_plan_row_is_ours - Is this Messages row one the checklist drew?
  * @b: the Messages window's text; @row: the row to look at; @first: whether it
  * is the first row of the drawing, the header.
@@ -11960,25 +11972,59 @@ static int ai_plan_row_is_ours(BUFFER *b, int row, int first)
 }
 
 /**
+ * ai_plan_row_continues - Does this row go on from a checklist row above it?
+ * @b: the Messages window's text; @row: the row to look at.
+ * Return: 1 when the row above does not end its line, so this one is the rest
+ * of a step too long for the window.
+ */
+static int ai_plan_row_continues(BUFFER *b, int row)
+{
+ return row > 0 && !wpe_row_ends_line(b, row - 1);
+}
+
+/**
+ * ai_plan_find_drawn - Find the checklist drawn last time in the Messages window.
+ * @b: the Messages window's text; @first: receives the row of its header.
+ * Return: how many rows the drawing takes (the header, its steps, and the rest
+ * of a step the window wrapped), 0 when none is drawn.
+ *
+ * It is found by its own wording above the waiting lines of a build or a
+ * debugger, never by a row number noted when it was drawn: a step that wraps
+ * takes more rows than steps, and a line kept behind a box lands after the
+ * note was made, so a number would point at somebody else's rows.
+ */
+static int ai_plan_find_drawn(BUFFER *b, int *first)
+{
+ int end = b->mxlines - wpe_wait_foot_rows(b);
+ int y, n;
+
+ for (y = end - 1; y >= 0; y--)
+  if (ai_plan_row_is_ours(b, y, 1)) break;
+ if (y < 0) return 0;
+ *first = y;
+ n = 1;
+ while (y + n < end && (ai_plan_row_is_ours(b, y + n, 0) || ai_plan_row_continues(b, y + n)))
+  n++;
+ return n;
+}
+
+/**
  * ai_plan_erase_drawn - Take the checklist drawn last time out of the Messages window.
  * @b: the Messages window's text.
  *
  * What the user gains: one checklist that changes as steps finish, instead of
  * a new copy under the old one at every tick, which left the window reading
  * "0/3", "1/3" and "2/3" at once and pushed anything above it off the screen.
- * Exactly the rows of the previous drawing are removed, and only while each of
- * them still reads as the checklist's own, so what a compiler or the review
- * wrote above or below the checklist stays where it is; when the window was
- * emptied or rewritten in between, nothing is removed and the checklist is
- * drawn again at the end.
+ * Exactly the rows of the previous drawing are removed, each of them reading
+ * as the checklist's own, so what a compiler or the review wrote above or
+ * below the checklist stays where it is; when the window was emptied in
+ * between, nothing is removed and the checklist is drawn again at the end.
  */
 static void ai_plan_erase_drawn(BUFFER *b)
 {
- int i, end = g_ai_plan_row + g_ai_plan_rows;
- if (g_ai_plan_row < 0 || g_ai_plan_rows <= 0 || end > b->mxlines) return;
- for (i = g_ai_plan_row; i < end; i++)
-  if (!ai_plan_row_is_ours(b, i, i == g_ai_plan_row)) return;
- if (e_buffer_delete_lines(b, g_ai_plan_row, g_ai_plan_rows, E_BUFFER_STEP_NEW) == E_BUFFER_NOMEM)
+ int first, rows = ai_plan_find_drawn(b, &first);
+ if (rows <= 0) return;
+ if (e_buffer_delete_lines(b, first, rows, E_BUFFER_STEP_NEW) == E_BUFFER_NOMEM)
   wpe_buffer_say_nomem(b, "the checklist's rows");
 }
 
@@ -11999,13 +12045,9 @@ static void ai_plan_show(FENSTER *f)
  wpe_ai_messages_run_output_begins(f);  /* the run's first Messages rows */
  b = ai_messages_open_buffer(f);
  if (b) ai_plan_erase_drawn(b);
+ wpe_pmsg_drop(ai_plan_held_line_is_ours);  /* an older copy still behind a box */
  snprintf(line, sizeof line, "%s %d/%d done ===", AI_PLAN_HEADER, ai_plan_done_count(), g_ai_plan_n);
  e_d_p_message(line, f, AI_PLAN_REPAINT_ALL);
- b = ai_messages_open_buffer(f);        /* opened by that first row if it was closed */
- if (b) g_ai_plan_row = b->mxlines - 1;  /* the header is the last row written  */
- else g_ai_plan_row = -1;
- if (g_ai_plan_n > 0) g_ai_plan_rows = 1 + g_ai_plan_n;
- else g_ai_plan_rows = 2;                /* the header and the no-steps line    */
  for (i = 0; i < g_ai_plan_n; i++) {
   snprintf(line, sizeof line, "  [%c] %s", ai_plan_tick(g_ai_plan_done[i]), g_ai_plan[i]);
   e_d_p_message(line, f, AI_PLAN_APPEND);

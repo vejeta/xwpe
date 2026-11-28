@@ -15,6 +15,7 @@
 #include "we_numtext.h"
 #include "we_testdump.h"
 #include "we_cancel.h"   /* the one owner of the key that ends an activity */
+#include "we_waitline.h" /* the one owner of the waiting lines of Messages */
 #include "we_ai.h"       /* the assistant's key hooks (guarded by WPE_AI) */
 
 #include <errno.h>
@@ -1128,8 +1129,9 @@ static int e_edit_open(ECNT *cn, const WpeWindowAsk *ask, char *path, char *file
   else
   {
    e_p_m_buffer = e_window_text(f);
-   e_buffer_clear(e_p_m_buffer);  /* a stale Messages file read above is not shown */
+   wpe_wait_messages_clear(e_p_m_buffer);  /* a stale Messages file read above is not shown */
   }
+  wpe_wait_messages_opened(e_p_m_buffer);  /* a line said while it was closed is laid */
  }
 #ifdef DEBUGGER
  if (spec->plain == E_EDIT_WATCHES)

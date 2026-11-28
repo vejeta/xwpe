@@ -17,6 +17,8 @@
 #include "we_startcmd.h"
 #include "we_startplan.h"
 #include "we_testdump.h"
+#include "we_waitline.h"
+#include "we_pmsg.h"
 
 #ifdef PROG
 
@@ -871,18 +873,63 @@ static void e_p_make_link(ECNT *cn)
 }
 
 /**
+ * e_view_output_rows - How many rows of a view are output, the waiting lines
+ * at the foot of Messages not counted.
+ * @b: the buffer of Messages or of an output window.
+ *
+ * What the user gets: the cursor, the empty-row rule and the count of what a
+ * build printed are all about the output, so a build or a debugger waiting
+ * at the foot never counts as a row of it.  The foot is asked of its owner.
+ * Return: the rows above the foot.
+ */
+static int e_view_output_rows(const BUFFER *b)
+{
+ return(b->mxlines - wpe_wait_foot_rows(b));
+}
+
+/**
+ * e_view_output_last - The last row of output of a view.
+ * @b: the buffer of Messages or of an output window.
+ * Return: its index, or -1 when the view holds no output row.
+ */
+static int e_view_output_last(const BUFFER *b)
+{
+ return(e_view_output_rows(b) - 1);
+}
+
+/**
+ * e_view_cursor_to_output_end - Put the cursor on the last row of output.
+ * @b: the buffer of Messages or of an output window.
+ *
+ * Where a program's next typed byte or a reader's next line belongs: at the
+ * end of what was printed, above the waiting lines, never on one of them.
+ */
+static void e_view_cursor_to_output_end(BUFFER *b)
+{
+ int last = e_view_output_last(b);
+
+ if (last < 0)
+  last = 0;
+ e_buffer_cursor_set(b, last, b->b.x);
+}
+
+/**
  * e_view_add_row - Put an empty row at the foot of a view the editor writes.
  * @b: the buffer of Messages or of an output window.
  *
  * What the user reads grows a row at a time as a build or a program prints.
  * Nothing in it is the user's to undo, and without memory the view stays as
- * it was and the status line says so.
+ * it was and the status line says so.  In Messages the row lands above the
+ * waiting lines, never below them.
  * Return: E_BUFFER_OK, or E_BUFFER_NOMEM.
  */
 int e_view_add_row(BUFFER *b)
 {
- int r = e_buffer_insert_blank(b, b->mxlines, E_BUFFER_STEP_NEW);
+ int r;
 
+ wpe_wait_lift(b);
+ r = e_buffer_insert_blank(b, b->mxlines, E_BUFFER_STEP_NEW);
+ wpe_wait_lay(b);
  if (r != E_BUFFER_OK)
   wpe_buffer_say_nomem(b, "a row of output");
  return(r);
@@ -916,11 +963,17 @@ static void e_view_say_refused(BUFFER *b, int r)
  * What a build or a program prints reaches the window row by row, each
  * line whole, so Alt-T and Enter on a compiler's row find the file it
  * names however long its path; without memory the view stays as it was
- * and the status line says so.
+ * and the status line says so.  In Messages the text lands above the waiting
+ * lines of a build or a starting debugger, never below them.
  */
 void e_view_append(BUFFER *b, const char *text)
 {
- e_view_say_refused(b, e_eol_append_rows(b, text, E_EOL_NORMALIZE));
+ int r;
+
+ wpe_wait_lift(b);
+ r = e_eol_append_rows(b, text, E_EOL_NORMALIZE);
+ wpe_wait_lay(b);
+ e_view_say_refused(b, r);
 }
 
 /**
@@ -931,17 +984,24 @@ void e_view_append(BUFFER *b, const char *text)
  *
  * What the editor itself says there (a debugger's or a language server's
  * news) is read, not walked, so it wraps to stay inside the window; without
- * memory the view stays as it was and the status line says so.
+ * memory the view stays as it was and the status line says so.  In Messages
+ * the text lands above the waiting lines.
  */
 static void e_view_append_wrapped(BUFFER *b, const char *text)
 {
- e_view_say_refused(b, e_eol_append_text(b, text, 1, E_EOL_NORMALIZE));
+ int r;
+
+ wpe_wait_lift(b);
+ r = e_eol_append_text(b, text, 1, E_EOL_NORMALIZE);
+ wpe_wait_lay(b);
+ e_view_say_refused(b, r);
 }
 
 /* Fold one raw output byte from the running program into the Messages buffer:
    newline opens a new line, CR is ignored, backspace/DEL deletes one (possibly
    multi-byte UTF-8) character off the current line, and any other printable
-   byte is appended. */
+   byte is appended.  It is called only inside e_run_drain_pty's bracket, so
+   the last row is the program's own and never a waiting line. */
 static void e_run_pty_apply_byte(BUFFER *b, unsigned char c)
 {
  int line = b->mxlines - 1;
@@ -975,12 +1035,18 @@ static void e_run_pty_apply_byte(BUFFER *b, unsigned char c)
  * e_run_drain_pty - Take what the running program has written and show it.
  * @pty_fd: the program's terminal, which is non-blocking: the read stops
  * when nothing is waiting; @b, @mf: Messages.
+ *
+ * What the user sees while a program runs next to a build or a starting
+ * debugger: the program's text, half lines included, in rows of its own, and
+ * the waiting lines below it, untouched.  They are taken out for the bytes of
+ * one drain and put back after.
  */
 static void e_run_drain_pty(int pty_fd, BUFFER *b, FENSTER *mf)
 {
  char buf[512];
- int n;
+ int n, last;
 
+ wpe_wait_lift(b);
  while ((n = read(pty_fd, buf, sizeof(buf))) > 0)
  {
   int k;
@@ -990,7 +1056,10 @@ static void e_run_drain_pty(int pty_fd, BUFFER *b, FENSTER *mf)
   for (k = 0; k < n; k++)
    e_run_pty_apply_byte(b, (unsigned char)buf[k]);
  }
- e_buffer_cursor_set(b, b->mxlines - 1, wpe_row_len(b, b->mxlines - 1));
+ wpe_wait_lay(b);
+ last = b->mxlines - 1 - wpe_wait_foot_rows(b);   /* the program's own last row */
+ e_buffer_cursor_set(b, last, wpe_row_len(b, last));
+ e_messages_scroll_to_bottom(mf);
  e_cursor(mf, 1);
  e_schirm(mf, 1);
  e_refresh();
@@ -1266,7 +1335,7 @@ static int e_run_with_pty(WpeStartPlan *plan, BUFFER *b, FENSTER *mf)
 
  e_view_append(b, "--- Run output (type in Messages, Ctrl-C to stop) ---");
  e_view_add_row(b);
- e_buffer_cursor_set(b, b->mxlines - 1, b->b.x);
+ e_view_cursor_to_output_end(b);
  if (!WpeIsXwin())
   e_t_mouse_tracking_pause();
  fk_cursor(1);
@@ -2392,7 +2461,7 @@ static int e_run_program(ECNT *cn)
  }
  b = e_window_text(mf);
 
- if (wpe_row_len(b, b->mxlines-1) != 0)
+ if (e_view_output_last(b) >= 0 && wpe_row_len(b, e_view_output_last(b)) != 0)
   e_view_add_row(b);
  ret = e_run_with_pty(plan, b, mf);
  if (ret < 0)
@@ -2407,7 +2476,7 @@ static int e_run_program(ECNT *cn)
  WPE_FMT_SHOWN(estr, E_P_RETCODE_FMT, ret);
  e_view_append(b, estr);
 
- e_buffer_cursor_set(b, b->mxlines - 1, b->b.x);
+ e_view_cursor_to_output_end(b);
  e_cursor(mf, 1);
  e_schirm(mf, 1);
  e_refresh();
@@ -3418,8 +3487,7 @@ typedef struct {
  int reaped;            /* the child has been waited for                   */
  int status;            /* its wait status                                 */
  int held;              /* it ended while a box was up                     */
- int is;                /* rows Messages had when the step began           */
- int wait_row;          /* the waiting line is Messages' last row          */
+ int is;                /* last output row Messages had when the step began */
  time_t start;
  int hb_timer;          /* the heartbeat timer, or WPE_TIMER_NONE          */
  ECNT *cn;
@@ -3430,6 +3498,10 @@ typedef struct {
 } e_build_step;
 
 static e_build_step g_build;
+
+/* The build's waiting line at the foot of Messages; the owner of those lines
+   (we_waitline.c) keeps it, the build only says what it reads. */
+static WpeWait g_build_wait = WPE_WAIT("the build");
 
 /* The build as a whole: open from F9 (or Alt-C, Ctrl-F9, Execute Make, the
    debugger's build) until its last step has ended. */
@@ -3570,51 +3642,16 @@ FENSTER *e_build_messages(ECNT *cn)
 }
 
 /**
- * e_build_drop_last_row - Take the last row out of the Messages buffer.
- * @b: the Messages buffer.
- */
-static void e_build_drop_last_row(BUFFER *b)
-{
- if (b->mxlines > 0)
-  e_buffer_delete_lines(b, b->mxlines - 1, 1, E_BUFFER_STEP_NEW);
-}
-
-/**
- * e_build_wait_line_drop - Remove the waiting line before output is added.
- *
- * The line always sits below the build's own output, so it is taken out
- * before new lines land and written again after them.
- */
-static void e_build_wait_line_drop(void)
-{
- FENSTER *mf = e_build_messages(g_build.cn);
-
- if (!g_build.wait_row)
-  return;
- g_build.wait_row = 0;
- if (mf)
-  e_build_drop_last_row(e_window_text(mf));
- else if (e_p_m_buffer)
-  e_build_drop_last_row(e_p_m_buffer);   /* Messages closed: its buffer stays */
-}
-
-/**
- * e_build_wait_line_put - Write "building ... Ns (Esc cancels)" at the foot
- * of Messages.
+ * e_build_wait_line_say - Say "building ... Ns (Esc cancels)" at the foot of
+ * Messages.
  *
  * What the user sees while a build runs: that it runs, for how long, and
- * that Esc ends it -- where the assistant shows its own waiting line.
+ * that Esc ends it -- where the assistant shows its own waiting line.  The
+ * line turns in place and never takes another activity's row.
  */
-static void e_build_wait_line_put(void)
+static void e_build_wait_line_say(void)
 {
- FENSTER *mf = e_build_messages(g_build.cn);
- char line[80];
-
- if (!mf || g_build.wait_row)
-  return;
- snprintf(line, sizeof line, E_BUILD_WAIT_FMT, (long)(time(NULL) - g_build.start));
- e_view_append(e_window_text(mf), line);
- g_build.wait_row = 1;
+ wpe_wait_say(&g_build_wait, E_BUILD_WAIT_FMT, (long)(time(NULL) - g_build.start));
 }
 
 /* What the screen's owner calls the Messages rows kept behind a box in its
@@ -3857,7 +3894,6 @@ static void e_build_on_output(int fd, void *data)
  (void)data;
  if (!g_build.active)
   return;
- e_build_wait_line_drop();
  n = e_build_pump_stream(fd);
  if (n == 0)
   e_build_close_stream(fd);
@@ -3867,7 +3903,6 @@ static void e_build_on_output(int fd, void *data)
   e_build_stop_runaway();
  if (e_build_streams_open())
  {
-  e_build_wait_line_put();
   e_build_paint();
   return;
  }
@@ -3892,8 +3927,7 @@ static void e_build_on_tick(void *data)
    e_build_finish_or_hold();
   return;
  }
- e_build_wait_line_drop();
- e_build_wait_line_put();
+ e_build_wait_line_say();
  e_build_paint();
 }
 
@@ -4038,7 +4072,8 @@ static void e_build_watch_child(void)
  e_build_heartbeat_start();
  refused = e_build_watch_stream(g_build.efd);
  refused |= e_build_watch_stream(g_build.wfd);
- e_build_wait_line_put();
+ wpe_wait_begin(&g_build_wait);
+ e_build_wait_line_say();
  e_build_paint();
  if (refused)
   e_build_give_up_unwatched();
@@ -4154,7 +4189,7 @@ static int e_build_step_verdict(FENSTER *mf, int ret)
  }
  if (g_build.runaway)
   e_view_append(b, E_BUILD_RUNAWAY_LINE);
- if (b->mxlines - g_build.is > 2)
+ if (e_view_output_rows(b) - g_build.is > 2)
   list = e_make_error_list(mf);
  g_build_chain_list = list;
  g_build_chain_exit = ret;
@@ -4196,7 +4231,7 @@ static void e_build_step_end(void)
  e_build_heartbeat_stop();
  e_build_close_stream(g_build.efd);
  e_build_close_stream(g_build.wfd);
- e_build_wait_line_drop();
+ wpe_wait_end(&g_build_wait);
  mf = e_build_step_end_window(cn);
  e_build_flush_fragments(e_window_text(mf));
  if (g_build.pic)
@@ -4205,7 +4240,7 @@ static void e_build_step_end(void)
  if (g_build.pid > 0)
   g_build_chain_ran = 1;
  result = e_build_step_verdict(mf, e_build_exit_code());
- e_buffer_cursor_set(e_window_text(mf), e_window_text(mf)->mxlines - 1, e_window_text(mf)->b.x);
+ e_view_cursor_to_output_end(e_window_text(mf));
  g_build.active = 0;
  e_build_continue(cont, e_p_source_window(cn), result, data);
  if (cwd_chg)
@@ -4230,7 +4265,7 @@ static void e_build_step_begin(ECNT *cn, FENSTER *mf, PIC *pic,
  g_build.cont = cont;
  g_build.data = data;
  g_build.start = time(NULL);
- g_build.is = e_window_text(mf)->mxlines - 1;
+ g_build.is = e_view_output_last(e_window_text(mf));
  if (!getcwd(g_build.dir, sizeof g_build.dir))
   g_build.dir[0] = '\0';
 }
@@ -4459,7 +4494,7 @@ static void e_build_tally(FENSTER *mf, int result)
  e_build_mark_warnings(e_window_text(mf));
  e_build_say_pattern(e_window_text(mf));
  e_build_print_count(e_window_text(mf), result);
- e_buffer_cursor_set(e_window_text(mf), e_window_text(mf)->mxlines - 1, e_window_text(mf)->b.x);
+ e_view_cursor_to_output_end(e_window_text(mf));
  e_messages_scroll_to_bottom(mf);
 }
 
@@ -7673,106 +7708,33 @@ int e_system(struct WpeStartPlan *plan, ECNT *cn)
 }
 
 
+/**
+ * e_messages_scroll_to_bottom - Scroll Messages so the cursor and the waiting
+ * lines below the output are in view.
+ * @f: the Messages window.
+ *
+ * What the user sees while a build runs: the output's last rows and, under
+ * them, the waiting lines.  A cursor at the end of the output counts the
+ * rows of the foot with it, so the lines that say what waits are never
+ * scrolled out of sight by the output above them.
+ */
 void e_messages_scroll_to_bottom(FENSTER *f)
 {
  SCHIRM *s = e_window_screen(f);
  BUFFER *b = e_window_text(f);
  int visible_h = f->e.y - f->a.y - 1;
  int margin = visible_h > 4 ? 2 : 0;
+ int foot = wpe_wait_foot_rows(b);
+ int row = b->b.y;
 
- if (b->b.y >= s->c.y + visible_h - margin)
-  s->c.y = b->b.y - visible_h + margin + 1;
+ if (foot > 0 && row >= b->mxlines - 1 - foot)
+  row = b->mxlines - 1;
+ if (row >= s->c.y + visible_h - margin)
+  s->c.y = row - visible_h + margin + 1;
  if (s->c.y < 0) s->c.y = 0;
 }
 
-/* Lines said from a callback while a box owns the screen, kept for when it
-   closes: how many, and how long a kept line may be (a longer one is cut). */
-#define E_PMSG_HELD_MAX  32
-#define E_PMSG_LINE_MAX  1024
-#define E_PMSG_HELD_WHAT "a message for Messages"
-
-static struct {
- char *line[E_PMSG_HELD_MAX];
- int   sw[E_PMSG_HELD_MAX];
- ECNT *cn;
- int   count;
- int   lost;
-} e_pmsg_held;
-
 static int e_p_message_now(char *str, FENSTER *f, int sw);
-
-/**
- * e_p_message_replay - Put the lines kept behind a box into Messages, in the
- * order they were said.
- * @data: unused.
- *
- * The screen's owner runs this once no box owns the screen.  Lines that did
- * not fit the keeping are counted and named in one last line, so the user
- * knows the list is not whole.
- */
-static void e_p_message_replay(void *data)
-{
- ECNT *cn = e_pmsg_held.cn;
- FENSTER *top;
- char tail[E_PMSG_LINE_MAX];
- int i, count = e_pmsg_held.count, lost = e_pmsg_held.lost;
- char *lines[E_PMSG_HELD_MAX];
- int sw[E_PMSG_HELD_MAX];
-
- (void)data;
- if (!cn || cn->mxedt < 1)
-  return;
- for (i = 0; i < count; i++)
- {
-  lines[i] = e_pmsg_held.line[i];
-  sw[i] = e_pmsg_held.sw[i];
- }
- e_pmsg_held.count = 0;
- e_pmsg_held.lost = 0;
- top = cn->f[cn->mxedt];
- for (i = 0; i < count; i++)
- {
-  e_p_message_now(lines[i], top, sw[i]);
-  FREE(lines[i]);
- }
- if (lost > 0)
- {
-  snprintf(tail, sizeof tail, "(%d more messages were not shown)", lost);
-  e_p_message_now(tail, top, 0);
- }
-}
-
-/**
- * e_p_message_hold - Keep a line said from a callback until no box owns the
- * screen.
- * @str: the line; @f: a window of the desktop; @sw: as e_d_p_message.
- *
- * What a language server or a debugger tells while a dialog or a menu is up
- * is not lost and not drawn under it: it is in Messages when the box
- * closes.  A full keeping drops the newest lines and counts them.
- * Return: 0.
- */
-static int e_p_message_hold(char *str, FENSTER *f, int sw)
-{
- char *copy;
- size_t room = strlen(str) + 1;
-
- if (e_pmsg_held.count >= E_PMSG_HELD_MAX)
- {
-  e_pmsg_held.lost++;
-  return(0);
- }
- if (room > E_PMSG_LINE_MAX)
-  room = E_PMSG_LINE_MAX;
- copy = MALLOC(room);
- snprintf(copy, room, "%s", str);
- e_pmsg_held.cn = f->ed;
- e_pmsg_held.line[e_pmsg_held.count] = copy;
- e_pmsg_held.sw[e_pmsg_held.count] = sw;
- e_pmsg_held.count++;
- wpe_paint_request(e_p_message_replay, NULL, E_PMSG_HELD_WHAT);
- return(0);
-}
 
 /**
  * e_d_p_message - Add a line to Messages, raising it if it is not open.
@@ -7789,9 +7751,12 @@ int e_d_p_message(char *str, FENSTER *f, int sw)
  if (str[0] == '\0' || str[0] == '\n')
   return(0);
  if (wpe_paint_in_callback() && !wpe_paint_idle())
-  return(e_p_message_hold(str, f, sw));
- if (e_pmsg_held.count > 0 && wpe_paint_idle())
-  e_p_message_replay(NULL);
+ {
+  wpe_pmsg_hold(str, f, sw, e_p_message_now);
+  return(0);
+ }
+ if (wpe_pmsg_pending() > 0 && wpe_paint_idle())
+  wpe_pmsg_replay(NULL);
  return(e_p_message_now(str, f, sw));
 }
 
@@ -7826,7 +7791,7 @@ static int e_p_message_now(char *str, FENSTER *f, int sw)
 
  e_view_append_wrapped(b, str);
 
- e_buffer_cursor_set(b, b->mxlines - 1, b->b.x);
+ e_view_cursor_to_output_end(b);
  e_messages_scroll_to_bottom(f);
 
  if (sw)
@@ -7868,7 +7833,7 @@ int e_view_append_line(FENSTER *wf, char *str, int sw)
   return(0);
  b = e_window_text(wf);
  e_view_append_wrapped(b, str);
- e_buffer_cursor_set(b, b->mxlines - 1, b->b.x);
+ e_view_cursor_to_output_end(b);
  e_messages_scroll_to_bottom(wf);
  if (sw)
   e_rep_win_tree(cn);
@@ -10903,7 +10868,7 @@ int e_new_message(FENSTER *f)
  FENSTER *old = e_window_pane_find(cn, WPE_PANE_MESSAGES);
  int i;
 
- if (e_p_m_buffer && e_buffer_clear(e_p_m_buffer) != E_BUFFER_OK)
+ if (e_p_m_buffer && wpe_wait_messages_clear(e_p_m_buffer) != E_BUFFER_OK)
   wpe_buffer_say_nomem(e_p_m_buffer, "the new build's messages");
  if (old != NULL)
  {
@@ -10958,7 +10923,10 @@ int e_p_show_program_output(FENSTER *f)
   return(0);
  if (e_window_text(mf)->mxlines > 0)
  {
-  int last = e_window_text(mf)->mxlines - 1;
+  int last = e_view_output_last(e_window_text(mf));
+
+  if (last < 0)
+   last = 0;
   /* Sit at the stream write position -- the end of the last line, like a
      tailing terminal -- so output continues (and interactive input goes)
      right after the last character, not on top of it.  For a line ending
