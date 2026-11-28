@@ -426,17 +426,32 @@ int  e_ai_ui_key(struct FNST *f);   /* Alt-B: open/prompt the AI assistant    */
 int  e_ai_menu(struct FNST *f);     /* bottom-bar "Alt-B AI" click: action menu */
 int  wpe_ai_busy(void);             /* a background AI task (async Edit) is running */
 void wpe_ai_cancel(void);           /* tear down the running background task       */
+/* Is the running task's promise in the window on top: the chat pane's
+ * spinner, or a window an Edit or a Complete locked and said so in?  Asked by
+ * the owner of the key (we_cancel.c). */
+int  wpe_ai_task_in_front(const struct FNST *top);
 /* The hosted agent engine (Alt-G g on an external CLI) is streaming a turn.
  * Esc then asks the engine to stop that turn and keeps the session alive, the
- * same key the built-in loop cancels with; both are 0 / a no-op in a build
- * without the agent host. */
+ * same key the built-in loop cancels with; all three are 0 / a no-op in a
+ * build without the agent host. */
 int  wpe_ai_host_turn_active(void);
+/* Is an interrupt the user asked for still waiting for the engine to end its
+ * turn?  While it is, a second Esc belongs to this turn and ends nothing
+ * else.  Asked by the owner of the key (we_cancel.c). */
+int  wpe_ai_host_interrupt_pending(void);
 void wpe_ai_host_interrupt(void);
+/* The armed chat pane: is there one, is it the window on top, and the close
+ * that Esc in it asks for.  The owner of the key (we_cancel.c) reads the two
+ * questions for the pane's claim and calls the close as that claim's cancel,
+ * so the pane's own key handler no longer reads Esc. */
+int  wpe_ai_chat_pane_open(void);
+int  wpe_ai_chat_pane_in_front(const struct FNST *top);
+void wpe_ai_chat_pane_close(struct FNST *top);
 /* True while an Edit or a Complete started from `f` is waiting for its reply.
  * The reply is spliced over the lines that were sent, at the line numbers
  * captured when the request left, so the editor refuses the keys that would
  * move them until the task ends. */
-int  wpe_ai_window_locked(struct FNST *f);
+int  wpe_ai_window_locked(const struct FNST *f);
 /* Say on the status row why the window will not take the key, and that Esc
  * cancels the task that holds it. */
 void wpe_ai_report_window_locked(struct FNST *f);

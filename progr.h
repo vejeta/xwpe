@@ -71,6 +71,14 @@ typedef void (*e_build_cont)(FENSTER *f, int result, void *data);
 int e_p_make_then(FENSTER *f, e_build_cont done, void *data);
 int e_build_busy(void);
 void e_build_cancel(void);
+/* Is the build's end already on its way (Esc asked for it, the child not
+   waited for yet), and did its step end behind a box so that its result
+   waits for the key loop?  Both are asked by the key's owner (we_cancel.c). */
+int e_build_ending(void);
+int e_build_result_held(void);
+/* Is the window on top the Messages pane, where a build's and a starting
+   debugger's waiting line is written? */
+int e_messages_window_on_top(const FENSTER *top);
 void e_build_end_at_exit(void);
 void e_build_refuse(FENSTER *f);
 void e_status_say(FENSTER *f, const char *text);

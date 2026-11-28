@@ -11263,6 +11263,33 @@ int e_d_start_busy(void)
 }
 
 /**
+ * e_d_start_ending - Is the start's end already on its way?
+ *
+ * Esc asked for the end and the debugger has not gone yet: it gets SIGTERM
+ * and, after the children's owner's grace, SIGKILL.  The owner of the key
+ * keeps a second Esc for this start instead of ending something else, so
+ * "Esc cancels it" means one thing however often the user presses it.
+ * Return: 1 while the cancel is still ending the start.
+ */
+int e_d_start_ending(void)
+{
+ return(e_d_start.active && e_d_start.ending != E_D_START_WAITING);
+}
+
+/**
+ * e_d_start_result_held - Did the debugger answer behind a box, so the
+ * session's start waits for the key loop?
+ *
+ * The owner of the key asks before it cancels: such a start goes on instead
+ * of being cancelled, and the trace says which of the two the user got.
+ * Return: 1 while an answer waits.
+ */
+int e_d_start_result_held(void)
+{
+ return(e_d_start.active && e_d_start.held);
+}
+
+/**
  * e_d_start_refused - Refuse a debugger command while the debugger starts.
  * @f: the window the key was pressed in.
  *

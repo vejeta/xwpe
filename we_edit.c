@@ -14,6 +14,7 @@
 #include "we_lineend.h"
 #include "we_numtext.h"
 #include "we_testdump.h"
+#include "we_cancel.h"   /* the one owner of the key that ends an activity */
 #include "we_ai.h"       /* the assistant's key hooks (guarded by WPE_AI) */
 
 #include <errno.h>
@@ -271,22 +272,6 @@ static int e_key_is_program_text(int c)
  if (c < E_KEY_FIRST_PRINTABLE)
   return 0;
  return (c < E_KEY_TEXT_LIMIT || e_input_was_char);
-}
-
-/** e_key_cancels_answer - Does this key give up on the debugger's answer?
- *
- * While the editor waits for the debugger to answer at a stop, Esc and
- * Ctrl-C end the wait, as the waiting line says; at any other time they are
- * the editor's keys as always.
- *
- * @c: key as returned by the backend reader.
- * Return: non-zero to cancel the wait.
- */
-static int e_key_cancels_answer(int c)
-{
- if (c != WPE_ESC && c != CtrlC)
-  return 0;
- return e_d_answer_busy();
 }
 
 static int e_debug_console_input(int c, FENSTER *f)
@@ -1733,6 +1718,23 @@ static void e_backspace_at_row_start(FENSTER *f, BUFFER *b, SCHIRM *s)
   e_del_nchar(b, s, b->b.x, b->b.y, e_char_bytes_at(b, b->b.x, b->b.y));
 }
 
+#if  MOUSE
+/**
+ * e_key_is_mouse - Did the reader report a mouse event instead of a key?
+ * @c: what the reader returned.
+ *
+ * A click comes back as a negative code and is then turned into the key it
+ * stands for; a click on the bottom row past the last hint stands for Esc.
+ * The owner of the key is told which of the two arrived, so its trace names a
+ * click as the click it was and not as a key the user pressed.
+ * Return: non-zero for a mouse event.
+ */
+static int e_key_is_mouse(int c)
+{
+ return(c < 0);
+}
+#endif
+
 /*   keyboard output routine */
 int e_eingabe(ECNT *e)
 {
@@ -1740,6 +1742,7 @@ int e_eingabe(ECNT *e)
  SCHIRM *s = e_window_screen(e->f[e->mxedt]);
  FENSTER *f = e->f[e->mxedt];
  int ret, c = 0;
+ int by_click = 0;      /* this Esc is a click on the bottom row, not the key */
  unsigned char cc;
  EAutoIndentStep indent_step;
 
@@ -1747,6 +1750,7 @@ int e_eingabe(ECNT *e)
  fk_cursor(1);
  while (c != WPE_ESC)
  {
+  by_click = 0;           /* noted afresh where the reader reports a click */
   e_auto_indent_key_close(e, &indent_step);   /* the last key never reached its end */
   /* What came behind a box (a reply, a build's end, a stop, an answer,
      program output) is shown before the next key is read, and before the
@@ -1798,7 +1802,10 @@ int e_eingabe(ECNT *e)
    if (!wpe_closed_key_read())
     e_status_key_pressed(f);      /* a line kept until a key has been read */
 #if  MOUSE
-   if (c < 0) cc = c = e_edt_mouse(c, f);
+   /* A click is turned into the key it stands for; the owner of that key is
+      told this Esc arrived as a click on the bottom row, not as the key. */
+   by_click = e_key_is_mouse(c);
+   if (by_click) cc = c = e_edt_mouse(c, f);
    else cc = c;
 #else
    cc = c;
@@ -1839,42 +1846,22 @@ int e_eingabe(ECNT *e)
    e_lsp_on_edit(f, c);          /* live LSP diagnostics + didChange */
   }
 #endif
-#ifdef PROG
-  /* A build is running: Esc cancels it, as the waiting line in Messages says. */
-  if (c == WPE_ESC && e_build_busy()) { e_build_cancel(); c = 0; continue; }
-#endif
-#ifdef DEBUGGER
-  /* A debugger is starting and has not answered: Esc ends it, as the waiting
-     line in Messages says. */
-  if (c == WPE_ESC && e_d_start_busy()) { e_d_start_cancel(); c = 0; continue; }
-  /* `scala-cli setup-ide` runs before Metals or a Scala debug session: Esc
-     cancels it, as its waiting line says. */
-  if (c == WPE_ESC && e_scala_setup_busy_any()) { e_scala_setup_cancel(); c = 0; continue; }
-  /* The Scala build server answers the debug start's requests: Esc gives
-     the start up, as its waiting line says. */
-  if (c == WPE_ESC && e_d_bsp_busy()) { e_d_bsp_cancel(); c = 0; continue; }
-  /* A language server owes an Alt-Q answer, or starts for one: Esc gives it
-     up, as the waiting line on the status row says. */
-  if (c == WPE_ESC && e_lsp_answer_busy()) { e_lsp_answer_cancel(); c = 0; continue; }
-  /* A Rust program compiles for its debug session: Esc cancels it, as its
-     waiting line says. */
-  if (c == WPE_ESC && e_d_compile_busy()) { e_d_compile_cancel(); c = 0; continue; }
-  /* The editor waits for the debugger's answer at a stop: Esc or Ctrl-C
-     gives up on it, as the waiting line on the status row says. */
-  if (e_key_cancels_answer(c)) { e_d_answer_cancel(); c = 0; continue; }
-#endif
+  /* One key ends one running activity: the build, a debugger that starts, a
+     language server's answer, the assistant's task or its turn, the chat
+     pane.  The owner of that key (we_cancel.c) holds the order they are
+     reached in and the promises each of them makes.  A key it takes never
+     reaches the text below and never leaves this loop. */
+  if (e_cancel_key(f, c, by_click))
+  {
+   c = 0;
+   continue;
+  }
 #ifdef WPE_AI
-  /* A background AI task is running: Esc cancels it (what the spinner promises)
-     instead of leaving the editor or closing the chat pane. */
-  if (c == WPE_ESC && wpe_ai_busy()) { wpe_ai_cancel(); c = 0; continue; }
-  /* The hosted agent engine is streaming a turn: the same key asks it to stop
-     that turn, and the session stays alive for the next Alt-G g. */
-  if (c == WPE_ESC && wpe_ai_host_turn_active()) { wpe_ai_host_interrupt(); c = 0; continue; }
-  /* When the AI chat pane is focused, its input row eats the editing keys (and
-     Esc closes the chat); everything else -- mouse (already handled above),
-     window switching, function keys -- falls through to normal editing, so the
-     pane behaves as an ordinary window. */
-  if (e_ai_chat_key(f, c)) { if (c == WPE_ESC) c = 0; continue; }
+  /* When the AI chat pane is focused, its input row eats the editing keys;
+     everything else -- mouse (already handled above), window switching,
+     function keys -- falls through to normal editing, so the pane behaves as
+     an ordinary window.  Esc is the owner's claim above, not this handler's. */
+  if (e_ai_chat_key(f, c)) continue;
 #endif
   /* xwpe's own key codes (Alt-<letter> 271..305, synthetics 2000..2006) share
      the numeric range of real Unicode codepoints, so a value >= 255 is inserted

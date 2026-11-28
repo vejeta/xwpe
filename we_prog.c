@@ -3462,6 +3462,47 @@ int e_build_busy(void)
 }
 
 /**
+ * e_build_ending - Is the build's end already on its way?
+ *
+ * Esc asked for the end and the child has not been waited for yet, which
+ * takes up to the children's owner's grace.  The owner of the key keeps a
+ * second Esc for this build instead of ending something else, so "Esc
+ * cancels it" means one thing however often the user presses it.
+ * Return: 1 while the cancel is still ending the build.
+ */
+int e_build_ending(void)
+{
+ return(g_build.cancelled && !g_build.reaped);
+}
+
+/**
+ * e_build_result_held - Did the build's step end behind a box, so its result
+ * waits for the key loop?
+ *
+ * The owner of the key asks before it cancels: such a build is delivered
+ * instead of cancelled, and the trace says which of the two the user got.
+ * Return: 1 while a result waits.
+ */
+int e_build_result_held(void)
+{
+ return(g_build.held);
+}
+
+/**
+ * e_messages_window_on_top - Is the window on top the Messages pane?
+ * @top: the window the key loop believes is on top.
+ *
+ * A build, a starting debugger, a scala-cli setup and the compile for a
+ * debug session write their waiting line there, so it is the window the user
+ * reads the promise in.
+ * Return: 1 when Messages is on top.
+ */
+int e_messages_window_on_top(const FENSTER *top)
+{
+ return(top != NULL && e_window_pane(top) == WPE_PANE_MESSAGES);
+}
+
+/**
  * e_build_refuse - Say why a second build did not start.
  * @f: the window the key was pressed in.
  *

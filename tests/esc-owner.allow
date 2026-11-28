@@ -1,0 +1,206 @@
+# esc-owner.allow -- the places that name Esc outside the table of claims.
+#
+# Read by tests/check-esc-owner.sh, one line per place, three shapes:
+#
+#   K4|<kind>|<argument>|<file>|<holder>|<count>|<reason>
+#       a string literal that holds the word Esc.  <holder> is the function
+#       that holds it or the macro that names it, <count> how many such
+#       strings that holder holds: more is a new promise nobody has read,
+#       fewer is a stale line.
+#   K5|<kind>|<file>|<function>|<count>|<reason>
+#       a function that mentions WPE_ESC or CtrlC, or compares a key with a
+#       numeric escape code.  <count> is the number of such mentions in its
+#       body: a changed count is red until the function is read again.
+#   K6|front|<what>|<reason>
+#       a row of the table that claims the key in its own window only.
+#
+# K4 kinds: claim|<the row's what> -- the string is a claim's promise, and the
+# table must have that row; loop|<function> -- a key loop of its own, where Esc
+# closes the box, list or menu the user is in and ends no activity behind it;
+# word|<symbol> -- a key's name, or a report of what a key did, not a promise.
+# K5 kinds: loop| reads the key itself, result| reads or returns a box's result
+# code, claim| belongs to the owner of the key, word| names the key's code
+# (a binding, a decoder, an encoder) without acting on it.
+#
+# A line whose file, holder or function is not in the tree is red: the scan is
+# blind, so a stale entry must not sit here quietly.
+#
+# The ten claims of the table (we_cancel.c), which the K4 claim| lines name:
+#   the build, the debugger start, scala-cli setup, the build server,
+#   the language server, the compile for debug, the debugger's answer,
+#   the assistant's task, the assistant's turn, the chat pane.
+#
+# ---- K4: every string that holds the word Esc -----------------------------
+K4|claim|the assistant's task|edit.h|E_SAY_ASSISTANT_BUSY|1|the line a locked window says when it refuses a key
+K4|claim|the assistant's task|we_ai.c|AI_CLI_ENDS|1|what a stalled write to the assistant's child ends with
+K4|claim|the assistant's turn|we_ai_host.c|HOST_ENDS|1|what a stalled write to the hosted engine ends with
+K4|loop|ai_agent_approve|we_ai_ui.c|ai_agent_approve|1|the tool approval box: Esc is its deny
+K4|claim|the chat pane|we_ai_ui.c|ai_agent_offer_follow_up|1|the pane's own hint that Esc leaves it
+K4|word|ai_build_system|we_ai_ui.c|ai_build_system|1|text of the system prompt sent to the model, not a line the user reads
+K4|claim|the chat pane|we_ai_ui.c|ai_chat_emit_hints_once|1|the pane's key hints, written once per pane
+K4|claim|the assistant's turn|we_ai_ui.c|AI_CLEAR_REFUSED_LINE|1|the refusal of Clear conversation while a turn runs
+K4|loop|ai_complete_ud_free|we_ai_ui.c|ai_complete_ud_free|1|the completion review box: Esc discards
+K4|loop|ai_consent_gate|we_ai_ui.c|ai_consent_gate|1|the web-access consent box: Esc is not now
+K4|loop|ai_diff_confirm_write|we_ai_ui.c|ai_diff_confirm_write|1|the write confirmation box: Esc is deny
+K4|loop|ai_mp_key_listing|we_ai_ui.c|ai_listing_wait_open|2|the model list's own wait: Esc closes the list
+K4|loop|ai_mp_key_listing|we_ai_ui.c|AI_MP_EARLY_LINE|1|the model list before it has anything to show
+K4|loop|ai_mp_key_listing|we_ai_ui.c|AI_MP_HINT|1|the model list's key hints
+K4|loop|ai_plan_choice|we_ai_ui.c|ai_plan_choice|1|the plan review box: Esc cancels
+K4|loop|e_ai_prompt1|we_ai_ui.c|AI_PROMPT_LABEL|1|the assistant's prompt box: Esc is its Cancel
+K4|loop|ai_diff_box_show|we_ai_ui.c|AI_SCOPE_BOX_HINT|1|the folder scope box: Esc is no
+K4|loop|ai_diff_box_show|we_ai_ui.c|AI_SCOPE_BOX_HINT_ONCE|1|the folder scope box asked again: Esc is no
+K4|claim|the assistant's task|we_ai_ui.c|ai_spin_cb|1|the task's spinner in the pane
+K4|loop|ai_web_notice|we_ai_ui.c|AI_WEB_NOTICE_KEYS|1|the web notice box: Esc is not now
+K4|claim|the assistant's turn|we_ai_ui.c|e_ai_host|4|the hosted engine's own lines, one of which names the running task
+K4|loop|e_ai_pick|we_ai_ui.c|e_ai_pick|1|the assistant's list box: Esc closes it
+K4|loop|e_ai_prompt1|we_ai_ui.c|e_ai_prompt1|1|the assistant's prompt box title
+K4|loop|host_ask_marked_write|we_ai_ui.c|host_ask_marked_write|1|the hosted engine's write box: Esc is deny
+K4|claim|the assistant's turn|we_ai_ui.c|host_turn_end_notice|2|what the pane says when a turn ended or was interrupted
+K4|claim|the assistant's task|we_ai_ui.c|wpe_ai_report_window_locked|1|the line a locked window says when it refuses a key
+K4|word|ws_say_kept_unseen|we_ai_ws.c|ws_say_kept_unseen|1|a report of what Esc did, not a promise
+K4|word|KEY|we_bindings.c|-|2|the key table's own names for the key
+K4|word|E_CANCEL_KEY_CLICK|we_cancel.c|E_CANCEL_KEY_CLICK|1|the owner's trace tag for an Esc taken from a click, not a promise
+K4|word|E_CANCEL_KEY_ESC|we_cancel.c|E_CANCEL_KEY_ESC|1|the owner's trace tag for an Esc taken from the key, not a promise
+K4|loop|e_capture_cancel_asked|we_child.c|WPE_CAPTURE_STOPPED_FMT|1|the short command wait: Esc stops waiting for the child
+K4|claim|the build server|we_debug.c|E_D_BSP_WAIT_FMT|1|the build server's waiting line
+K4|claim|the compile for debug|we_debug.c|E_D_COMPILE_LINE|1|the compile's waiting line, and the refusal said when it is asked again
+K4|claim|the debugger's answer|we_debug.c|E_D_GA_WAIT_FMT|1|the answer wait's line on the bottom row
+K4|claim|the debugger start|we_debug.c|E_D_START_BUSY_LINE|1|the refusal of a debugger command while the debugger starts
+K4|claim|the debugger start|we_debug.c|E_D_START_PHASE_FMT|1|the start's waiting line, named by its phase
+K4|claim|the debugger start|we_debug.c|E_D_START_WAIT_FMT|1|the start's waiting line
+K4|claim|the language server|we_debug.c|E_LSP_BUSY_FMT|1|the refusal said while the language server still answers
+K4|claim|the language server|we_debug.c|E_LSP_START_WAIT_FMT|1|the language server's start waiting line
+K4|claim|the language server|we_debug.c|E_LSP_WAIT_FMT|1|the language server's answer waiting line
+K4|claim|scala-cli setup|we_debug.c|E_SCALA_SETUP_LINE|1|the setup's waiting line, and the refusal said when it is asked again
+K4|loop|WpeHandleFileManager|we_fl_unix.c|WpeDrawFileManager|2|the File Manager's own bar hints: Esc leaves it
+K4|word|e_pr_ed_beispiel|we_opt.c|e_pr_ed_beispiel|1|an example line drawn in a dialog, not a promise of this editor
+K4|claim|the build|we_prog.c|E_BUILD_BUSY_LINE|1|the refusal of a second build, said from any window
+K4|claim|the build|we_prog.c|E_BUILD_WAIT_FMT|1|the build's waiting line in Messages
+# ---- K5: every function that mentions a key -------------------------------
+K5|loop|we_ai_ui.c|ai_agent_read_yes_no|1|the agent's yes/no box reads the key: Esc is no
+K5|loop|we_ai_ui.c|ai_box_key_decision|2|an assistant box reads the key and returns it as its answer
+K5|loop|we_ai_ui.c|ai_consent_gate|1|the consent box reads the key: Esc is not now
+K5|loop|we_ai_ui.c|ai_diff_box_show|2|the review box's own key loop: Esc is its way out
+K5|loop|we_ai_ui.c|ai_mp_key_listed|1|the model list reads its keys: Esc closes it
+K5|loop|we_ai_ui.c|ai_mp_key_listing|1|the model list reads its keys while it waits: Esc closes it
+K5|loop|we_ai_ui.c|ai_web_notice|1|the web notice box reads the key: Esc is not now
+K5|result|we_ai_ui.c|e_ai_opt_advanced|2|a dialog's Cancel button code and its result
+K5|result|we_ai_ui.c|e_ai_options|3|a dialog's Cancel button code and its result
+K5|loop|we_ai_ui.c|e_ai_pick|1|the assistant's list box reads its keys: Esc closes it
+K5|result|we_ai_ui.c|e_ai_prompt|2|reads the prompt box's result, not a key
+K5|loop|we_ai_ws.c|ws_ask_file_by_file|2|the file-by-file review reads its keys: Esc leaves it
+K5|loop|we_ai_ws.c|ws_review_answer|1|the review's key reader: Esc is its answer
+K5|word|we_bindings.c|-|3|the key table's own rows name the key
+K5|word|we_bindings.c|wpe_legacy_key|1|folds Ctrl-[ to the key it is, under a key protocol
+K5|result|we_block.c|e_blck_del|1|returns the cancelled result code
+K5|result|we_block.c|e_blck_read|1|returns the cancelled result code
+K5|result|we_block.c|e_changecase_dialog|2|a dialog's Cancel button code and its result
+K5|result|we_block.c|e_find|5|a dialog's Cancel button code and its result
+K5|result|we_block.c|e_replace|5|a dialog's Cancel button code and its result
+K5|result|we_block.c|e_replace_each|1|reads the message box's result, not a key
+K5|claim|we_cancel.c|e_cancel_is_next|1|the owner asks which claim Esc ends first
+K5|claim|we_cancel.c|e_cancel_key_bit|2|the owner's own reading of the two keys it takes
+K5|word|we_debsess.c|e_ds_strip_style|1|skips the escape byte that starts a style sequence in a transcript, not a key
+K5|result|we_debug.c|e_d_add_watch|1|a dialog's Cancel button code and its result
+K5|result|we_debug.c|e_deb_options|2|a dialog's Cancel button code and its result
+K5|result|we_debug.c|e_d_show_source|1|returns the cancelled result code
+K5|result|we_debug.c|e_lsp_pick_at|1|reads the language server list's result, not a key
+K5|word|we_e_aus.c|e_pasted_control_byte|1|tells a pasted control byte from text: names the key's code
+K5|loop|we_e_aus.c|e_schreib_leiste_lines|3|the status row's own key loop: Esc leaves it
+K5|loop|we_e_aus.c|e_schreib_zif|1|a box of its own reads the key: Esc leaves it
+K5|loop|we_edit.c|e_eingabe|1|the editor's key loop head: an unclaimed Esc leaves to the menu
+K5|word|we_edit.c|e_pty_key_bytes|1|encodes the key as the bytes a program's terminal reads
+K5|word|we_edit.c|e_pty_sequence_bytes|1|encodes the key as the bytes a program's terminal reads
+K5|result|we_fl_fkt.c|e_file_window|1|returns the cancelled result code
+K5|result|we_fl_fkt.c|e_quit|2|reads a window close's result, not a key
+K5|loop|we_fl_unix.c|e_data_eingabe|4|the File Manager's list loop: Esc leaves it
+K5|result|we_fl_unix.c|e_funct_in|1|returns the cancelled result code
+K5|loop|we_fl_unix.c|fm_ask|1|a box of the File Manager reads the key: Esc is no
+K5|loop|we_fl_unix.c|fm_progress|2|the File Manager's own Ctrl-C and Esc reader during a copy
+K5|result|we_fl_unix.c|WpeDirDelOptions|2|a dialog's Cancel button code and its result
+K5|result|we_fl_unix.c|WpeFileDirAttributes|2|a dialog's Cancel button code and its result
+K5|result|we_fl_unix.c|WpeFileManagerOptions|2|a dialog's Cancel button code and its result
+K5|result|we_fl_unix.c|WpeFindWindow|5|a dialog's Cancel button code and its result
+K5|result|we_fl_unix.c|WpeGrepWindow|5|a dialog's Cancel button code and its result
+K5|loop|we_fl_unix.c|WpeHandleFileManager|9|the File Manager's key loop: Esc leaves it
+K5|result|we_hfkt.c|e_num_kst|2|a dialog's Cancel button code and its result
+K5|word|we_keymap.c|wpe_key_code_char|2|names the key's code for the keymap's own table
+K5|word|we_keymap.c|wpe_key_from_csi_cp|1|tells the number 27 that starts a modifyOtherKeys report, not a key
+K5|word|we_keymap.c|wpe_key_from_sequence|1|tests the first byte of an input sequence for the escape byte that starts it
+K5|word|we_keymap.c|wpe_report_key|1|lets the protocol's number for the key through among the low control codes it drops
+K5|loop|we_menue.c|WpeHandleMainmenu|2|the menu bar's key loop: Esc leaves it
+K5|loop|we_menue.c|WpeHandleSubmenu_run|9|a menu's key loop: Esc leaves it
+K5|result|we_mouse.c|e_data_ein_mouse|2|a click the reader reports as the key it stands for
+K5|result|we_mouse.c|e_m1_mouse|1|a click the reader reports as the key it stands for
+K5|result|we_mouse.c|e_m2_mouse|1|a click the reader reports as the key it stands for
+K5|result|we_mouse.c|e_m3_mouse|2|a click on the bottom row comes back as the key: the owner traces it as a click
+K5|result|we_mouse.c|e_msg_mouse|1|a click the reader reports as the key it stands for
+K5|word|we_mouse.c|e_opt_bs_mouse_1|1|compares a screen column with 27, not a key with the escape byte
+K5|result|we_mouse.c|e_opt_cw_mouse|2|a click the reader reports as the key it stands for
+K5|result|we_mouse.c|e_opt_mouse|1|a click the reader reports as the key it stands for
+K5|result|we_mouse.c|e_rahmen_mouse|1|a click the reader reports as the key it stands for
+K5|result|we_mouse.c|WpeMngMouseInFileManager|2|a click the reader reports as the key it stands for
+K5|result|we_opt.c|e_ad_colors|1|returns the cancelled result code
+K5|result|we_opt.c|e_ad_colors_md|1|returns the cancelled result code
+K5|result|we_opt.c|e_add_arguments|4|a dialog's Cancel button code and its result
+K5|result|we_opt.c|e_clear_desk|2|reads a window close's result, not a key
+K5|loop|we_opt.c|e_dif_colors|1|a box of its own reads the key: Esc leaves it
+K5|result|we_opt.c|e_edt_options|2|a dialog's Cancel button code and its result
+K5|loop|we_opt.c|e_frb_x_menue|2|a box of its own reads the key: Esc leaves it
+K5|result|we_opt.c|e_keys_ask_box|1|a dialog's Cancel button code
+K5|loop|we_opt.c|e_opt_activate_button|2|the dialog's key router: Esc is its Cancel button
+K5|result|we_opt.c|e_opt_box_show|1|returns the box's result code
+K5|loop|we_opt.c|e_opt_box_wait_key|1|the box's own key wait: Esc leaves it
+K5|result|we_opt.c|e_opt_cancel|2|writes the dialog's cancelled result
+K5|result|we_opt.c|e_opt_hold_clipped|2|reads the clipped box's result, not a key
+K5|loop|we_opt.c|e_opt_kst_run|5|the dialog's key loop: Esc is the box's Cancel
+K5|loop|we_opt.c|e_opt_move|1|the dialog's key loop: Esc leaves it
+K5|loop|we_opt.c|e_opt_num_field_edit|1|a dialog field reads its keys: Esc leaves the field
+K5|result|we_opt.c|e_opt_press_button|1|reads a button's code, not a key
+K5|loop|we_opt.c|e_opt_route_button_key|1|the dialog's key router
+K5|loop|we_opt.c|e_opt_route_checkbox_key|1|the dialog's key router
+K5|loop|we_opt.c|e_opt_route_field_key|1|the dialog's key router
+K5|loop|we_opt.c|e_opt_route_radio_key|1|the dialog's key router
+K5|loop|we_opt.c|e_opt_run_text_field|1|a dialog field reads its keys: Esc leaves the field
+K5|loop|we_opt.c|e_opt_wait_esc_or_resize|1|the box's own wait for Esc or a new size
+K5|result|we_prog.c|e_build_step_verdict|1|returns the build's cancelled verdict
+K5|result|we_prog.c|e_cl_project|2|returns the cancelled result code
+K5|result|we_prog.c|e_comp_start|4|returns the cancelled result code
+K5|result|we_prog.c|e_create_project|1|returns the cancelled result code
+K5|result|we_prog.c|e_exec_make|6|ends the build chain with its cancelled result
+K5|result|we_prog.c|e_install_lines_run|1|returns the cancelled result code
+K5|result|we_prog.c|e_install_run|1|returns the cancelled result code
+K5|result|we_prog.c|e_new_message|1|returns the cancelled result code
+K5|result|we_prog.c|e_open_project_file|1|returns the cancelled result code
+K5|result|we_prog.c|e_p_make_link|1|hands the build's cancelled result on
+K5|result|we_prog.c|e_prj_close_window|2|reads a window close's result, not a key
+K5|result|we_prog.c|e_prj_compile_file|1|ends the project's run with its cancelled result
+K5|result|we_prog.c|e_prj_setup|3|returns the cancelled result code
+K5|result|we_prog.c|e_project_name|2|returns the cancelled result code
+K5|result|we_prog.c|e_project_options|2|a dialog's Cancel button code and its result
+K5|result|we_prog.c|e_run_c_options|2|a dialog's Cancel button code and its result
+K5|result|we_prog.c|e_run_options|1|returns the cancelled result code
+K5|loop|we_prog.c|e_run_serve_key|1|Run's own Ctrl-C reader: it interrupts the program, not an activity
+K5|loop|we_prog.c|e_run_text_serve_key|1|Run's own Ctrl-C reader: it interrupts the program, not an activity
+K5|result|we_prog.c|e_select_project|3|returns the cancelled result code
+K5|result|we_prog.c|e_show_error|1|returns the cancelled result code
+K5|result|we_progn.c|e_p_beautify|2|a dialog's Cancel button code and its result
+K5|result|we_progn.c|e_program_opt|2|a dialog's Cancel button code and its result
+K5|word|we_term.c|e_find_key|1|compares a function key's number with 27, not a key with the escape byte
+K5|word|we_term.c|e_t_decode_key|3|the reader decodes the byte into the key's code
+K5|word|we_term.c|e_t_getch|5|the reader tells a lone escape from the start of a sequence
+K5|word|we_term.c|fk_t_mouse|1|the reader's own answer for a mouse event
+K5|loop|we_unix.c|e_capture_cancel_asked|2|the short command wait takes the key without waiting: Esc stops it
+K5|loop|we_unix.c|e_frb_t_menue|2|a box of its own reads the key: Esc leaves it
+K5|result|we_wind.c|e_close_window|3|returns the cancelled result code
+K5|result|we_wind.c|e_ed_zoom|1|returns the cancelled result code
+K5|result|we_wind.c|e_error_read_answer|1|a click on the close box reads as the box's Cancel
+K5|loop|we_wind.c|e_error_run|1|the error box's own key loop: Esc leaves it
+K5|result|we_wind.c|e_message_box|3|a dialog's Cancel button code and its result
+K5|loop|we_wind.c|e_opt_sec_box|3|a box of its own reads the key: Esc leaves it
+K5|loop|we_wind.c|e_size_move|1|the window's own size and move loop: Esc leaves it
+K5|result|we_wind.c|e_startcmd_add_buttons|3|a dialog's Cancel button code
+K5|loop|we_wind.c|e_sv_window|1|the window list's own key loop: Esc leaves it
+K5|word|we_xterm.c|e_x_kbhit|1|the display's own name for the key
+# ---- K6: the rows that claim the key in their own window only -------------
+K6|front|the chat pane|Esc in a file window closes no pane behind it

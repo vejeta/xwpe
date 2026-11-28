@@ -26,7 +26,7 @@
 # of the function (not for a key loop, where each key is named); the function is
 # `-` for a header or file-level use.  The count must be exact: more is a new use,
 # fewer is a stale line, so the file shrinks as the offenders go.  The reason is
-# one of the seven in REASONS.  --list prints what was found as allow-file lines to
+# one of the eight in REASONS.  --list prints what was found as allow-file lines to
 # start from; --hits prints each use.
 #
 # What the counts do not see: a `*` line counts the key uses of a whole
@@ -67,12 +67,15 @@ done
 # of the decoder.
 FAMILY='^(F[0-9]+|[SCA]F[0-9]+|Alt[A-Za-z0-9]+|Ctrl[A-Za-z]+|C(UP|DO|LE|RI|CLE|CRI|BUP|BDO|PS1|END)|POS1|ENDE|BUP|BDO|EINFG|ENTF|CENTF|CEINFG|ShiftDel|ShiftEin|SABS|SC(LE|RI|UP|DO)|WPE_(TAB|BTAB|CR|ESC|DC|CS_[A-Z]+|CTRL_[A-Z_]+|CA_[A-Z]+|SCROLL_UP|SCROLL_DOWN|PASTE_BEG|PASTE_END|LSP_MENU|AI_MENU|RESIZE)|STOP|AGAIN|PROPS|UNDO|FRONT|COPY|OPEN|PASTE|FID|CUT|HELP)$'
 
-# Why a place may use a key.  The design's seven, and two honest debts that are
-# not reasons but a list of what the table has not taken yet: "not yet in the
-# table, context NAME (K-d1)" for a key a context of the table will decide, and
-# "not yet generated from the table, K-d1" for a hand-written key name in a
-# message.  The file manager and the editor's own keys are contexts, not reasons.
-REASONS='dialog field editing|menu navigation|AI pane text keys|compose|help viewer paging|key-codes view names keys|self-test table'
+# Why a place may use a key.  The design's seven, one owner of a key of its
+# own, and two honest debts that are not reasons but a list of what the table
+# has not taken yet: "not yet in the table, context NAME (K-d1)" for a key a
+# context of the table will decide, and "not yet generated from the table,
+# K-d1" for a hand-written key name in a message.  The file manager and the
+# editor's own keys are contexts, not reasons.  "the cancel key has its own
+# owner" is we_cancel.c, whose table says which running activity Esc ends; it
+# is a second table by design and tests/check-esc-owner.sh holds its inventory.
+REASONS='dialog field editing|menu navigation|AI pane text keys|compose|help viewer paging|key-codes view names keys|self-test table|the cancel key has its own owner'
 
 # The key loops: the functions that read a key and choose what it does.  Their
 # allow lines name each key, so a decision planted among them is a new line.

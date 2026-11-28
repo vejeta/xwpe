@@ -1321,6 +1321,12 @@ int e_start_debug(FENSTER *f);
 int e_run_debug(FENSTER *f);
 int e_d_start_busy(void);
 void e_d_start_cancel(void);
+/* Is the start's end already on its way (Esc asked for it, the debugger not
+   gone yet), and did the debugger answer behind a box so that the session's
+   start waits for the key loop?  Both are asked by the key's owner
+   (we_cancel.c). */
+int e_d_start_ending(void);
+int e_d_start_result_held(void);
 int e_scala_setup_busy_any(void);
 void e_scala_setup_cancel(void);
 int e_d_compile_busy(void);

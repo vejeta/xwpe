@@ -71,6 +71,7 @@ we_SOURCES = \
   we_child.c \
   we_e_aus.c \
   we_edit.c \
+  we_cancel.c \
   we_buffer.c \
   we_closed.c \
   we_winkind.c \
@@ -1208,6 +1209,20 @@ TESTS += tests/check-chain-outcome.sh
 # outside its owner and its one user (read with $(NM) from the objects).
 TESTS += tests/check-session-end.sh
 
+# One owner of the key that ends a running activity (we_cancel.c): a build, a
+# starting debugger, a language server's answer, an assistant's task or turn
+# and the chat pane all promise Esc, and the table says which of them one Esc
+# ends.  tests/check-esc-owner.sh fails when the editor's key loop tests the
+# key beside the owner or calls it more than once, when a cancel of the table
+# is called from a third file, when the chat pane reads Esc itself, when a
+# string names Esc with no claim, loop or key name behind it, when a function
+# mentions the key with no entry of its own, or when a row of the table has no
+# name, no busy, no cancel, no Esc, sits under the wrong feature guard, or
+# claims the key in its own window without saying which window
+# (tests/esc-owner.allow holds every place that names Esc outside the table,
+# each counted, so a new promise is read before it is accepted).
+TESTS += tests/check-esc-owner.sh
+
 # One owner of how long a path the editor holds may be (we_path.h) and of a
 # dialog field's way out (we_fieldtake.h): tests/check-path-buffers.sh fails
 # on an unbounded copy of a field's text, a refusal nobody reads, a call of
@@ -1676,6 +1691,8 @@ EXTRA_DIST = \
   tests/chain-outcome.allow \
   tests/check-session-end.sh \
   tests/session-end.allow \
+  tests/check-esc-owner.sh \
+  tests/esc-owner.allow \
   tests/check-path-buffers.sh \
   tests/path-buffers.allow \
   tests/check-help-buffers.sh \

@@ -1175,7 +1175,7 @@ static FENSTER *g_ai_bg_win = NULL;
  * ai_top_window - The window on top of the desktop: the one the keys go to.
  * @f: any window of the same desktop.
  */
-static FENSTER *ai_top_window(FENSTER *f)
+static FENSTER *ai_top_window(const FENSTER *f)
 {
  return f->ed->f[f->ed->mxedt];
 }
@@ -5353,7 +5353,7 @@ static void ai_chat_offer_input(FENSTER *f)
  * the old file.  NULL when the chat is not armed or the user really switched
  * to another window, so the editor keeps the key.
  */
-static FENSTER *ai_chat_focused_pane(FENSTER *f)
+static FENSTER *ai_chat_focused_pane(const FENSTER *f)
 {
  if (!g_ai_chat_focus || !g_ai_chat_pane)
   return NULL;
@@ -5362,6 +5362,48 @@ static FENSTER *ai_chat_focused_pane(FENSTER *f)
  if (ai_top_window(f) == g_ai_chat_pane)
   return g_ai_chat_pane;
  return NULL;
+}
+
+/**
+ * wpe_ai_chat_pane_open - Is the chat pane armed, in whatever window?
+ *
+ * The owner of the key asks this for the pane's claim; that claim answers
+ * only where the user sees the pane (wpe_ai_chat_pane_in_front), so an Esc
+ * typed in a file never closes a pane behind it.
+ * Return: 1 while the pane is armed.
+ */
+int wpe_ai_chat_pane_open(void)
+{
+ return g_ai_chat_pane != NULL;
+}
+
+/**
+ * wpe_ai_chat_pane_in_front - Is the armed chat pane the window on top?
+ * @top: the window the key loop believes is on top.
+ *
+ * The same test the pane's own key handler makes, so no Esc reaches that
+ * handler without the owner of the key having claimed it first: the pane
+ * closes on a key from its own window and stays open behind any other.
+ * Return: 1 when the user is looking at the pane.
+ */
+int wpe_ai_chat_pane_in_front(const FENSTER *top)
+{
+ return ai_chat_focused_pane(top) != NULL;
+}
+
+/**
+ * wpe_ai_chat_pane_close - Esc in the armed chat pane: leave the chat.
+ * @top: the window on top; the pane knows itself.
+ *
+ * The input row goes, the transcript stays as the plain output window it was
+ * before the chat, and the focus returns to the window the chat was opened
+ * from.  A task that is still running goes on: the pane is a window, not the
+ * assistant's work.
+ */
+void wpe_ai_chat_pane_close(FENSTER *top)
+{
+ (void)top;
+ e_ai_chat_close();
 }
 
 /**
@@ -5614,7 +5656,10 @@ static void ai_chat_key_down(FENSTER *wf)
  * @f: the window the editor loop believes is focused.
  * @c: the key code.
  *
- * Return: 1 when the key was the chat's (Esc, browsing, an input key), 0 to
+ * Esc is not read here: it is the chat pane's claim in the owner of the key
+ * (we_cancel.c), which closes the pane through wpe_ai_chat_pane_close, so no
+ * Esc reaches this handler at all.
+ * Return: 1 when the key was the chat's (browsing, an input key), 0 to
  * let the editor handle it as usual (a window switch, a function key).  The
  * mouse is the editor's before this is reached, so dragging, resizing and
  * switching windows all keep working.
@@ -5626,10 +5671,6 @@ int e_ai_chat_key(FENSTER *f, int c)
 
  if (!wf)
   return 0;
- if (c == WPE_ESC) {
-  e_ai_chat_close();
-  return 1;
- }
  if (c == BUP) {
   ai_pane_scroll(wf, -ai_pane_page_rows(wf));
   return 1;
@@ -7724,12 +7765,31 @@ static int ai_op_splices_its_window(const ai_async_op *op)
  * and the review shows the model's work only -- never a hunk that undoes what
  * was typed during the wait.  Every other window stays fully editable.
  */
-int wpe_ai_window_locked(FENSTER *f)
+int wpe_ai_window_locked(const FENSTER *f)
 {
  ai_async_op *op = g_ai_op;
  if (!op || !f || op->f != f)
   return 0;
  return ai_op_splices_its_window(op);
+}
+
+/**
+ * wpe_ai_task_in_front - Is the running task's promise in the window on top?
+ * @top: the window the key loop believes is on top.
+ *
+ * A task promises the key in two places: its spinner in the chat pane, and
+ * the window an Edit or a Complete locked, which says there that Esc cancels
+ * the task.  Those two are where the user reads the promise, so those two are
+ * where the owner of the key finds the task in front.  An Agent or a Plan
+ * works on a window and leaves it editable with no promise in it, so from
+ * there the key goes on to the next claim, as it did before the table.
+ * Return: 1 when the task's promise is on screen.
+ */
+int wpe_ai_task_in_front(const FENSTER *top)
+{
+ if (ai_chat_focused_pane(top) != NULL)
+  return 1;
+ return wpe_ai_window_locked(top);
 }
 
 /**
@@ -15902,7 +15962,7 @@ static void host_fd_cb(int fd, void *data)
 /**
  * wpe_ai_host_turn_active - Is the hosted engine streaming a turn right now?
  *
- * The editor's key loop asks this before Esc, so the key that cancels a
+ * The owner of the key asks this for the turn's claim, so the key that ends a
  * built-in task also interrupts a hosted one instead of closing the pane.
  * Return: 1 while a turn is open, 0 otherwise.
  */
@@ -15910,6 +15970,21 @@ int wpe_ai_host_turn_active(void)
 {
  if (!g_host) return 0;
  return g_host_turn;
+}
+
+/**
+ * wpe_ai_host_interrupt_pending - Is an interrupt the user asked for still
+ * waiting for the engine to end its turn?
+ *
+ * The owner of the key asks this: while the engine has not answered, a second
+ * Esc belongs to this turn and ends nothing else, however long the engine
+ * takes (its own bound ends the session).
+ * Return: 1 while the interrupt is pending.
+ */
+int wpe_ai_host_interrupt_pending(void)
+{
+ if (!g_host) return 0;
+ return g_host_interrupting;
 }
 
 /**
@@ -16026,6 +16101,7 @@ int e_ai_host(FENSTER *f)
 }
 #else  /* no agent host in this build: Esc has no hosted turn to interrupt */
 int  wpe_ai_host_turn_active(void) { return 0; }
+int  wpe_ai_host_interrupt_pending(void) { return 0; }
 void wpe_ai_host_interrupt(void) { }
 #endif /* WPE_AI_AGENT_HOST */
 
