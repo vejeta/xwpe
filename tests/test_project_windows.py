@@ -370,7 +370,7 @@ def test_open_project_while_the_old_one_cannot_be_written_keeps_the_old_one(tmp_
     _need_unwritable_prj(tmp_path)
     first, second, after = _open_b_while_d_refuses(tmp_path)
     assert 'Cannot write' in first and 'still in its window' in first, first
-    assert 'b.prj was not opened.' in second, second
+    assert _box_says(second, 'b.prj was not opened.'), second
     assert 'Project: b.prj' not in after.split('F1 Help')[0], after
     assert after.split('F1 Help')[0].count('Project: d.prj') == 1, after
 
@@ -468,11 +468,26 @@ KEY_ALT_SYSTEM = '\033#'
 SEED_TEXT = 'int main(void){return 0;}\n'
 
 
+def _box_says(screen, words):
+    """Does the box on @screen say @words?  A box wraps a long line where
+    the row's folder makes the path in it long, so each word is looked for,
+    in order, not the line as typed."""
+    at = 0
+    for word in words.split():
+        at = screen.find(word, at)
+        if at < 0:
+            return False
+        at += len(word)
+    return True
+
+
 def _wait_for_box(w, words):
     """Wait until the box that says @words is on the screen.  A box ignores
     a key typed before it was shown, so its Esc is sent after, never after
     a guessed delay."""
-    assert wpe_driver.wait_screen(w, words), \
+    def box_is_shown():
+        return _box_says(_screen_text(w), words)
+    assert wpe_driver.wait_until(w, box_is_shown, what='a box saying %r' % words), \
         'no box saying %r:\n%s' % (words, _screen_text(w))
 
 
@@ -599,7 +614,7 @@ def test_open_prj_from_the_file_manager_around_a_refused_close_keeps_the_old(tmp
             os.chmod(str(prj), 0o600)
         assert w.alive(), after
     assert 'Cannot write' in first, first
-    assert 'b.prj was not opened.' in second, second
+    assert _box_says(second, 'b.prj was not opened.'), second
     assert _project_windows(after) == 1 and 'Project: b.prj' not in after.split('F1 Help')[0], after
     assert (tmp_path / 'b.prj').read_text() == B_TEXT
     assert prj.read_text() == PRJ_TEXT
