@@ -334,7 +334,6 @@ WpeBoxDrawn wpe_box_open(WpeBox *box)
  wpe_paint_modal_enter(box->what);
  box->slot = slot < WPE_LAYOUT_STACK_MAX ? slot : WPE_LAYOUT_STACK_MAX - 1;
  box->pic = NULL;
- box->moved = 0;
  box->open = 1;
  layout_stack[box->slot] = box;
  layout_open++;
@@ -367,24 +366,6 @@ void wpe_box_close(WpeBox *box)
  }
  box->open = 0;
  wpe_paint_modal_leave();
-}
-
-/**
- * wpe_box_getch - Read a key for an open box.
- * @box: the box.
- *
- * The one way a box reads a key.  When the screen was resized the owner has
- * already laid the box out again; the key reported is the editor's resize
- * sentinel, and box->moved tells the loop to refocus.
- * Return: the key.
- */
-int wpe_box_getch(WpeBox *box)
-{
- int c = wpe_paint_modal_getch();
-
- if (box->moved)
-  box->moved = 0;
- return c;
 }
 
 /**
@@ -533,7 +514,6 @@ static void wpe_layout_walk_box(WpeBox *box)
   layout_desk.drop_pic(box->pic);
  box->pic = NULL;
  wpe_box_put(box);
- box->moved = 1;
  if (wpe_box_draw(box) == WPE_BOX_GONE)
  {
   box->open = 2;

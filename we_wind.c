@@ -605,16 +605,20 @@ static void e_error_box_init(WpeBox *box, E_ERROR_BOX *e, int len)
 
 /**
  * e_error_read_answer - Read the key that answers an error box.
- * @box: the open box.
+ * @box: the open box; @ask: the question the box asks, whose answer is the
+ * key that takes it away.
+ *
+ * The key is read as a question's answer, so one typed before the box was
+ * shown does not take the box away before the user has read it.
  * Return: Esc, Return or O to leave; WPE_RESIZE when the screen changed
  * (the owner has drawn the box again); anything else otherwise.
  */
-static int e_error_read_answer(WpeBox *box)
+static int e_error_read_answer(WpeBox *box, WpeAsk *ask)
 {
  int i;
 
 #if  MOUSE
- if ((i = e_toupper(wpe_box_getch(box))) == -1)
+ if ((i = e_toupper(wpe_paint_ask_key(ask))) == -1)
  {
   extern struct mouse e_mouse;
   int xa = box->at.bx_left, xe = box->at.bx_right, ya = box->at.bx_top;
@@ -624,7 +628,7 @@ static int e_error_read_answer(WpeBox *box)
    i = WPE_ESC;   /* clicked the title-bar [X] close box -> dismiss */
  }
 #else
- i = e_toupper(wpe_box_getch(box));
+ i = e_toupper(wpe_paint_ask_key(ask));
 #endif
  return(i);
 }
@@ -633,6 +637,7 @@ static int e_error_read_answer(WpeBox *box)
       Print error message        */
 static int e_error_run(char *text, int sw, FARBE *f)
 {
+ WpeAsk ask = WPE_ASK("error box");
  WpeBox box;
  E_ERROR_BOX e;
  int len, i;
@@ -652,7 +657,7 @@ static int e_error_run(char *text, int sw, FARBE *f)
  e_error_box_init(&box, &e, len);
  wpe_box_open(&box);
  do
-  i = e_error_read_answer(&box);
+  i = e_error_read_answer(&box, &ask);
  while (i != WPE_ESC && i != WPE_CR && i != 'O');
  WpeMouseRestoreShape();
  if (box.pic != NULL) e_close_view(box.pic, 1);
@@ -671,8 +676,11 @@ static int e_error_run(char *text, int sw, FARBE *f)
    pushes no window; the box is opened through the layout owner (wpe_box_open),
    which brackets the async LSP fd-loop's painting with the modal-depth guard, so
    a server update arriving behind the box cannot draw under it and corrupt it,
-   and lays the box out again when the screen changes size.  A fatal error
-   (sw >= 1) closes its box and exits from e_error_run. */
+   and lays the box out again when the screen changes size.  The box asks a
+   question, so it reads its key through the screen owner's question reader:
+   a key typed before the box was shown does not dismiss it, and the user has
+   read what it says before it goes away.  A fatal error (sw >= 1) closes its
+   box and exits from e_error_run. */
 int e_error(char *text, int sw, FARBE *f)
 {
  int ret;
@@ -763,11 +771,15 @@ void e_say_path_refused(FENSTER *f, const char *what, const char *path, int err)
  * e_message_box - The message box: Ok, or Yes, No and Cancel, with a default.
  * @sw: 0 for Ok alone, else the three buttons of a question; @str: the text;
  * @f: the window it is shown over; @crsw: the key Enter answers with (AltO,
- * AltY or AltN).
+ * AltY or AltN); @series: E_MESSAGE_SERIES for a box that is one of a row the
+ * user answers on purpose (it keeps the keys typed before it), else
+ * E_MESSAGE_ONE_OFF.
  * Return: -1 when the box could not be made; for a question 'Y', 'N' or
  * WPE_ESC (Cancel and Esc); for an Ok anything but 'N'.
  */
-static int e_message_box(int sw, char *str, FENSTER *f, int crsw)
+#define E_MESSAGE_ONE_OFF 0
+#define E_MESSAGE_SERIES  1
+static int e_message_box(int sw, char *str, FENSTER *f, int crsw, int series)
 {
  int i, ret, mxlen = 0, anz = 0;
  char **s;
@@ -806,7 +818,10 @@ static int e_message_box(int sw, char *str, FENSTER *f, int crsw)
   e_add_bttstr((o->xe-o->xa-2)/2, o->ye-o->ya-2, 0, AltN, "No", NULL, o);
   e_add_bttstr(o->xe-o->xa-9, o->ye-o->ya-2, -1, WPE_ESC, "Cancel", NULL, o);
  }
- ret = e_opt_kst_message(o);
+ if (series == E_MESSAGE_SERIES)
+  ret = e_opt_kst_series(o);
+ else
+  ret = e_opt_kst_message(o);
  freeostr(o);
  return(ret == WPE_ESC ? WPE_ESC : (ret == AltN ? 'N' : 'Y'));
 }
@@ -814,7 +829,22 @@ static int e_message_box(int sw, char *str, FENSTER *f, int crsw)
 /*   message with selection        */
 int e_message(int sw, char *str, FENSTER *f)
 {
- return(e_message_box(sw, str, f, sw ? AltY : AltO));
+ return(e_message_box(sw, str, f, sw ? AltY : AltO, E_MESSAGE_ONE_OFF));
+}
+
+/**
+ * e_message_series - One question of a row the user answers on purpose.
+ * @str: the question; @f: the window it is shown over.
+ * Return: 'Y', 'N', or WPE_ESC for Cancel and Esc.
+ *
+ * For "Replace this occurrence?" of Find/Replace, asked once per hit: the
+ * user may type "y y n" at once and each key answers the box that follows,
+ * as it does in a field.  Every other message box ignores what was typed
+ * before it.
+ */
+int e_message_series(char *str, FENSTER *f)
+{
+ return(e_message_box(1, str, f, AltY, E_MESSAGE_SERIES));
 }
 
 /**
@@ -828,7 +858,7 @@ int e_message(int sw, char *str, FENSTER *f)
  */
 int e_message_default_no(char *str, FENSTER *f)
 {
- return(e_message_box(1, str, f, AltN));
+ return(e_message_box(1, str, f, AltN, E_MESSAGE_ONE_OFF));
 }
 
 /* The question a folder's command gets: its frame, and the room it takes. */

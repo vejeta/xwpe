@@ -13,7 +13,18 @@ Declared terminal-only, with the reason: a bracketed paste exists only on the
 terminal (a graphical paste is a key the question drops like any other), and
 the resize row needs the terminal's ncurses resize to give a pending resize
 back, which the graphical displays handle in their frame owner.
-Self-skips if the graphical harness or --enable-ai is missing.
+
+The message boxes (the close question, the overwrite question, the About box)
+open from a key, and the key that opens a box and the key that would answer it
+are two injected events.  The editor is held at the owner's settle of the box,
+by $XWPE_UI_HOLD ("<question>=<fifo>", honoured only with $XWPE_UI_TRACE set),
+which stops it once just before the box's first read and wakes on the fifo or
+on SIGTERM.  The row types while it is held and then opens the fifo, so the key
+is queued before the box by order of events here too.  The click row of the
+terminal suite has no twin: it needs the pixel of a button of a box, which the
+graphical harness cannot read without a screenshot search.
+Self-skips if the graphical harness is missing; the assistant rows also need
+--enable-ai.
 """
 import errno
 import os
@@ -224,3 +235,95 @@ def test_keys_after_the_question_is_shown_all_act(xwpe):
     xwpe.key("r", delay=0.5)
     wait_for(lambda: "changeset revert all" in h.ai(), "the revert to be traced", WAIT_S)
     assert not h.made("made.txt"), "r after the question did not revert"
+
+
+# ---- the message boxes, held at the owner's settle -------------------------
+
+def _hold_env(question):
+    return {
+        "XWPE_UI_TRACE": UI_TRACE,
+        "XWPE_UI_HOLD": "%s=%s" % (question, HOLD_FIFO),
+        "XDG_STATE_HOME": "",
+    }
+
+
+MESSAGE_ENV = _hold_env("Message")
+ABOUT_ENV = _hold_env("the About box")
+OLD_TEXT = "old text\n"
+SCREEN_CHANGED = 2000          # pixels a box that appears or goes changes at least
+BOX_GONE_SHARE = 5             # a box taken away leaves less than 1/5 of its pixels
+
+
+class BoxHeld(Held):
+    """The editor held at the settle of a message box."""
+
+    def wait_hold(self, question):
+        wait_for(lambda: "hold %s" % question in self.ui(),
+                 "the editor to stop at the hold of %r" % question, WAIT_S)
+
+    def saved(self, name="t.c"):
+        try:
+            with open(os.path.join(self.folder, name)) as fh:
+                return fh.read()
+        except OSError:
+            return ""
+
+
+# @scenario SC-question-typeahead-32
+@pytest.mark.parametrize("xwpe", [MESSAGE_ENV], indirect=True)
+def test_a_key_typed_before_the_close_question_does_not_answer_it(xwpe):
+    """The n typed while the close question is about to be read gives nothing
+    up: the question ignores it, and the y typed after it saves the edit."""
+    h = BoxHeld(xwpe)
+    xwpe.type("X")
+    xwpe.key("ctrl+w", delay=0.2)
+    h.wait_hold("Message")
+    xwpe.type("n")
+    h.release()
+    assert h.dropped("Message") == 1, h.ui()
+    xwpe.key("y", delay=0.5)
+    wait_for(lambda: h.saved().startswith("Xint main"),
+             "the y after the question to save the edit", WAIT_S)
+
+
+# @scenario SC-question-typeahead-33
+@pytest.mark.parametrize("xwpe", [MESSAGE_ENV], indirect=True)
+def test_a_y_typed_before_the_overwrite_question_does_not_overwrite(xwpe):
+    """Save As over a file that exists: the y typed before the question is
+    read replaces nothing, and the y after it does."""
+    h = BoxHeld(xwpe)
+    with open(os.path.join(h.folder, "x.c"), "w") as fh:
+        fh.write(OLD_TEXT)
+    xwpe.key("alt+f", delay=0.4)
+    xwpe.key("a", delay=0.8)
+    xwpe.type("x.c")
+    xwpe.key("alt+s", delay=0.2)
+    h.wait_hold("Message")
+    xwpe.type("y")
+    h.release()
+    assert h.dropped("Message") == 1, h.ui()
+    assert h.saved("x.c") == OLD_TEXT, "the typed y replaced the file"
+    xwpe.key("y", delay=0.5)
+    wait_for(lambda: h.saved("x.c") != OLD_TEXT,
+             "the y after the question to replace the file", WAIT_S)
+
+
+# @scenario SC-question-typeahead-34
+@pytest.mark.parametrize("xwpe", [ABOUT_ENV], indirect=True)
+def test_a_key_typed_before_an_information_box_does_not_dismiss_it(xwpe):
+    """The About box stays when a key was typed before it was read, and the
+    key pressed after it takes it away."""
+    from conftest import changed_pixels
+    h = BoxHeld(xwpe)
+    before = xwpe.screenshot()
+    xwpe.esc_menu("#", "a", delay=0.2)
+    h.wait_hold("the About box")
+    xwpe.type("z")
+    h.release()
+    assert h.dropped("the About box") == 1, h.ui()
+    shown = xwpe.screenshot()
+    box = changed_pixels(before, shown)
+    assert box > SCREEN_CHANGED, "the About box is not on the screen (%d)" % box
+    xwpe.key("q", delay=0.6)
+    gone = changed_pixels(before, xwpe.screenshot())
+    assert gone < box // BOX_GONE_SHARE, "the key after the box did not take it away"

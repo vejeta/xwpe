@@ -486,6 +486,9 @@ typedef struct {
  W_O_NUMSTR **nstr;
  FENSTER *f;
  struct WpeBox *box;   /* the layout owner's box while the dialog runs (we_layout.h) */
+ struct WpeAsk *ask;   /* the question this box asks, NULL for one the user
+                          types or moves in (we_paint.h): a message box asks,
+                          a dialog does not */
 } W_OPTSTR;
 
 typedef struct wpeOptionSection {
@@ -1062,6 +1065,7 @@ int e_get_sw_cmp(int xin, int yin, int x, int y, int xmin, int ymin, int c);
 int e_get_opt_sw(int c, int x, int y, W_OPTSTR *o);
 int e_opt_kst(W_OPTSTR *o);
 int e_opt_kst_message(W_OPTSTR *o);
+int e_opt_kst_series(W_OPTSTR *o);
 int e_edt_options(FENSTER *f);
 int e_read_colors(FENSTER *f);
 int e_ad_colors_md(FENSTER *f, int md);
@@ -1072,6 +1076,7 @@ void e_pr_x_col_kasten(int xa, int ya, int x, int y, FENSTER *f, int sw);
 int e_error(char *text, int sw, FARBE *f);
 int e_message(int sw, char *str, FENSTER *f);
 int e_message_default_no(char *str, FENSTER *f);
+int e_message_series(char *str, FENSTER *f);
 /* The one box for a path the system or the read owner refused:
    "Cannot open <what> <path>: <reason>.", or "<What> not found: <path>." for
    a name that does not exist, at the path's own length.  The errno form is a

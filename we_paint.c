@@ -281,8 +281,11 @@ int wpe_paint_ask_settle(WpeAsk *ask)
  if (ask->shown)
   return ask->dropped;
  ask->shown = 1;
+ if (ask->series)
+  return 0;
  if (paint_desk_known && paint_desk.settle_and_drop)
-  ask->dropped = paint_desk.settle_and_drop(&pasted);
+  ask->dropped = paint_desk.settle_and_drop(wpe_paint_label(ask->what),
+                                            &pasted);
  ask->pasted = pasted;
  wpe_paint_ask_trace_drop(ask);
  return ask->dropped;
@@ -306,16 +309,21 @@ static int wpe_paint_ask_stream(void)
  * question was shown is dropped on the first read, and pasted text is never
  * an answer: the read goes on until the paste has ended.  A place to type
  * or move (a menu, a picker, a field) reads with wpe_paint_modal_getch and
- * keeps its type-ahead.
+ * keeps its type-ahead.  A question of a series the user answers on purpose
+ * (WPE_ASK_SERIES) is read like a field: nothing is dropped, so "y y y"
+ * typed at once answers three boxes.
  * Return: the key, as wpe_paint_modal_getch gives it.
  */
 int wpe_paint_ask_key(WpeAsk *ask)
 {
  int c, streaming;
 
+ if (ask->series)
+  return wpe_paint_modal_getch();
  wpe_paint_ask_settle(ask);
  if (paint_desk_known && paint_desk.question_begins)
-  paint_desk.question_begins(wpe_paint_label(ask->what));
+  paint_desk.question_begins(wpe_paint_label(ask->what), ask->dropped,
+                             ask->pasted);
  do
  {
   c = wpe_paint_modal_getch();
@@ -327,6 +335,25 @@ int wpe_paint_ask_key(WpeAsk *ask)
  if (paint_desk_known && paint_desk.question_ends)
   paint_desk.question_ends();
  return c;
+}
+
+/**
+ * wpe_paint_box_key - Read the next key of a box that is on the screen.
+ * @ask: the question the box asks, or NULL for a box the user types or moves
+ * in (a dialog with fields, a picker, a menu).
+ *
+ * What the user gets: a box that asks a question is answered only by a key
+ * pressed after the question was shown, and a box he types in keeps what he
+ * typed before it appeared, as it always did.  One box can be either (the
+ * dialog engine runs a message box and a dialog), so which reader serves it
+ * is decided here, in the screen's owner, and not by the box itself.
+ * Return: the key, as wpe_paint_modal_getch gives it.
+ */
+int wpe_paint_box_key(WpeAsk *ask)
+{
+ if (ask != NULL)
+  return wpe_paint_ask_key(ask);
+ return wpe_paint_modal_getch();
 }
 
 /**

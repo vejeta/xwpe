@@ -50,22 +50,32 @@ typedef struct
  /* A question is read: the display lets what the editor sent finish, then
     drops every key and click typed before (set *pasted when a paste went)
     and says how many presses went. */
- int  (*settle_and_drop)(int *pasted);
+ int  (*settle_and_drop)(const char *what, int *pasted);
  int  (*paste_streaming)(void);     /* a paste is still arriving */
- void (*question_begins)(const char *what);   /* the keys read now answer @what */
+ /* The keys read now answer the question @what, which ignored @dropped
+    presses and, when @pasted is set, pasted text. */
+ void (*question_begins)(const char *what, int dropped, int pasted);
  void (*question_ends)(void);
 } WpePaintDesk;
 
 /* One question put to the user; a new question is a new WpeAsk, made with
-   WPE_ASK.  Only we_paint.c writes its fields. */
-typedef struct
+   WPE_ASK.  Only we_paint.c writes its fields.  The struct is tagged so a
+   box that serves a question and a place to type can carry a pointer to one
+   without including this header. */
+typedef struct WpeAsk
 {
  const char *what;     /* names it in the trace and in a test's dump */
  int shown;            /* its first read has settled and dropped */
  int dropped;          /* key and button presses it ignored */
  int pasted;           /* pasted text it ignored */
+ int series;           /* one of a series the user answers on purpose: it
+                          keeps what was typed before it (WPE_ASK_SERIES) */
 } WpeAsk;
-#define WPE_ASK(what) { (what), 0, 0, 0 }
+#define WPE_ASK(what) { (what), 0, 0, 0, 0 }
+/* The box of a series the user answers on purpose, as a field is typed in:
+   each "Replace this occurrence?" of a Find/Replace.  The keys typed ahead
+   are the answers to the boxes that follow, so none is dropped. */
+#define WPE_ASK_SERIES(what) { (what), 0, 0, 0, 1 }
 
 void wpe_paint_desk_set(const WpePaintDesk *desk);
 
@@ -82,6 +92,7 @@ int  wpe_paint_modal_depth(void);
 int  wpe_paint_modal_getch(void);
 int  wpe_paint_ask_settle(WpeAsk *ask);
 int  wpe_paint_ask_key(WpeAsk *ask);
+int  wpe_paint_box_key(WpeAsk *ask);
 int  wpe_paint_ask_dropped(const WpeAsk *ask);
 int  wpe_paint_ask_pasted(const WpeAsk *ask);
 int  wpe_paint_ask_shown(const WpeAsk *ask);

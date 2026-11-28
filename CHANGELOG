@@ -625,6 +625,24 @@ Changes
   "answer the review first:".  Menus, pickers, fields and the File Manager
   keep what you type ahead.  Rows: tests/test_question_typeahead.py and its
   X11 and Wayland twins.
+* Keys you type before a box asks or tells no longer answer it either.
+  Closing a window with edits and typing the "n" of the save question in the
+  same breath gave the edits up before the question was on the screen; a "y"
+  typed with the new name in Save As replaced a file that exists the same way,
+  and any key typed with the letter that opens an error box, About or System
+  Info dismissed it unread.  Every box that asks a question or shows a text
+  you must have seen now takes only a key pressed after it was shown, on the
+  terminal, X11 and Wayland.  Such a box says nothing about the keys it
+  ignored: the box staying open is the sign.  The boxes you type or move in
+  (a dialog's fields, the File Manager, the menus that opened them) keep what
+  you type ahead.  So does the row of "Replace this occurrence ?" boxes of a
+  Search > Replace with Prompt on Replace: "Y Y Y" typed at once answers the
+  three boxes of a three-hit replace.  The report that ends Change All is a
+  box like the others and ignores a key typed before it.  A fast typist who
+  presses a key at a box before it appears must press it again.  Rows:
+  tests/test_question_typeahead.py and its X11 and Wayland twins, which hold
+  the editor at the box (XWPE_UI_HOLD, only with XWPE_UI_TRACE set) to type
+  before it; the click row is terminal-only.
 * A pipe or a device named on File > Open, on the command line or with -pm
   ("wpe /dev/zero", "wpe <(command)", a pipe made with mkfifo) was skipped
   without a word.  It still opens no window, but a box now says why ("Cannot

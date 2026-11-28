@@ -7,11 +7,25 @@ still be typing the next request.  A question is answered only by a key
 pressed after it was shown: what was typed before, and pasted text, is
 dropped, and the question says so.
 
+The message boxes the user opens with a key are questions of the same kind:
+Close and Quit over a file with edits ("Do you want to save File ?"), Save As
+over a file that exists ("already exists. Overwrite it?"), the boxes that only
+say something (an error, About, System Info).  "Ctrl-W, then n" written in one
+burst used to give a file's edits up before the question was on the screen.
+They say nothing about a key they ignored: the box staying open is the sign.
+
 Each row holds the editor at the point just before the question is drawn
 (the test backend's named hold, a fifo: the editor stops, the row types the
 burst, then opens the fifo), so the keys are queued before the question by
 order of events and no row waits for a time.  The editor's dump says a
-QUESTION waits (ctx=question:<what>), the traces say what was ignored.
+QUESTION waits (ctx=question:<what>), the traces say what was ignored.  A
+message box keeps its own place in the dump (ctx=message) and carries what it
+ignored there (dropped=, pasted=); its rows hold the editor with no fifo but
+with one write, which the terminal delivers whole, so its keys are queued
+before the box by order of events.  They are terminal-only: under X11 and
+Wayland the key that opens a box and the key that would answer it are
+separate events, and nothing holds the editor between them and the box's
+first read.
 
 Rows G1-G5 are guards: places to type or move keep their type-ahead.
 Not covered headlessly: a key the mouse poll read ahead and gave back (the
@@ -25,13 +39,14 @@ import os
 import struct
 import subprocess
 import signal
+import stat
 import termios
 
 import pytest
 
 pytest.importorskip("pyte")
 
-from edit_model.oracle import EditSession, alt, ctrl  # noqa: E402
+from edit_model.oracle import ENTER, F2, EditSession, alt, ctrl  # noqa: E402
 from gui_owner import wait_for  # noqa: E402
 from host_tools import needs  # noqa: E402
 from wpe_driver import WPE_BIN  # noqa: E402
@@ -454,6 +469,245 @@ def test_a_held_editor_still_ends_on_sigterm(tmp_path):
 # such loop is active; a button held across the run's end cannot be arranged
 # headlessly without a second reader of the terminal.  The drop takes that
 # slot first (e_t_take_unread_key) and the rows above cover the rest of it.
+
+# ---- the message boxes the user opens with a key (terminal-only) -----------
+#
+# No fifo holds the editor here: a box opens from a key, not from a callback,
+# and one write to the terminal is delivered whole, so the key that opens the
+# box and the key that would answer it are queued before the box by order of
+# events.  Under X11 and Wayland they are separate events with nothing to
+# hold the editor between them and the box's first read, so these rows have no
+# twins there (said in the twins' own docstrings).
+
+CTRL_W = "\x17"                 # Close the active window
+ESC = "\033"
+SEED_TEXT = "alpha\n"
+OLD_TEXT = "old text\n"
+SAVE_ASK = "NOT saved"          # the close question's first line
+OVERWRITE_ASK = "already exists. Overwrite it?"
+ABOUT_LINE = "Created by Fred Kruse"
+CONFIRM_ASK = "Replace this occurrence"
+
+
+def _edited(tmp_path):
+    """A session whose file has one unsaved edit."""
+    s = EditSession(str(tmp_path), SEED_TEXT)
+    s.send(["X"])
+    return s
+
+
+def _blob(s):
+    return "\n".join(s.display())
+
+
+def _next_dump(s, pred, what, timeout=WAIT_S):
+    """The first dump from now on that @pred accepts, with the screen of its
+    moment.  A key a question dropped was never counted, so the session's own
+    count follows the dump."""
+    def ev():
+        s._pump([s.master_fd, s.dump_fd], 0.05, {"pty": 0, "dump": 0})
+        while s.reader.dumps:
+            d = s.reader.dumps.pop(0)
+            if pred(d):
+                s.last = d
+                s.keys_sent = d.seq
+                s._drain_screen_now()
+                return d
+        return None
+    return wait_for(ev, what, timeout)
+
+
+def _box_waiting_or_answered(d):
+    """A box that ignored what was typed ahead of it, or the editor back at
+    its own loop because a key typed ahead answered the box."""
+    return (d.ctx == "message" and d.dropped > 0) or d.ctx not in ("wait", "message")
+
+
+def _label_cell(s, label):
+    """(col, row) of the first cell of @label on the screen, 0-based."""
+    for row, text in enumerate(s.display()):
+        col = text.find(label)
+        if col >= 0:
+            return col, row
+    raise AssertionError("%r not on screen:\n%s" % (label, _blob(s)))
+
+
+def _click_reports(col, row):
+    """The press and release of button 1 on the 0-based cell, as one write
+    delivers them."""
+    return "\033[<0;%d;%dM\033[<0;%d;%dm" % (col + 1, row + 1, col + 1, row + 1)
+
+
+# @scenario SC-question-typeahead-24
+def test_a_key_typed_before_the_close_question_does_not_answer_it(tmp_path):
+    """R9: Ctrl-W and the n that would give the edits up, written together.
+    The n is queued before the question is shown, so the box still waits with
+    the edit in the window and nothing written; the n typed after it does
+    close the window."""
+    with _edited(tmp_path) as s:
+        os.write(s.master_fd, (CTRL_W + "n").encode())
+        d = _next_dump(s, _box_waiting_or_answered,
+                       "the close question, or what the typed n did")
+        assert d.ctx == "message", \
+            "the n typed ahead answered the close question:\n%s" % _blob(s)
+        assert d.dropped == 1, d.raw
+        assert s.disk() == SEED_TEXT.encode(), "the typed n gave the edits up"
+        assert "Xalpha" in _blob(s), "the edit is not in the window:\n%s" % _blob(s)
+        os.write(s.master_fd, b"n")
+        _next_dump(s, lambda d: d.ctx != "message", "the question to close")
+        assert SAVE_ASK not in _blob(s), "the question is still up:\n%s" % _blob(s)
+        assert s.disk() == SEED_TEXT.encode()
+
+
+# @scenario SC-question-typeahead-25
+def test_a_click_typed_before_the_close_question_presses_no_button(tmp_path):
+    """R8: the click on Yes, written together with the Ctrl-W that opens the
+    question, is queued before the box is on the screen: it presses no button,
+    the box waits and the file is not saved.  The cell is the one the same box
+    showed when it was opened once before, and Cancel took away again."""
+    with _edited(tmp_path) as s:
+        os.write(s.master_fd, CTRL_W.encode())
+        _next_dump(s, lambda d: d.ctx == "message", "the close question")
+        col, row = _label_cell(s, "Yes")
+        os.write(s.master_fd, ESC.encode())
+        _next_dump(s, lambda d: d.ctx != "message", "the question to close")
+        os.write(s.master_fd, (CTRL_W + _click_reports(col, row)).encode())
+        d = _next_dump(s, _box_waiting_or_answered,
+                       "the close question, or what the click did")
+        assert d.ctx == "message", \
+            "the click typed ahead pressed a button of the question:\n%s" % _blob(s)
+        assert d.dropped == 1, d.raw
+        assert s.disk() == SEED_TEXT.encode(), "the click saved the file"
+        assert "Xalpha" in _blob(s), "the edit is not in the window:\n%s" % _blob(s)
+
+
+# @scenario SC-question-typeahead-26
+def test_a_y_typed_before_the_overwrite_question_does_not_overwrite(tmp_path):
+    """R9b (the overwrite box): Save As over a file that exists asks first.
+    The y written together with the key that submits the name is queued
+    before the question is shown, so the other file keeps its text and the
+    question waits; the y typed after it does replace the file."""
+    work = str(tmp_path)
+    target = os.path.join(work, "x.c")
+    with open(target, "w") as fh:
+        fh.write(OLD_TEXT)
+    with EditSession(work, SEED_TEXT) as s:
+        os.write(s.master_fd, (alt("f") + "a").encode())     # File > Save As
+        _next_dump(s, lambda d: d.ctx == "filemanager", "the Save As manager")
+        os.write(s.master_fd, ("x.c" + alt("s") + "y").encode())
+        d = _next_dump(s, _box_waiting_or_answered,
+                       "the overwrite question, or what the typed y did")
+        assert d.ctx == "message", \
+            "the y typed ahead answered the overwrite question:\n%s" % _blob(s)
+        assert OVERWRITE_ASK in _blob(s), _blob(s)
+        assert d.dropped == 1, d.raw
+        with open(target) as fh:
+            assert fh.read() == OLD_TEXT, "the typed y replaced the file"
+        os.write(s.master_fd, b"y")
+        _next_dump(s, lambda d: d.ctx != "message", "the question to close")
+        with open(target) as fh:
+            assert fh.read() == SEED_TEXT, "the y after the question did not save"
+
+
+# @scenario SC-question-typeahead-27
+def test_a_key_typed_before_an_information_box_does_not_dismiss_it(tmp_path):
+    """R8b (a box that only says something): the Help dropdown keeps the
+    letter typed ahead of it, because a menu is a place to move, and the
+    About box it opens drops the key typed ahead of the box: the box is still
+    there, and the key pressed after it takes the box away."""
+    with _plain(tmp_path) as s:
+        os.write(s.master_fd, (alt("#") + "a" + "z").encode())
+        d = _next_dump(s, _box_waiting_or_answered,
+                       "the About box, or what the typed z did")
+        assert d.ctx == "message", \
+            "the z typed ahead took the About box away:\n%s" % _blob(s)
+        assert ABOUT_LINE in _blob(s), _blob(s)
+        assert d.dropped == 1, d.raw
+        os.write(s.master_fd, b"q")
+        _next_dump(s, lambda d: d.ctx != "message", "the box to go away")
+        assert ABOUT_LINE not in _blob(s), _blob(s)
+
+
+NO_PROJECT = "No project open"     # the error box of Window > Project
+F9 ="\033[20~"                     # Make: compile and link
+RUN_IT = alt("r")                   # Run it, the folder's command question
+FAKE_COMPILER = "#!/bin/sh\ntouch ran-fake\nexit 1\n"
+FOLDER_COMPILER = "[Language/C]\nCompiler : ./fake-cc\n"
+
+
+# @scenario SC-question-typeahead-28
+def test_a_row_of_replace_confirmations_is_answered_by_one_write(tmp_path):
+    """"Replace this occurrence?" is asked once per hit and the user
+    answers a row of them on purpose, so each box keeps what was typed
+    before it.  "Y Y Y" written at once answers the three of a 3-hit
+    replace; every other message box ignores keys typed before it."""
+    with EditSession(str(tmp_path), "a\na\na\n") as s:
+        d = s.send([alt("s"), "r", "a", alt("n"), "b", alt("a")])
+        assert d.ctx == "message" and CONFIRM_ASK in _blob(s), _blob(s)
+        os.write(s.master_fd, b"YYY")
+        s.keys_sent += 3
+        d = s._wait_for(s.keys_sent, WAIT_S)
+        assert d.ctx == "message" and d.dropped == 0, d.raw
+        assert CONFIRM_ASK not in _blob(s), "a confirmation ignored a typed Y:\n" + _blob(s)
+        s.send([ENTER, F2])
+        assert s.disk() == b"b\nb\nb\n", s.disk()
+
+
+# @scenario SC-question-typeahead-29
+def test_a_key_typed_before_the_change_all_report_does_not_dismiss_it(tmp_path):
+    """The report that ends Change All is a message box like any other: the
+    Enter written with the Alt-A that starts the command is queued before
+    the box, so the box stays up, says nothing, and the Enter pressed after
+    it takes it away."""
+    with EditSession(str(tmp_path), "a\na\n") as s:
+        s.send([alt("s"), "r", "a", alt("n"), "b", alt("p")])
+        os.write(s.master_fd, (alt("a") + ENTER).encode())
+        d = _next_dump(s, _box_waiting_or_answered,
+                       "the report, or what the typed Enter did")
+        assert d.ctx == "message", \
+            "the Enter typed ahead took the report away:\n%s" % _blob(s)
+        assert d.dropped == 1, d.raw
+        assert "Replaced 2" in _blob(s), _blob(s)
+        os.write(s.master_fd, ENTER.encode())
+        _next_dump(s, lambda d: d.ctx != "message", "the report to go away")
+        assert "Replaced 2" not in _blob(s), _blob(s)
+
+
+# @scenario SC-question-typeahead-30
+def test_a_key_typed_before_an_error_box_does_not_dismiss_it(tmp_path):
+    """The error box ("No project open" for Window > Project with none): the
+    Esc written with the keys that raise the box is queued before it, so the
+    user has the box to read; the box took the Esc away unread before."""
+    with _plain(tmp_path) as s:
+        os.write(s.master_fd, (alt("w") + "p" + ESC).encode())
+        d = _next_dump(s, _box_waiting_or_answered,
+                       "the error box, or what the typed Esc did")
+        assert d.ctx == "message" and NO_PROJECT in _blob(s), \
+            "the Esc typed ahead took the error box away:\n%s" % _blob(s)
+        assert d.dropped == 1, d.raw
+        os.write(s.master_fd, ESC.encode())
+        _next_dump(s, lambda d: d.ctx != "message", "the box to go away")
+        assert NO_PROJECT not in _blob(s), _blob(s)
+
+
+# @scenario SC-question-typeahead-31
+def test_a_key_typed_before_the_folder_command_question_does_not_run_it(tmp_path):
+    """A folder that names its own compiler asks before F9 runs it.  The
+    Alt-R (Run it) written with F9 is queued before the question: the
+    question waits and the folder's program does not run."""
+    fake = tmp_path / "fake-cc"
+    fake.write_text(FAKE_COMPILER)
+    fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+    (tmp_path / "xwperc").write_text(FOLDER_COMPILER)
+    with EditSession(str(tmp_path), ORIG) as s:
+        os.write(s.master_fd, (F9 + RUN_IT).encode())
+        d = _next_dump(s, _box_waiting_or_answered,
+                       "the folder's command question, or what the typed Alt-R did")
+        assert d.ctx == "message" and "Command from" in _blob(s), \
+            "the Alt-R typed ahead answered the question:\n%s" % _blob(s)
+        assert d.dropped == 1, d.raw
+        assert not (tmp_path / "ran-fake").exists(), "the folder's compiler ran"
+
 
 # ---- guards: places to type or move keep their type-ahead ------------------
 

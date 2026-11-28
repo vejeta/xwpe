@@ -2986,7 +2986,7 @@ static void e_replace_each(FENSTER *f, FIND *fd, int ret, EReplaceReport *r)
   e_replace_show_hit(f, b->b.y);
   c = 'Y';
   if (fd->sw & E_FIND_PROMPT)
-   c = e_message(1, "String found:\nReplace this occurrence ?", f);
+   c = e_message_series("String found:\nReplace this occurrence ?", f);
   if (c == WPE_ESC)
    break;
   if (c != 'Y')

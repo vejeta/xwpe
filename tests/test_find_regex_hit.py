@@ -24,6 +24,17 @@ def _find(s, pattern, *extra):
     return s.send([ctrl("o"), "f"] + list(pattern) + [ALT_R] + list(extra) + [ENTER]).win
 
 
+def _answer_report(s, keys):
+    """Type @keys (ending in Change All), wait until the report box of the
+    command is on the screen, then take it away and save.  A key typed
+    before a message box is ignored by it, so the box is waited for and not
+    answered ahead."""
+    d = s.send(keys)
+    assert d.ctx == "message", "no report box after Change All: ctx=%s" % d.ctx
+    s.send([ENTER, F2])
+    return s.disk()
+
+
 # @scenario SC-edit-model-53
 @pytest.mark.parametrize("seed,keys,pattern,cursor", [
     ("abc\n", [], "a", (0, 1)),
@@ -73,15 +84,15 @@ def test_search_again_goes_on_to_the_next_regular_expression_hit(tmp_path):
 # @scenario SC-edit-model-53
 def test_replace_with_a_regular_expression_changes_only_the_match(tmp_path):
     with EditSession(str(tmp_path), "abc\n") as s:
-        s.send([alt("s"), "r", "b", ALT_R, ALT_N, "Z", ALT_P, ALT_A, ENTER, F2])
-        assert s.disk() == b"aZc\n", s.disk()
+        disk = _answer_report(s, [alt("s"), "r", "b", ALT_R, ALT_N, "Z", ALT_P, ALT_A])
+        assert disk == b"aZc\n", disk
 
 
 # @scenario SC-edit-model-53
 def test_change_all_with_a_regular_expression_changes_every_match(tmp_path):
     with EditSession(str(tmp_path), "abbc\nbb\n") as s:
-        s.send([alt("s"), "r", "b", "+", ALT_R, ALT_N, "Z", ALT_P, ALT_A, ENTER, F2])
-        assert s.disk() == b"aZc\nZ\n", s.disk()
+        disk = _answer_report(s, [alt("s"), "r", "b", "+", ALT_R, ALT_N, "Z", ALT_P, ALT_A])
+        assert disk == b"aZc\nZ\n", disk
 
 
 # @scenario SC-edit-model-53
@@ -94,10 +105,8 @@ def test_case_sensitive_dollar_matches_at_the_end_of_the_row(tmp_path):
 
 
 def _change_all(s, pattern, new, *extra):
-    s.send([alt("s"), "r"] + list(pattern) + [ALT_R] + list(extra) + [ALT_N] + list(new)
-           + [ALT_P, ALT_A, ENTER])
-    s.send([F2])
-    return s.disk()
+    return _answer_report(s, [alt("s"), "r"] + list(pattern) + [ALT_R] + list(extra)
+                          + [ALT_N] + list(new) + [ALT_P, ALT_A])
 
 
 # @scenario SC-edit-model-53

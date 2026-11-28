@@ -47,6 +47,9 @@ typedef struct
 {
  WpeTestCtx kind;
  char title[DUMP_TITLE_MAX];
+ int asked;          /* a question is read here: the counts below are its own */
+ int dropped;        /* presses the question ignored before it was shown */
+ int pasted;         /* pasted text it ignored */
 } DumpCtx;
 
 /* The text of one dump, built before it is written in one go. */
@@ -157,6 +160,19 @@ static void dump_write(const char *s, size_t len)
 }
 
 /* ---- what the dump says ---- */
+
+/**
+ * dump_ctx_top - The place the keys are read from now, or NULL for none.
+ *
+ * A depth over the stack's room is counted but not named, so it has no
+ * record to give back.
+ */
+static DumpCtx *dump_ctx_top(void)
+{
+ if (dump_ctx_depth < 1 || dump_ctx_depth > DUMP_CTX_MAX)
+  return NULL;
+ return &dump_ctx[dump_ctx_depth - 1];
+}
 
 /**
  * dump_ctx_name - Add to @d the name of the place the editor reads keys
@@ -393,6 +409,23 @@ static void dump_find(DumpBuf *d)
 }
 
 /**
+ * dump_ask_counts - Say what the question read now ignored, while one is read.
+ * @d: the dump being written.
+ *
+ * A row that sent keys before a question was on the screen learns from these
+ * two fields that the question threw them away, and whether pasted text was
+ * among them, without reading a trace of its own.
+ */
+static void dump_ask_counts(DumpBuf *d)
+{
+ DumpCtx *c = dump_ctx_top();
+
+ if (c == NULL || !c->asked)
+  return;
+ dump_printf(d, " dropped=%d pasted=%d", c->dropped, c->pasted);
+}
+
+/**
  * dump_state - Write one whole dump for the keys taken so far.
  * @waiting: as dump_ctx_name.
  */
@@ -408,7 +441,9 @@ static void dump_state(int waiting)
   top = WpeEditor->mxedt;
  dump_printf(&d, "S %ld ctx=", dump_keys);
  dump_ctx_name(&d, waiting);
- dump_printf(&d, " top=%d autosaved=%d says=%ld\n", top, dump_autosaved, dump_says);
+ dump_printf(&d, " top=%d autosaved=%d says=%ld", top, dump_autosaved, dump_says);
+ dump_ask_counts(&d);
+ dump_printf(&d, "\n");
  dump_windows(&d);
  dump_menu(&d);
  dump_find(&d);
@@ -592,6 +627,9 @@ void wpe_test_ctx_enter(WpeTestCtx kind, const char *title)
 
   c->kind = kind;
   c->title[0] = '\0';
+  c->asked = 0;
+  c->dropped = 0;
+  c->pasted = 0;
   if (title != NULL)
   {
    strncpy(c->title, title, sizeof c->title - 1);
@@ -610,6 +648,68 @@ void wpe_test_ctx_leave(void)
   return;
  if (dump_ctx_depth > 0)
   dump_ctx_depth--;
+}
+
+/**
+ * dump_ctx_ask_note - Write what the question ignored on the record that is
+ * open now.
+ * @dropped: the presses; @pasted: whether pasted text was among them.
+ */
+static void dump_ctx_ask_note(DumpCtx *c, int dropped, int pasted)
+{
+ c->asked = 1;
+ c->dropped = dropped;
+ c->pasted = pasted;
+}
+
+/**
+ * wpe_test_ctx_ask - A question is read: name it and say what it ignored.
+ * @what: the question's name; @dropped: the key and button presses it
+ * ignored; @pasted: whether pasted text was among them.
+ *
+ * A test learns that the keys it sends now answer a question, and what the
+ * question threw away before it was shown.  A message box keeps its own place
+ * in the dump: the box is what the user sees and what a row waits for, so a
+ * question of its own inside it would hide it.  The box carries the counts
+ * instead, and its name stays `message`.
+ */
+void wpe_test_ctx_ask(const char *what, int dropped, int pasted)
+{
+ DumpCtx *top;
+
+ if (dump_fd == DUMP_FD_NONE)
+  return;
+ top = dump_ctx_top();
+ if (top != NULL && top->kind == WPE_TEST_CTX_MESSAGE)
+ {
+  dump_ctx_ask_note(top, dropped, pasted);
+  return;
+ }
+ wpe_test_ctx_enter(WPE_TEST_CTX_QUESTION, what);
+ top = dump_ctx_top();
+ if (top != NULL)
+  dump_ctx_ask_note(top, dropped, pasted);
+}
+
+/**
+ * wpe_test_ctx_ask_over - The question's read is over.
+ *
+ * The pair of wpe_test_ctx_ask: a message box keeps its place (its next read
+ * writes the counts again), a question of its own leaves the stack.
+ */
+void wpe_test_ctx_ask_over(void)
+{
+ DumpCtx *top;
+
+ if (dump_fd == DUMP_FD_NONE)
+  return;
+ top = dump_ctx_top();
+ if (top != NULL && top->kind == WPE_TEST_CTX_MESSAGE)
+ {
+  top->asked = 0;
+  return;
+ }
+ wpe_test_ctx_leave();
 }
 
 /**

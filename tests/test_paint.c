@@ -102,9 +102,12 @@ static int streaming_reads = 0;
 static int question_begun = 0;
 static int question_ended = 0;
 static char question_name[LOG_MAX];
+static int question_dropped = -1;
+static int question_pasted = -1;
 
-static int desk_settle_and_drop(int *pasted)
+static int desk_settle_and_drop(const char *what, int *pasted)
 {
+	(void)what;
 	settles++;
 	*pasted = paste_in_the_drop;
 	return DROPPED_BY_THE_DISPLAY;
@@ -119,10 +122,12 @@ static int desk_paste_streaming(void)
 	return 0;
 }
 
-static void desk_question_begins(const char *what)
+static void desk_question_begins(const char *what, int dropped, int pasted)
 {
 	question_begun++;
 	snprintf(question_name, sizeof question_name, "%s", what);
+	question_dropped = dropped;
+	question_pasted = pasted;
 }
 
 static void desk_question_ends(void) { question_ended++; }
@@ -725,7 +730,32 @@ static void test_a_question_names_itself_around_its_read(void)
 	chk("the desk was told the question began", question_begun, 1);
 	chk("the desk was told the question ended", question_ended, 1);
 	chk_str("it was told which question", question_name, "diff-box");
+	chk("and what the question ignored", question_dropped,
+	    DROPPED_BY_THE_DISPLAY);
+	chk("no paste was among it", question_pasted, 0);
 	chk("the question gives the screen back", wpe_paint_modal_depth(), 0);
+}
+
+/* One box serves a question and a place to type: the dialog engine runs a
+   message box and a dialog.  The box says which by the question it carries,
+   and the owner's reader follows it. */
+static void test_a_box_key_follows_the_question_it_carries(void)
+{
+	WpeAsk ask = WPE_ASK("message");
+
+	reset();
+	settles = 0;
+	question_begun = question_ended = 0;
+	chk("a box with no question reads as a place to type",
+	    wpe_paint_box_key(NULL), KEY_ON_THE_BOX);
+	chk("it settles nothing, so what was typed ahead is kept", settles, 0);
+	chk("a box with a question reads through the owner",
+	    wpe_paint_box_key(&ask), KEY_ON_THE_BOX);
+	chk("the question settled once", settles, 1);
+	wpe_paint_box_key(&ask);
+	chk("and not again for its next key", settles, 1);
+	chk("the desk was told of the question's two reads, not of the plain box",
+	    question_begun, 2);
 }
 
 int main(void)
@@ -762,6 +792,7 @@ int main(void)
 	test_a_paste_is_never_the_answer();
 	test_a_paste_in_the_drop_is_remembered();
 	test_a_question_names_itself_around_its_read();
+	test_a_box_key_follows_the_question_it_carries();
 	if (fails) {
 		printf("test_paint: %d failure(s)\n", fails);
 		return 1;

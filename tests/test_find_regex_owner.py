@@ -247,7 +247,9 @@ def test_an_empty_hit_replaced_by_nothing_changes_nothing(tmp_path, seed, patter
     """No text is touched, so the file is not modified and has no undo."""
     with EditSession(str(tmp_path), seed) as s:
         before = s.last.win
-        s.send([alt("s"), "r"] + list(pattern) + [ALT_R, ALT_N, ALT_P, ALT_A, ENTER])
+        d = s.send([alt("s"), "r"] + list(pattern) + [ALT_R, ALT_N, ALT_P, ALT_A])
+        assert d.ctx == "message", "no report box after Change All: ctx=%s" % d.ctx
+        s.send([ENTER])
         w = s.last.win
         assert w.lines == before.lines, w.lines
         assert (w.save, w.ud) == (before.save, before.ud), (w.save, w.ud)

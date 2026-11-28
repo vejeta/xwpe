@@ -78,7 +78,6 @@ typedef struct WpeBox
  WpeBoxRect at;           /* where the owner put it; a loop reads it on every paint */
  int fits;                /* 0 when the owner had to clip below the rule's w x h */
  void *pic;               /* the background the box saved (PIC *); the owner drops it on a resize */
- int moved;               /* set by the walk; wpe_box_getch clears it: the loop refocuses */
  int open;               /* 0 closed, 1 open, 2 gone: the walk found no room, the loop still has to close it */
  int slot;                /* its place in the owner's stack */
 } WpeBox;
@@ -100,7 +99,10 @@ int  wpe_box_frame(WpeBox *box, char *title, int fr, int ft, int fes);
 
 WpeBoxDrawn wpe_box_open(WpeBox *box);
 void        wpe_box_close(WpeBox *box);
-int         wpe_box_getch(WpeBox *box);
+/* A box reads its keys from the screen's owner (we_paint.h), which says
+   whether the box asks a question (wpe_paint_ask_key, taking only a key
+   pressed after it was shown) or is a place to type or move
+   (wpe_paint_modal_getch, keeping what was typed ahead). */
 int         wpe_box_depth(void);
 /* A box the user moved keeps its new place until the next resize, which
    centres it again by its rule. */

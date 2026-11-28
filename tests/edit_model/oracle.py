@@ -201,6 +201,11 @@ class Dump:
         self.top = int(kv["top"])
         self.autosaved = int(kv["autosaved"])
         self.says = int(kv.get("says", 0))    # status lines said since the dump before
+        # what the question read now ignored before it was shown: the key and
+        # button presses, and whether pasted text was among them (an editor
+        # that reads no question here says neither)
+        self.dropped = int(kv.get("dropped", 0))
+        self.pasted = int(kv.get("pasted", 0))
         self.windows = {}
         self.find = None
         self.menu = None         # (bar entry, [row text]) while a dropdown is open

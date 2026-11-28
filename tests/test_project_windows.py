@@ -23,6 +23,7 @@ import pytest
 import gui_owner
 from mode_premise import file_mode_is_obeyed, folder_mode_is_obeyed
 from test_utf8_border import SafeScreen
+import wpe_driver
 from wpe_driver import WpeSession
 
 WPE_BIN = os.environ.get('WPE_BIN') or os.path.join(os.path.dirname(__file__), '..', 'wpe')
@@ -467,12 +468,21 @@ KEY_ALT_SYSTEM = '\033#'
 SEED_TEXT = 'int main(void){return 0;}\n'
 
 
+def _wait_for_box(w, words):
+    """Wait until the box that says @words is on the screen.  A box ignores
+    a key typed before it was shown, so its Esc is sent after, never after
+    a guessed delay."""
+    assert wpe_driver.wait_screen(w, words), \
+        'no box saying %r:\n%s' % (words, _screen_text(w))
+
+
 def _refuse_d_list(w, prj):
     """d.prj is open; its file goes read-only; a Delete is refused (said once
     and dismissed), so the list is dirty and the file will not take it."""
     _open_d_prj(w)
     os.chmod(str(prj), 0o400)
-    w.key('\033d', delay=1.5)
+    w.key('\033d', delay=0.2)
+    _wait_for_box(w, 'Cannot write')
     w.key(KEY_ESC, delay=1.0)
 
 
@@ -574,8 +584,10 @@ def test_open_prj_from_the_file_manager_around_a_refused_close_keeps_the_old(tmp
         _refuse_d_list(w, prj)
         try:
             _open_via_file_manager(w, 'b.prj')
+            _wait_for_box(w, 'Cannot write')
             first = _screen_text(w)
-            w.key(KEY_ESC, delay=1.5)
+            w.key(KEY_ESC, delay=0.2)
+            _wait_for_box(w, 'b.prj was not opened.')
             second = _screen_text(w)
             w.key(KEY_ESC, delay=1.0)
             after = _screen_text(w)

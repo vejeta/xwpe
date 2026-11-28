@@ -17,6 +17,8 @@
 #include "we_ai.h"       /* the assistant's key hooks (guarded by WPE_AI) */
 
 #include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
 #include<sys/types.h> /*  included for digital station  */
 #include<sys/stat.h>
 #include<stdarg.h>
@@ -1450,17 +1452,100 @@ static void e_paint_box_opens(void)
  e_status_drop_held();
 }
 
+/* The test hold: $XWPE_UI_HOLD is "<question>=<fifo>", honoured only while
+   $XWPE_UI_TRACE is set, so a user's environment never stops the editor. */
+#define E_PAINT_HOLD_ENV   "XWPE_UI_HOLD"
+#define E_PAINT_HOLD_TRACE_ENV "XWPE_UI_TRACE"
+#define E_PAINT_HOLD_SEP   '='
+#define E_PAINT_HOLD_WATCHED 2   /* the fifo and the end-request pipe */
+
+/**
+ * e_paint_hold_matches - Does the test hold name this question?
+ * @what: the question's name; @fifo: receives the fifo's path.
+ * Return: 1 when $XWPE_UI_HOLD names @what and a trace is on, else 0.
+ */
+static int e_paint_hold_matches(const char *what, const char **fifo)
+{
+ const char *spec = getenv(E_PAINT_HOLD_ENV);
+ size_t len = what ? strlen(what) : 0;
+
+ if (spec == NULL || len == 0 || getenv(E_PAINT_HOLD_TRACE_ENV) == NULL)
+  return(0);
+ if (strncmp(spec, what, len) != 0 || spec[len] != E_PAINT_HOLD_SEP)
+  return(0);
+ *fifo = spec + len + 1;
+ return(1);
+}
+
+/**
+ * e_paint_hold_wait - Wait for the test's writer on a fifo, or for the end.
+ * @fd: the fifo, open for reading without blocking.
+ *
+ * A held editor still ends on SIGTERM or SIGHUP: the end-request pipe is
+ * watched beside the fifo, and nothing waits for a time.
+ */
+static void e_paint_hold_wait(int fd)
+{
+ struct pollfd p[E_PAINT_HOLD_WATCHED];
+ nfds_t n = 1;
+ int rc;
+
+ p[0].fd = fd;
+ p[0].events = POLLIN;
+ if (wpe_end_wake_fd() >= 0)
+ {
+  p[1].fd = wpe_end_wake_fd();
+  p[1].events = POLLIN;
+  n = E_PAINT_HOLD_WATCHED;
+ }
+ do
+ {
+  if (wpe_end_requested())
+   return;
+  rc = poll(p, n, -1);
+ }
+ while (rc < 0 && errno == EINTR);
+}
+
+/**
+ * e_paint_test_hold - Let a test stop the editor just before a question's
+ * first read, so it can type ahead of the box by order of events.
+ * @what: the question's name.
+ *
+ * Under X11 and Wayland the key that opens a box and the key that would
+ * answer it are two events with nothing between them and the box's first
+ * read; this stops the editor there, once, until the test opens the fifo.
+ * The trace says "hold <what>" first.  A user never sets the variables.
+ */
+static void e_paint_test_hold(const char *what)
+{
+ static int held;
+ const char *fifo;
+ int fd;
+
+ if (held || !e_paint_hold_matches(what, &fifo))
+  return;
+ held = 1;
+ wpe_ui_trace("hold %s", what);
+ fd = open(fifo, O_RDONLY | O_NONBLOCK);
+ if (fd < 0)
+  return;
+ e_paint_hold_wait(fd);
+ close(fd);
+}
+
 /**
  * e_paint_settle_and_drop - A question is about to be read: the display
  * lets the editor's output finish and drops what was typed before it.
- * @pasted: set when pasted text was among it.
+ * @what: the question's name; @pasted: set when pasted text was among it.
  *
  * The one caller of the display's e_u_type_ahead_drop, so no other code
  * can throw away a user's keys.
  * Return: how many key and button presses were dropped.
  */
-static int e_paint_settle_and_drop(int *pasted)
+static int e_paint_settle_and_drop(const char *what, int *pasted)
 {
+ e_paint_test_hold(what);
  if (!e_u_type_ahead_drop)
   return(0);
  return((*e_u_type_ahead_drop)(pasted));
@@ -1480,17 +1565,17 @@ static int e_paint_paste_streaming(void)
 
 /**
  * e_paint_question_begins - The keys read now answer the question @what: a
- * test's dump says so.
+ * test's dump says so, with the presses and the paste the question ignored.
  */
-static void e_paint_question_begins(const char *what)
+static void e_paint_question_begins(const char *what, int dropped, int pasted)
 {
- wpe_test_ctx_enter(WPE_TEST_CTX_QUESTION, what);
+ wpe_test_ctx_ask(what, dropped, pasted);
 }
 
 /** e_paint_question_ends - The question's read is over. */
 static void e_paint_question_ends(void)
 {
- wpe_test_ctx_leave();
+ wpe_test_ctx_ask_over();
 }
 
 /**

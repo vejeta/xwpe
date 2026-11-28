@@ -1,16 +1,18 @@
 # The readers of keys that are not questions, for tests/check-question-typeahead.sh.
 #
 # A question reads its answer with wpe_paint_ask_key and keeps nothing typed
-# before it.  Every other function that calls wpe_paint_modal_getch, or a
-# wrapper that reads for others (wpe_box_getch, e_opt_getch, e_opt_read_key),
-# is listed here with its kind and the reason it is that kind.  A function
-# that is not listed fails the build: its author says which kind it is.
+# before it.  Every other function that calls wpe_paint_modal_getch, the
+# owner's reader for a box of either kind (wpe_paint_box_key), or a wrapper
+# that reads for others (e_opt_getch, e_opt_read_key), is listed here with its
+# kind and the reason it is that kind.  A function that is not listed fails
+# the build: its author says which kind it is.
 #
 #   keeps|function|reason    a place to type or move; the user asked for it
 #                            with a key and its keys are text or movement, so
 #                            it keeps what was typed ahead
-#   wraps|function|reason    reads for others; the callers are what is
-#                            classified
+#   wraps|function|reason    reads for others: the callers are what is
+#                            classified, or, at the end of one engine's chain,
+#                            the reader below that says whose key it is
 #   pending|function|reason  a question that a later pass moves onto the
 #                            owner; the line is deleted then
 #
@@ -44,13 +46,27 @@ keeps|e_lsp_ui_jump_diag|the letter after Alt-Q in a peek
 keeps|e_lsp_ui_key|the Alt-Q prefix letter
 
 # ---- readers for others ---------------------------------------------------------
-wraps|wpe_box_getch|reads a key for a box and refolds a resize; its callers are classified
-wraps|e_opt_getch|reads a dialog's key and leaves a paste alone; its callers are classified
+# The dialog engine runs a box the user types or moves in (a dialog, a picker)
+# and a box that asks a question (a message box) with the same widget loops.
+# Which of the two a box is says the question the box carries, and the
+# engine's own reader (e_opt_getch) is where the owner reads it, so the loops
+# below are listed once, as readers for the engine.
+wraps|e_opt_getch|reads the key of a box the engine runs: a message box carries the question, a dialog keeps its type-ahead
 wraps|e_opt_read_key|reads the focused widget's key; its callers are classified
+wraps|e_opt_run_checkbox|reads one key for the focused checkbox and routes it; the engine's reader says whose key it is
+wraps|e_opt_run_radio|reads one key for the focused radio option and routes it; the engine's reader says whose key it is
+wraps|e_opt_run_button|reads one key for the focused button and routes it; the engine's reader says whose key it is
 
-# ---- questions the message engine's pass moves onto the owner -----------------------
-pending|e_error_read_answer|the answer of e_error (an error box): a question
-pending|e_opt_box_wait_key|the key of About, System Info and the other any-key boxes
-pending|e_opt_run_checkbox|the dialog engine, which also runs as a message or error box
-pending|e_opt_run_radio|the dialog engine, which also runs as a message or error box
-pending|e_opt_run_button|the dialog engine, which also runs as a message or error box
+# ---- a series the user answers on purpose --------------------------------------
+# The "Replace this occurrence?" box of Find/Replace is asked once per hit and
+# the user types a row of answers at once, as he types into a field, so it
+# keeps its type-ahead.  It reads through the owner like every message box:
+# its question is made with WPE_ASK_SERIES, only by e_opt_kst_series (the
+# checker's rule d), and e_message_series is the one entry that asks for it.
+# It calls no reader, so no line of this file is needed for it.
+
+# ---- questions, listed nowhere here ------------------------------------------------
+# e_error_read_answer (an error box), e_opt_box_wait_key (About, System Info
+# and the other any-key boxes) and every message box the dialog engine runs
+# (close, save, overwrite, quit debugging) read their answer through the
+# owner, so no line names them.

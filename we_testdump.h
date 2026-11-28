@@ -20,7 +20,10 @@
 
    The format, one record per line, every field on one line:
      S <seq> ctx=<edit|prefix|menu|dialog:<title>|question:<what>|message|filemanager|window|box|wait> top=<n> autosaved=<0|1> says=<n>
-       (says: the status lines said since the dump before)
+       [dropped=<n> pasted=<0|1>]
+       (says: the status lines said since the dump before; dropped and
+        pasted, only while a question is read: the presses and the pasted
+        text it ignored before it was shown)
      W <n> <name> ro=<0|1> mx=<width> y=<n> x=<n> mb=<y>,<x> me=<y>,<x> ks=<y>,<x>
        ins=<n> flg=<n> save=<n> view=<c.y>,<c.x>,<a.y>,<a.x>,<e.y>,<e.x>
        pt=<x>,<y>/<x>,<y>/... brp=<row>,<row>|- ud=<steps> rd=<steps>
@@ -46,7 +49,9 @@ typedef enum
  WPE_TEST_CTX_MENU,       /* the menu bar or one of its dropdowns */
  WPE_TEST_CTX_DIALOG,     /* a dialog box: its title is named */
  WPE_TEST_CTX_MESSAGE,    /* a message or error box */
- WPE_TEST_CTX_QUESTION    /* a question: its name is given (review, approve) */
+ WPE_TEST_CTX_QUESTION    /* a question of its own: its name is given (review,
+                             approve).  A message box's question stays MESSAGE
+                             and carries what it ignored on that record */
 } WpeTestCtx;
 
 void wpe_test_dump_from_env(void);
@@ -54,6 +59,12 @@ int  wpe_test_dump_on(void);
 void wpe_test_dump_idle(void);
 void wpe_test_ctx_enter(WpeTestCtx kind, const char *title);
 void wpe_test_ctx_leave(void);
+/* A question is read: its name, the presses it ignored and whether pasted
+   text was among them.  A question of its own gets a context of its own; a
+   message box's question leaves the box's `message` and carries the counts.
+   Each wpe_test_ctx_ask has its wpe_test_ctx_ask_over. */
+void wpe_test_ctx_ask(const char *what, int dropped, int pasted);
+void wpe_test_ctx_ask_over(void);
 /* The dropdown that is open, for the M record: its place in the bar and its
    rows (OPTK of edit.h). */
 struct OPTKAST;

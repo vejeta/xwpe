@@ -151,6 +151,7 @@ we_wind.c:e_error_read_answer:* 1 dialog field editing
 we_wind.c:e_error_run:* 2 dialog field editing
 we_wind.c:e_message:* 2 dialog field editing
 we_wind.c:e_message_box:* 10 dialog field editing
+we_wind.c:e_message_series:* 1 dialog field editing
 we_wind.c:e_message_default_no:* 3 dialog field editing
 we_wind.c:e_opt_sec_box:* 13 dialog field editing
 we_wind.c:e_pr_line:* 3 dialog field editing

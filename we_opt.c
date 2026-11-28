@@ -214,14 +214,17 @@ static void e_info_line(WpeBox *box, int dx, int dy, const char *text, int col)
 
 /**
  * e_opt_box_wait_key - Hold an information box until the user presses a key.
- * @box: the open box.
+ * @box: the open box; @ask: the question the box asks, whose answer is the
+ * key that takes it away.
  *
  * The About box and the System Info box stay until a key.  A resize is not
  * that key: the owner has already laid the desk and the box out again at the
  * new size.  While the box waits, what arrives from the loop waits for it.
+ * The key is read as a question's answer, so one typed before the box was
+ * shown does not take the box away before the user has read it.
  * Return: the key, or WPE_ESC when the owner could not draw the box again.
  */
-static int e_opt_box_wait_key(WpeBox *box)
+static int e_opt_box_wait_key(WpeBox *box, WpeAsk *ask)
 {
  int c;
 
@@ -229,7 +232,7 @@ static int e_opt_box_wait_key(WpeBox *box)
  while (e_mshit() != 0)
   ;
 #endif
- while ((c = wpe_box_getch(box)) == WPE_RESIZE)
+ while ((c = wpe_paint_ask_key(ask)) == WPE_RESIZE)
  {
   if (box->pic == NULL)
    return(WPE_ESC);
@@ -249,6 +252,8 @@ static int e_opt_box_wait_key(WpeBox *box)
  */
 static int e_opt_box_show(WpeBox *box, FENSTER *f)
 {
+ WpeAsk ask = WPE_ASK(box->what);
+
  fk_cursor(0);
  if (wpe_box_open(box) != WPE_BOX_DRAWN)
  {
@@ -256,7 +261,7 @@ static int e_opt_box_show(WpeBox *box, FENSTER *f)
   return(WPE_ESC);
  }
  wpe_test_ctx_enter(WPE_TEST_CTX_MESSAGE, NULL);
- e_opt_box_wait_key(box);
+ e_opt_box_wait_key(box, &ask);
  wpe_test_ctx_leave();
  if (box->pic != NULL)
   e_close_view(box->pic, 1);
@@ -4198,11 +4203,19 @@ W_OPTSTR *e_init_opt_kst(FENSTER *f)
  o->tn = o->sn = o->pn = o->bn = o->wn = o->nn = 0;
  o->f = f;
  o->pic = NULL;
+ o->ask = NULL;      /* a box the user types or moves in, until it asks */
  return(o);
 }
 
 /**
- * e_opt_getch - Read the next key for a dialog, leaving a terminal paste alone.
+ * e_opt_getch - Read the next key of a box the dialog engine runs.
+ * @o: the box.
+ *
+ * A box the user types or moves in (a dialog, a picker) keeps what he typed
+ * before it appeared.  A box that asks a question (a message box) does not:
+ * it carries the question, and the screen's owner drops what was typed
+ * before the question was shown, so a key of the burst that opened it is
+ * never its answer.
  *
  * A bracketed paste (xterm mode 2004) streams its text through the same key
  * reader as typing does.  Only a focused text field has a use for the pasted
@@ -4214,13 +4227,13 @@ W_OPTSTR *e_init_opt_kst(FENSTER *f)
  * returned.  The terminal backend clears the flag when it sees the paste's
  * end marker, so the loop ends with the paste.
  */
-static int e_opt_getch(void)
+static int e_opt_getch(const W_OPTSTR *o)
 {
  extern int g_bracketed_paste;
  int c;
 
  do
-  c = wpe_paint_modal_getch();
+  c = wpe_paint_box_key(o->ask);
  while (g_bracketed_paste);
  return c;
 }
@@ -4249,7 +4262,7 @@ int e_opt_move(W_OPTSTR *o)
  int c = 0;
 
  e_std_rahmen(o->xa, o->ya, o->xe, o->ye, o->name, 0, o->frt, o->frs);
- while ((c = e_opt_getch()) != WPE_ESC && c != WPE_CR)
+ while ((c = e_opt_getch(o)) != WPE_ESC && c != WPE_CR)
  {
   switch(c)
   {
@@ -4828,7 +4841,7 @@ static void e_opt_focus_by_key(W_OPTSTR *o, struct opt_run *r, int x, int y)
  */
 static int e_opt_read_key(W_OPTSTR *o)
 {
- int c = e_opt_getch();
+ int c = e_opt_getch(o);
 
 #if MOUSE
  if (c < 0)
@@ -5312,17 +5325,18 @@ static void e_opt_refocus_first(W_OPTSTR *o, struct opt_run *r)
 
 /**
  * e_opt_wait_esc_or_resize - Hold a dialog the screen cannot show.
+ * @o: the dialog.
  *
  * When the frame had to be clipped, nothing in it is safe to operate, so
  * every key is swallowed until the user gives up (Esc) or the terminal grows
  * (a resize, after which the owner has laid the box out again).
  */
-static int e_opt_wait_esc_or_resize(void)
+static int e_opt_wait_esc_or_resize(const W_OPTSTR *o)
 {
  int c;
 
  do
-  c = e_opt_getch();
+  c = e_opt_getch(o);
  while (c != WPE_ESC && c != WPE_RESIZE);
  return c;
 }
@@ -5341,7 +5355,7 @@ static int e_opt_hold_clipped(W_OPTSTR *o, WpeBox *box, struct opt_run *r)
 {
  while (!box->fits)
  {
-  if (e_opt_wait_esc_or_resize() == WPE_ESC)
+  if (e_opt_wait_esc_or_resize(o) == WPE_ESC)
    return(WPE_ESC);
  }
  e_opt_refocus_first(o, r);
@@ -5504,12 +5518,51 @@ int e_opt_kst(W_OPTSTR *o)
  * @o: the box.
  *
  * The same box as a dialog for the user; a test watching the editor's state
- * is told the keys now answer a message (Ok, Yes, No) and not a dialog.
+ * is told the keys now answer a message (Ok, Yes, No) and not a dialog.  The
+ * box asks a question, so it takes only a key pressed after it was shown:
+ * "Close, then n" typed in one burst no longer gives a file's edits up
+ * unseen, and the box saying nothing about the key it ignored is the sign.
  * Return: as e_opt_kst.
  */
+static int e_opt_kst_asking(W_OPTSTR *o, WpeAsk *ask);
+
 int e_opt_kst_message(W_OPTSTR *o)
 {
-   return(e_opt_kst_as(o, WPE_TEST_CTX_MESSAGE));
+   WpeAsk ask = WPE_ASK(o->name);
+
+   return(e_opt_kst_asking(o, &ask));
+}
+
+/**
+ * e_opt_kst_series - Run a message box that is one of a series the user
+ * answers on purpose.
+ * @o: the box.
+ *
+ * The "Replace this occurrence?" of a Find/Replace is asked once per hit and
+ * the user answers a row of them, "y y y" typed at once, as he types into a
+ * field.  The box is the same message box, but it carries a question of the
+ * series kind, so the screen's owner drops nothing typed before it.
+ * Return: as e_opt_kst.
+ */
+int e_opt_kst_series(W_OPTSTR *o)
+{
+   WpeAsk ask = WPE_ASK_SERIES(o->name);
+
+   return(e_opt_kst_asking(o, &ask));
+}
+
+/**
+ * e_opt_kst_asking - Run the message box @o with @ask as the question it asks.
+ * Return: as e_opt_kst.
+ */
+static int e_opt_kst_asking(W_OPTSTR *o, WpeAsk *ask)
+{
+   int ret;
+
+   o->ask = ask;
+   ret = e_opt_kst_as(o, WPE_TEST_CTX_MESSAGE);
+   o->ask = NULL;
+   return(ret);
 }
 
 /**

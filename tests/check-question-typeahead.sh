@@ -17,10 +17,11 @@
 # fails instead of passing.  Scope: the top-level sources, never tests/;
 # comments are blanked.
 #
-#  a. Default deny.  A call of wpe_paint_modal_getch outside we_paint.c, or of
-#     a wrapper that reads for others (wpe_box_getch, e_opt_getch,
-#     e_opt_read_key), is in a function the allow file classifies.  A new
-#     reader fails the build until its author says which kind it is.
+#  a. Default deny.  A call of wpe_paint_modal_getch outside we_paint.c, of
+#     the owner's reader for a box of either kind (wpe_paint_box_key), or of a
+#     wrapper that reads for others (e_opt_getch, e_opt_read_key), is in a
+#     function the allow file classifies.  A new reader fails the build until
+#     its author says which kind it is.
 #  b. A question reads only through the owner.  A function that holds a
 #     WpeAsk (a variable or a parameter) or calls wpe_paint_ask_key calls no
 #     other reader of keys: not the four of rule a, not wpe_paint_take_key, not
@@ -32,7 +33,10 @@
 #     the table; tcflush( and flushinp( appear nowhere: they go around the
 #     terminal's one reader (a paste's end marker and a resize are lost).
 #  d. A question is made, and measured, by its owner.  A WpeAsk is declared
-#     with WPE_ASK( (a pointer is no declaration); a variable named ask never
+#     with WPE_ASK( or WPE_ASK_SERIES( (a pointer is no declaration; a series
+#     is a row of boxes the user answers on purpose and keeps its type-ahead,
+#     so it is declared by name and only e_opt_kst_series does);
+#     a variable named ask never
 #     has .shown, .dropped or .pasted written outside we_paint.c.
 #  e. Every display has the entry.  A top-level source that assigns a
 #     display's key taker (e_u_key_take = e_t_key_take, e_x_..., e_w_...) also
@@ -43,9 +47,10 @@
 # The allow file, tests/question-typeahead.allow, has lines
 #   kind|function|reason
 # where kind is keeps (a place to type or move: it keeps its type-ahead),
-# wraps (reads for others; its callers are classified instead) or pending (a
-# question that the message engine's pass moves onto the owner; it leaves the
-# file then).  A line that matches nothing is stale and fails.
+# wraps (reads for others; its callers are classified instead, or, at the end
+# of one engine's chain, the reader below says whose key it is) or pending (a
+# question that a later pass moves onto the owner; it leaves the file then).
+# A line that matches nothing is stale and fails.
 #
 # How it is made fast: one awk pass per source file (scan_file) blanks the
 # comments and applies the per-file rules, and writes the file's "facts" to
@@ -83,7 +88,7 @@ OWNER=we_paint.c
 OWNER_HEADER=we_paint.h
 DESK_ENTRY_FILE=we_edit.c
 DESK_ENTRY=e_paint_settle_and_drop
-READERS='wpe_paint_modal_getch wpe_box_getch e_opt_getch e_opt_read_key'
+READERS='wpe_paint_modal_getch wpe_paint_box_key e_opt_getch e_opt_read_key'
 
 . "$(dirname "$0")/workdir.sh"
 work_dir question-typeahead $BAD
@@ -193,8 +198,10 @@ scan_file() {
 
     # rule_d_line - a question is made, and measured, by its owner.
     function rule_d_line(line) {
-      if (line ~ /(^|[^A-Za-z0-9_])WpeAsk[ \t]+[A-Za-z_]/ && line !~ /WpeAsk[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t]*=[ \t]*WPE_ASK\(/)
-        print "D: a WpeAsk is not made with WPE_ASK: " file ":" NR
+      if (line ~ /(^|[^A-Za-z0-9_])WpeAsk[ \t]+[A-Za-z_]/ && line !~ /WpeAsk[ \t]+[A-Za-z_][A-Za-z0-9_]*[ \t]*=[ \t]*WPE_ASK(_SERIES)?\(/)
+        print "D: a WpeAsk is not made with WPE_ASK or WPE_ASK_SERIES: " file ":" NR
+      if (line ~ /WPE_ASK_SERIES[ \t]*\(/ && !(file == "we_opt.c" && fn == "e_opt_kst_series"))
+        print "D: a series question is made outside e_opt_kst_series: " file ":" NR
       if (!is_owner && line ~ /(^|[^A-Za-z0-9_])ask(\.|->)(shown|dropped|pasted)[ \t]*(=[^=]|\+\+|--|\+=|-=)/)
         print "D: a question'"'"'s fields are written outside " owner ": " file ":" NR
     }
@@ -369,7 +376,7 @@ else
     cat "$WORK/real.out" >> "$WORK/problems"
   fi
   canary A we_ai_ui.c 'static int planted_reader(void)\n{\n return wpe_paint_modal_getch();\n}'
-  canary A we_ai_ui.c 'static int planted_wrapper(WpeBox *b)\n{\n return wpe_box_getch(b);\n}'
+  canary A we_ai_ui.c 'static int planted_box_key(void)\n{\n return wpe_paint_box_key(0);\n}'
   canary A we_opt.c 'static int planted_dialog_key(void)\n{\n return e_opt_getch();\n}'
   canary B we_ai_ui.c 'static int planted_yes_no(WpeAsk *ask)\n{\n int c = ask ? e_prefix_read_letter(0) : wpe_paint_take_key(0);\n return c;\n}'
   canary B we_ai_ui.c 'static int planted_take(void)\n{\n WpeAsk ask = WPE_ASK("planted");\n (void)ask;\n return wpe_paint_take_key(0);\n}'
@@ -379,6 +386,7 @@ else
   canary C we_term.c 'static void planted_call(void)\n{\n int p;\n e_t_type_ahead_drop(&p);\n}'
   canary D we_ai_ui.c 'static void planted_ask(void)\n{\n WpeAsk ask;\n (void)ask;\n}'
   canary D we_ai_ui.c 'static void planted_field(WpeAsk *ask)\n{\n ask->shown = 1;\n}'
+  canary D we_ai_ui.c 'static void planted_series(void)\n{\n WpeAsk keeps = WPE_ASK_SERIES("planted");\n (void)keeps;\n}'
   canary_cut E we_xterm.c 'e_u_type_ahead_drop[[:space:]]*='
   canary_cut E we_wayland.c 'e_u_type_ahead_drop[[:space:]]*='
   # A line of the allow file that matches nothing must be named as stale.
@@ -404,5 +412,5 @@ if [ -s "$WORK/problems" ]; then
   cat "$WORK/problems"
   exit $BAD
 fi
-echo "check-question-typeahead: ok (6 rules, 15 canaries)"
+echo "check-question-typeahead: ok (6 rules, 16 canaries)"
 exit 0

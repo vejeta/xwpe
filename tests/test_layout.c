@@ -307,7 +307,6 @@ static void test_the_walk(void)
 		fails++;
 	}
 	chk("every old background dropped, none put back", dropped, 3);
-	chk("a box is told it moved", a.moved && b.moved && c.moved, 1);
 	chk("a second run finds nothing", wpe_layout_run_pending(), 0);
 
 	/* Several resizes before the walk: the windows scale from the oldest. */
