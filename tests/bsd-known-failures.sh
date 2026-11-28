@@ -72,14 +72,14 @@ EOF
       ;;
     openbsd)
       cat <<'EOF'
-test_child|ended on SIGTERM: got |a child's end arrives late or never (evidence pending, pass E)|BT11
-test_child|by SIGTERM, not given up on: got |a child's end arrives late or never (evidence pending, pass E)|BT11
-test_child|by SIGTERM itself|a child's end arrives late or never (evidence pending, pass E)|BT11
-test_child|the start is refused: got |the rows after the late ends find the slots still taken|BT11
-test_child|with nothing running: got |the rows after the late ends find the slots still taken|BT11
-test_child|and no descriptor: got |the rows after the late ends find the slots still taken|BT11
-test_child|none left open: got |the rows after the late ends find the slots still taken|BT11
-test_child|the user reads why|the rows after the late ends find the slots still taken|BT11
+test_child|ended on SIGTERM: got |a child's end arrives late or never under load; passed in run 46140661168 once the byte-count row stopped using head -c; listed 2026-11-28|BT11|flaky
+test_child|by SIGTERM, not given up on: got |a child's end arrives late or never under load; passed in run 46140661168; listed 2026-11-28|BT11|flaky
+test_child|by SIGTERM itself|a child's end arrives late or never under load; passed in run 46140661168; listed 2026-11-28|BT11|flaky
+test_child|the start is refused: got |the rows after the late ends find the slots still taken; known only when a cause row fails too; listed 2026-11-28|BT11|flaky|ended on SIGTERM: got ;by SIGTERM itself
+test_child|with nothing running: got |the rows after the late ends find the slots still taken; known only when a cause row fails too; listed 2026-11-28|BT11|flaky|ended on SIGTERM: got ;by SIGTERM itself
+test_child|and no descriptor: got |the rows after the late ends find the slots still taken; known only when a cause row fails too; listed 2026-11-28|BT11|flaky|ended on SIGTERM: got ;by SIGTERM itself
+test_child|none left open: got |the rows after the late ends find the slots still taken; known only when a cause row fails too; listed 2026-11-28|BT11|flaky|ended on SIGTERM: got ;by SIGTERM itself
+test_child|the user reads why$|the rows after the late ends find the slots still taken; known only when a cause row fails too; listed 2026-11-28|BT11|flaky|ended on SIGTERM: got ;by SIGTERM itself
 test_child|what it started was never signalled|the pid line came late|BT11
 test_child|test_child (the owner's start|the 30 s watchdog: a child's end never came|BT11
 EOF
